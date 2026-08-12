@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "capture-kit",
+  "version": "0.1.0",
+  "description": "One-shot full-page capture plus console & network failure bundles for AI-assisted coding.",
+  "minimum_chrome_version": "116",
+  "permissions": ["debugger", "activeTab", "downloads", "storage", "clipboardWrite", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background/service-worker.js", "type": "module" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/recorder-isolated.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/recorder-main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
+  "action": { "default_popup": "popup/popup.html", "default_title": "capture-kit" },
+  "options_page": "options/options.html",
+  "commands": {
+    "capture-bundle": {
+      "suggested_key": { "default": "Ctrl+Shift+9", "mac": "Command+Shift+9" },
+      "description": "Capture Bundle (PNG + markdown, copied to clipboard)"
+    }
+  }
+}
