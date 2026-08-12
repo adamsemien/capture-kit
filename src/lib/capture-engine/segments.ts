@@ -6,13 +6,6 @@ import { base64ToBlob, blobToBase64 } from '../base64';
 export const CANVAS_MAX_DIMENSION = 32767;
 export const CANVAS_MAX_AREA = 1 << 28; // 268,435,456 px²
 
-export interface SegmentRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
 export function clampDimensions(
   width: number,
   height: number,
@@ -24,29 +17,23 @@ export function clampDimensions(
 }
 
 /**
- * Grid plan for capturing a width×height page in segments of at most
- * segmentSize per dimension. A page that fits yields a single full rect.
+ * Scroll offsets that tile `total` px with a `viewport`-px window: regular
+ * steps of one viewport, with the final offset clamped so the last tile ends
+ * exactly at the content edge. The clamped tile overlaps its neighbor with
+ * identical content, so coarse placement stays exact.
  */
-export function planSegments(width: number, height: number, segmentSize: number): SegmentRect[] {
-  if (width <= segmentSize && height <= segmentSize) {
-    return [{ x: 0, y: 0, width, height }];
+export function planScrollOffsets(total: number, viewport: number): number[] {
+  if (viewport >= total) return [0];
+  const offsets: number[] = [];
+  for (let pos = 0; pos < total - viewport; pos += viewport) {
+    offsets.push(pos);
   }
-  const rects: SegmentRect[] = [];
-  for (let y = 0; y < height; y += segmentSize) {
-    for (let x = 0; x < width; x += segmentSize) {
-      rects.push({
-        x,
-        y,
-        width: Math.min(segmentSize, width - x),
-        height: Math.min(segmentSize, height - y),
-      });
-    }
-  }
-  return rects;
+  offsets.push(total - viewport);
+  return offsets;
 }
 
 /**
- * Joins segment PNGs by coarse rectangle placement at exact grid offsets —
+ * Joins segment PNGs by coarse rectangle placement at exact scroll offsets —
  * no overlap detection, no stitching heuristics. Segments are added one at a
  * time so only one decoded bitmap is in memory at once.
  */
@@ -61,9 +48,9 @@ export class SegmentCanvas {
     this.ctx = ctx;
   }
 
-  async add(rect: SegmentRect, pngBase64: string): Promise<void> {
+  async add(x: number, y: number, pngBase64: string): Promise<void> {
     const bitmap = await createImageBitmap(base64ToBlob(pngBase64, 'image/png'));
-    this.ctx.drawImage(bitmap, rect.x, rect.y);
+    this.ctx.drawImage(bitmap, x, y);
     bitmap.close();
   }
 
