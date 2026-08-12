@@ -1,0 +1,228 @@
+// MV3 service worker: capture orchestration, downloads, error reporting.
+//
+// Worker-death posture: this worker owns no long-lived state. Ring buffers
+// live in the content script (page lifetime); the last bundle and last error
+// live in chrome.storage.session; settings live in chrome.storage.sync. A
+// capture is one self-contained async invocation whose state is all local
+// variables — if the worker dies mid-capture, the capture fails cleanly and
+// nothing is corrupted.
+
+import { captureFullPage } from '../lib/capture-engine';
+import { buildBundleMarkdown, buildClipboardMarkdown } from '../lib/bundle/markdown';
+import { captureBasename } from '../lib/bundle/filename';
+import { textToBase64 } from '../lib/base64';
+import { getSettings } from '../lib/settings';
+import type {
+  BufferSnapshot,
+  CaptureResponse,
+  LastBundle,
+  LastError,
+  RuntimeMessage,
+} from '../lib/messages';
+
+const PROTECTED_PREFIXES = [
+  'chrome://',
+  'chrome-extension://',
+  'chrome-search://',
+  'chrome-untrusted://',
+  'devtools://',
+  'edge://',
+  'about:',
+  'view-source:',
+];
+
+function protectedPageReason(url: string | undefined): string | null {
+  if (!url) return 'This tab has no capturable page.';
+  for (const prefix of PROTECTED_PREFIXES) {
+    if (url.startsWith(prefix)) {
+      return 'Cannot capture this page — Chrome does not allow extensions to access browser-internal pages.';
+    }
+  }
+  if (
+    url.startsWith('https://chromewebstore.google.com/') ||
+    url.startsWith('https://chrome.google.com/webstore')
+  ) {
+    return 'Cannot capture this page — the Chrome Web Store blocks extension access.';
+  }
+  return null;
+}
+
+async function activeTab(): Promise<chrome.tabs.Tab> {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tab || tab.id === undefined) throw new Error('No active tab found.');
+  return tab;
+}
+
+interface SnapshotLookup {
+  snapshot: BufferSnapshot | null;
+  recorderActive: boolean;
+}
+
+async function getSnapshot(tabId: number): Promise<SnapshotLookup> {
+  try {
+    const snapshot = (await chrome.tabs.sendMessage(tabId, { type: 'GET_SNAPSHOT' })) as BufferSnapshot;
+    return { snapshot, recorderActive: true };
+  } catch {
+    // Recorder missing — the page predates install/reload. Inject the
+    // buffer/clipboard half so metadata and clipboard still work, and retry
+    // once. The MAIN-world hooks can't be retrofitted: page load already
+    // happened, so the bundle flags the recorder as inactive.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['content/recorder-isolated.js'],
+      });
+      const snapshot = (await chrome.tabs.sendMessage(tabId, { type: 'GET_SNAPSHOT' })) as BufferSnapshot;
+      return { snapshot, recorderActive: false };
+    } catch {
+      return { snapshot: null, recorderActive: false };
+    }
+  }
+}
+
+async function downloadBase64(filename: string, mime: string, base64: string): Promise<void> {
+  await chrome.downloads.download({ url: `data:${mime};base64,${base64}`, filename });
+}
+
+async function flashBadge(text: string, color: string): Promise<void> {
+  try {
+    await chrome.action.setBadgeBackgroundColor({ color });
+    await chrome.action.setBadgeText({ text });
+    setTimeout(() => {
+      void chrome.action.setBadgeText({ text: '' });
+    }, 5000);
+  } catch {
+    /* badge is best-effort */
+  }
+}
+
+async function recordError(reason: string, viaCommand: boolean): Promise<void> {
+  const lastError: LastError = { reason, at: Date.now() };
+  try {
+    await chrome.storage.session.set({ lastError });
+  } catch {
+    /* best-effort */
+  }
+  if (viaCommand) await flashBadge('!', '#b03a2e');
+}
+
+function describeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('Another debugger is already attached')) {
+    return 'Another debugger (usually DevTools) is attached to this tab — close it and retry.';
+  }
+  if (message.includes('Cannot access') || message.includes('Cannot attach')) {
+    return 'Chrome blocked debugger access to this page.';
+  }
+  return message;
+}
+
+async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
+  try {
+    const tab = await activeTab();
+    const blocked = protectedPageReason(tab.url);
+    if (blocked) {
+      await recordError(blocked, viaCommand);
+      return { ok: false, reason: blocked };
+    }
+    const tabId = tab.id as number;
+
+    const { snapshot, recorderActive } = await getSnapshot(tabId);
+    const settings = await getSettings();
+    const result = await captureFullPage({ tabId, segmentSize: settings.segmentSize });
+
+    const capturedAt = new Date();
+    const basename = captureBasename(snapshot?.meta.title || tab.title || 'capture', capturedAt);
+    const pngFilename = `${basename}.png`;
+
+    const markdown = buildBundleMarkdown({
+      meta: snapshot?.meta ?? {
+        url: tab.url ?? '',
+        title: tab.title ?? '',
+        viewport: { width: tab.width ?? 0, height: tab.height ?? 0 },
+        userAgent: navigator.userAgent,
+      },
+      contentSize: result.contentSize,
+      fullSize: result.fullSize,
+      truncated: result.truncated,
+      consoleEntries: snapshot?.console ?? [],
+      networkFailures: snapshot?.network ?? [],
+      recorderActive,
+      includeLogs: settings.includeConsoleLogs,
+      capturedAt,
+    });
+    const clipboardMarkdown = buildClipboardMarkdown(markdown, pngFilename);
+
+    await downloadBase64(pngFilename, 'image/png', result.pngBase64);
+    await downloadBase64(`${basename}.md`, 'text/markdown', textToBase64(markdown));
+
+    const lastBundle: LastBundle = {
+      markdown: clipboardMarkdown,
+      pngFilename,
+      at: capturedAt.getTime(),
+    };
+    try {
+      await chrome.storage.session.set({ lastBundle });
+    } catch {
+      /* best-effort */
+    }
+
+    // Best-effort page-side clipboard write. On the keyboard-shortcut path
+    // the page is the focused document, so this is the write that lands; when
+    // the popup is open instead, this quietly fails and the popup (which has
+    // focus) writes the clipboard from the response below.
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: 'COPY_TEXT', text: clipboardMarkdown });
+    } catch {
+      /* no recorder to copy through */
+    }
+
+    if (viaCommand) await flashBadge('OK', '#1e8449');
+    return { ok: true, pngFilename, markdown: clipboardMarkdown };
+  } catch (error) {
+    const reason = describeError(error);
+    console.error('[capture-kit] bundle capture failed:', error);
+    await recordError(reason, viaCommand);
+    return { ok: false, reason };
+  }
+}
+
+async function capturePage(): Promise<CaptureResponse> {
+  try {
+    const tab = await activeTab();
+    const blocked = protectedPageReason(tab.url);
+    if (blocked) {
+      await recordError(blocked, false);
+      return { ok: false, reason: blocked };
+    }
+    const settings = await getSettings();
+    const result = await captureFullPage({
+      tabId: tab.id as number,
+      segmentSize: settings.segmentSize,
+    });
+    const pngFilename = `${captureBasename(tab.title || 'capture', new Date())}.png`;
+    await downloadBase64(pngFilename, 'image/png', result.pngBase64);
+    return { ok: true, pngFilename };
+  } catch (error) {
+    const reason = describeError(error);
+    console.error('[capture-kit] page capture failed:', error);
+    await recordError(reason, false);
+    return { ok: false, reason };
+  }
+}
+
+chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
+  if (message?.type === 'CAPTURE_BUNDLE') {
+    void captureBundle(false).then(sendResponse);
+    return true;
+  }
+  if (message?.type === 'CAPTURE_PAGE') {
+    void capturePage().then(sendResponse);
+    return true;
+  }
+  return false;
+});
+
+chrome.commands.onCommand.addListener((command) => {
+  if (command === 'capture-bundle') void captureBundle(true);
+});
