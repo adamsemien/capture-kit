@@ -61,7 +61,9 @@ interface SnapshotLookup {
 async function getSnapshot(tabId: number): Promise<SnapshotLookup> {
   try {
     const snapshot = (await chrome.tabs.sendMessage(tabId, { type: 'GET_SNAPSHOT' })) as BufferSnapshot;
-    return { snapshot, recorderActive: true };
+    // The isolated half responding isn't enough — the MAIN-world hello beacon
+    // is what proves console/network coverage since page load.
+    return { snapshot, recorderActive: snapshot.mainWorldActive };
   } catch {
     // Recorder missing — the page predates install/reload. Inject the
     // buffer/clipboard half so metadata and clipboard still work, and retry

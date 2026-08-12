@@ -76,6 +76,10 @@ import { RECORDER_EVENT } from '../lib/messages';
     }
   }
 
+  // Presence beacon: lets the isolated world (and the popup) distinguish
+  // "no errors since load" from "recorder never ran on this page".
+  emit({ kind: 'hello' });
+
   // --- Window error events: installed first, the guaranteed-safe baseline ---
 
   try {

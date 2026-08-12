@@ -22,16 +22,27 @@ async function activeTabId(): Promise<number | null> {
   return tab?.id ?? null;
 }
 
+function showRecorderInactive(): void {
+  statsEl.textContent =
+    'Recorder not active — reload this tab to record console/network data.';
+  statsEl.className = 'stats warn';
+}
+
 async function refreshStats(): Promise<void> {
   try {
     const tabId = await activeTabId();
     if (tabId === null) throw new Error('no tab');
     const stats = (await chrome.tabs.sendMessage(tabId, { type: 'GET_STATS' })) as BufferStats;
+    if (!stats.mainWorldActive) {
+      showRecorderInactive();
+      return;
+    }
     const consoleWord = stats.consoleCount === 1 ? 'entry' : 'entries';
     const networkWord = stats.networkCount === 1 ? 'failure' : 'failures';
+    statsEl.className = 'stats';
     statsEl.textContent = `${stats.consoleCount} console ${consoleWord}, ${stats.networkCount} network ${networkWord} recorded on this page.`;
   } catch {
-    statsEl.textContent = 'Recorder not active on this page.';
+    showRecorderInactive();
   }
 }
 

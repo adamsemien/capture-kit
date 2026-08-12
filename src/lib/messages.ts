@@ -37,15 +37,20 @@ export interface BufferSnapshot {
   console: ConsoleEntry[];
   network: NetworkFailure[];
   meta: PageMeta;
+  /** True when the MAIN-world recorder ran on this page since load. */
+  mainWorldActive: boolean;
 }
 
 export interface BufferStats {
   consoleCount: number;
   networkCount: number;
+  /** True when the MAIN-world recorder ran on this page since load. */
+  mainWorldActive: boolean;
 }
 
 /** MAIN world → isolated world, serialized to JSON so it crosses as a primitive. */
 export type RecorderEventDetail =
+  | { kind: 'hello' }
   | { kind: 'console'; entry: ConsoleEntry }
   | { kind: 'network'; entry: NetworkFailure };
 

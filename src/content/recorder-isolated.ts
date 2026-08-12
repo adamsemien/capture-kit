@@ -21,6 +21,9 @@ import { CONSOLE_BUFFER_CAP, NETWORK_BUFFER_CAP, RECORDER_EVENT } from '../lib/m
 
   const consoleBuffer: ConsoleEntry[] = [];
   const networkBuffer: NetworkFailure[] = [];
+  // Set by the MAIN-world recorder's hello beacon. Stays false on pages where
+  // this script was injected after load (no MAIN-world coverage since load).
+  let mainWorldActive = false;
 
   function pushCapped<T>(buffer: T[], cap: number, entry: T): void {
     buffer.push(entry);
@@ -43,7 +46,12 @@ import { CONSOLE_BUFFER_CAP, NETWORK_BUFFER_CAP, RECORDER_EVENT } from '../lib/m
       const raw = (event as CustomEvent).detail;
       if (typeof raw !== 'string') return;
       const detail = JSON.parse(raw) as { kind?: unknown; entry?: unknown };
-      if (!detail || typeof detail.entry !== 'object' || detail.entry === null) return;
+      if (!detail) return;
+      if (detail.kind === 'hello') {
+        mainWorldActive = true;
+        return;
+      }
+      if (typeof detail.entry !== 'object' || detail.entry === null) return;
       const entry = detail.entry as Record<string, unknown>;
 
       if (detail.kind === 'console') {
@@ -103,6 +111,7 @@ import { CONSOLE_BUFFER_CAP, NETWORK_BUFFER_CAP, RECORDER_EVENT } from '../lib/m
           viewport: { width: window.innerWidth, height: window.innerHeight },
           userAgent: navigator.userAgent,
         },
+        mainWorldActive,
       };
       sendResponse(snapshot);
       return false;
@@ -111,6 +120,7 @@ import { CONSOLE_BUFFER_CAP, NETWORK_BUFFER_CAP, RECORDER_EVENT } from '../lib/m
       const stats: BufferStats = {
         consoleCount: consoleBuffer.length,
         networkCount: networkBuffer.length,
+        mainWorldActive,
       };
       sendResponse(stats);
       return false;

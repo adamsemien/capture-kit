@@ -77,3 +77,7 @@ button:disabled {
   color: #6e6e78;
   font-size: 12px;
 }
+
+.stats.warn {
+  color: #d8a05a;
+}
