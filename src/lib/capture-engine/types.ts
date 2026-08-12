@@ -3,14 +3,21 @@ export interface PageDimensions {
   height: number;
 }
 
+export type CaptureFormat = 'png' | 'jpeg';
+
+/** CDP quality is 0–100; canvas encoding divides by 100. */
+export const JPEG_QUALITY = 85;
+
 export interface CaptureRequest {
   tabId: number;
   /** Max px per segment dimension; pages larger per axis are captured in segments. */
   segmentSize: number;
+  format: CaptureFormat;
 }
 
 export interface CaptureResult {
-  pngBase64: string;
+  imageBase64: string;
+  format: CaptureFormat;
   /** Actual captured size after canvas-limit clamping. */
   fullSize: PageDimensions;
   /** Content size the page reported (may exceed fullSize when truncated). */

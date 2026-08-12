@@ -48,6 +48,13 @@ h1 {
   margin: 0;
 }
 
+.radio {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 4px 0;
+}
+
 input[type='number'] {
   width: 120px;
   padding: 6px 8px;

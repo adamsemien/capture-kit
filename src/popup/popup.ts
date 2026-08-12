@@ -73,7 +73,7 @@ capturePageBtn.addEventListener('click', () => {
     setStatus('capturing…');
     const response = (await chrome.runtime.sendMessage({ type: 'CAPTURE_PAGE' })) as CaptureResponse;
     if (response.ok) {
-      setStatus(`Done — saved ${response.pngFilename}.`, 'ok');
+      setStatus(`Done — saved ${response.imageFilename}.`, 'ok');
     } else {
       setStatus(response.reason, 'error');
     }

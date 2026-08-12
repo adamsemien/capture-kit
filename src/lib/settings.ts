@@ -1,14 +1,23 @@
+import type { CaptureFormat } from './capture-engine/types';
+
 export interface Settings {
   /** Max capture dimension per segment, px. Pages larger than this per axis are captured in segments. */
   segmentSize: number;
   /** Whether log-level console entries appear in bundles (errors + warnings always do). */
   includeConsoleLogs: boolean;
+  /** Image format for Capture Bundle. The Capture Page button always saves PNG. */
+  bundleFormat: CaptureFormat;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   segmentSize: 8192,
   includeConsoleLogs: true,
+  bundleFormat: 'jpeg',
 };
+
+export function normalizeBundleFormat(value: unknown): CaptureFormat {
+  return value === 'png' ? 'png' : 'jpeg';
+}
 
 export const SEGMENT_SIZE_MIN = 1024;
 export const SEGMENT_SIZE_MAX = 16384;
@@ -23,6 +32,7 @@ export async function getSettings(): Promise<Settings> {
   return {
     segmentSize: clampSegmentSize(stored.segmentSize),
     includeConsoleLogs: Boolean(stored.includeConsoleLogs),
+    bundleFormat: normalizeBundleFormat(stored.bundleFormat),
   };
 }
 
@@ -30,5 +40,6 @@ export async function saveSettings(settings: Settings): Promise<void> {
   await chrome.storage.sync.set({
     segmentSize: clampSegmentSize(settings.segmentSize),
     includeConsoleLogs: settings.includeConsoleLogs,
+    bundleFormat: normalizeBundleFormat(settings.bundleFormat),
   });
 }

@@ -114,7 +114,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
   return parts.join('\n\n') + '\n';
 }
 
-/** Clipboard variant: same markdown with a one-line pointer to the PNG on top. */
-export function buildClipboardMarkdown(markdown: string, pngFilename: string): string {
-  return `> Screenshot saved as \`${pngFilename}\` — attach it alongside this report.\n\n${markdown}`;
+/** Clipboard variant: same markdown with a one-line pointer to the image on top. */
+export function buildClipboardMarkdown(markdown: string, imageFilename: string): string {
+  return `> Screenshot saved as \`${imageFilename}\` — attach it alongside this report.\n\n${markdown}`;
 }

@@ -1,4 +1,5 @@
 import { base64ToBlob, blobToBase64 } from '../base64';
+import { JPEG_QUALITY, type CaptureFormat } from './types';
 
 // Chrome's canvas limits: ~32,767px per dimension and ~2^28 px² of area.
 // Beyond these, canvas creation or drawing fails silently with blank output,
@@ -54,7 +55,12 @@ export class SegmentCanvas {
     bitmap.close();
   }
 
-  async toPngBase64(): Promise<string> {
-    return blobToBase64(await this.canvas.convertToBlob({ type: 'image/png' }));
+  async toBase64(format: CaptureFormat): Promise<string> {
+    const blob = await this.canvas.convertToBlob(
+      format === 'jpeg'
+        ? { type: 'image/jpeg', quality: JPEG_QUALITY / 100 }
+        : { type: 'image/png' },
+    );
+    return blobToBase64(blob);
   }
 }

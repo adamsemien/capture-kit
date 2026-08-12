@@ -59,13 +59,13 @@ export type TabMessage =
   | { type: 'COPY_TEXT'; text: string };
 
 export type CaptureResponse =
-  | { ok: true; pngFilename: string; markdown?: string }
+  | { ok: true; imageFilename: string; markdown?: string }
   | { ok: false; reason: string };
 
 /** Stored in chrome.storage.session — survives service-worker death. */
 export interface LastBundle {
   markdown: string;
-  pngFilename: string;
+  imageFilename: string;
   at: number;
 }
 

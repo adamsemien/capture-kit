@@ -1,4 +1,5 @@
-import type { CaptureRequest, CaptureResult, CaptureStrategy } from './types';
+import type { CaptureFormat, CaptureRequest, CaptureResult, CaptureStrategy } from './types';
+import { JPEG_QUALITY } from './types';
 import { SegmentCanvas, clampDimensions, planScrollOffsets } from './segments';
 
 const CDP_VERSION = '1.3';
@@ -110,7 +111,7 @@ export class CdpFullPageStrategy implements CaptureStrategy {
       const fitsInOneShot =
         contentSize.width <= request.segmentSize && contentSize.height <= request.segmentSize;
       return fitsInOneShot
-        ? await this.captureSingleShot(target, contentSize)
+        ? await this.captureSingleShot(target, contentSize, request.format)
         : await this.captureSegmented(target, contentSize, request);
     } finally {
       // Detach immediately, capture success or not. May already be detached
@@ -132,14 +133,16 @@ export class CdpFullPageStrategy implements CaptureStrategy {
   private async captureSingleShot(
     target: chrome.debugger.Debuggee,
     contentSize: { width: number; height: number },
+    format: CaptureFormat,
   ): Promise<CaptureResult> {
     const shot = await sendCommand<ScreenshotResult>(target, 'Page.captureScreenshot', {
-      format: 'png',
+      ...(format === 'jpeg' ? { format: 'jpeg', quality: JPEG_QUALITY } : { format: 'png' }),
       captureBeyondViewport: true,
       clip: { x: 0, y: 0, width: contentSize.width, height: contentSize.height, scale: 1 },
     });
     return {
-      pngBase64: shot.data,
+      imageBase64: shot.data,
+      format,
       fullSize: contentSize,
       contentSize,
       truncated: false,
@@ -203,8 +206,11 @@ export class CdpFullPageStrategy implements CaptureStrategy {
         }
       }
 
+      // Segments are always captured as PNG (lossless intermediates); the
+      // joined canvas encodes once into the requested output format.
       return {
-        pngBase64: await canvas.toPngBase64(),
+        imageBase64: await canvas.toBase64(request.format),
+        format: request.format,
         fullSize: { width, height },
         contentSize: naturalSize,
         truncated,

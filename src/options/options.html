@@ -17,6 +17,18 @@
         <input id="include-logs" type="checkbox" />
         <span>Include log-level console entries in bundles (errors and warnings are always included)</span>
       </label>
+      <div class="field">
+        <span>Bundle image format</span>
+        <label class="radio">
+          <input type="radio" name="bundle-format" value="jpeg" />
+          JPEG — smaller files (default)
+        </label>
+        <label class="radio">
+          <input type="radio" name="bundle-format" value="png" />
+          PNG — lossless
+        </label>
+        <small>The "Capture Page" button always saves PNG.</small>
+      </div>
       <p id="status" class="status"></p>
     </main>
     <script src="options.js"></script>

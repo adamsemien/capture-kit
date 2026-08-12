@@ -129,11 +129,16 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
 
     const { snapshot, recorderActive } = await getSnapshot(tabId);
     const settings = await getSettings();
-    const result = await captureFullPage({ tabId, segmentSize: settings.segmentSize });
+    const result = await captureFullPage({
+      tabId,
+      segmentSize: settings.segmentSize,
+      format: settings.bundleFormat,
+    });
 
     const capturedAt = new Date();
     const basename = captureBasename(snapshot?.meta.title || tab.title || 'capture', capturedAt);
-    const pngFilename = `${basename}.png`;
+    const isJpeg = result.format === 'jpeg';
+    const imageFilename = `${basename}.${isJpeg ? 'jpg' : 'png'}`;
 
     const markdown = buildBundleMarkdown({
       meta: snapshot?.meta ?? {
@@ -151,14 +156,14 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
       includeLogs: settings.includeConsoleLogs,
       capturedAt,
     });
-    const clipboardMarkdown = buildClipboardMarkdown(markdown, pngFilename);
+    const clipboardMarkdown = buildClipboardMarkdown(markdown, imageFilename);
 
-    await downloadBase64(pngFilename, 'image/png', result.pngBase64);
+    await downloadBase64(imageFilename, isJpeg ? 'image/jpeg' : 'image/png', result.imageBase64);
     await downloadBase64(`${basename}.md`, 'text/markdown', textToBase64(markdown));
 
     const lastBundle: LastBundle = {
       markdown: clipboardMarkdown,
-      pngFilename,
+      imageFilename,
       at: capturedAt.getTime(),
     };
     try {
@@ -178,7 +183,7 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
     }
 
     if (viaCommand) await flashBadge('OK', '#1e8449');
-    return { ok: true, pngFilename, markdown: clipboardMarkdown };
+    return { ok: true, imageFilename, markdown: clipboardMarkdown };
   } catch (error) {
     const reason = describeError(error);
     console.error('[capture-kit] bundle capture failed:', error);
@@ -196,13 +201,15 @@ async function capturePage(): Promise<CaptureResponse> {
       return { ok: false, reason: blocked };
     }
     const settings = await getSettings();
+    // The Capture Page button is PNG-only by contract.
     const result = await captureFullPage({
       tabId: tab.id as number,
       segmentSize: settings.segmentSize,
+      format: 'png',
     });
-    const pngFilename = `${captureBasename(tab.title || 'capture', new Date())}.png`;
-    await downloadBase64(pngFilename, 'image/png', result.pngBase64);
-    return { ok: true, pngFilename };
+    const imageFilename = `${captureBasename(tab.title || 'capture', new Date())}.png`;
+    await downloadBase64(imageFilename, 'image/png', result.imageBase64);
+    return { ok: true, imageFilename };
   } catch (error) {
     const reason = describeError(error);
     console.error('[capture-kit] page capture failed:', error);
