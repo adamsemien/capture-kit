@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>capture-kit settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <h1>capture-kit settings</h1>
+      <label class="field">
+        <span>Segment size cap (px)</span>
+        <input id="segment-size" type="number" min="1024" max="16384" step="256" />
+        <small>Pages larger than this per dimension are captured in segments and joined. Default 8192.</small>
+      </label>
+      <label class="field checkbox">
+        <input id="include-logs" type="checkbox" />
+        <span>Include log-level console entries in bundles (errors and warnings are always included)</span>
+      </label>
+      <p id="status" class="status"></p>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

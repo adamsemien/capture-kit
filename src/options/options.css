@@ -1,0 +1,64 @@
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: #17171a;
+  color: #d9d9de;
+  font: 14px/1.5 system-ui, sans-serif;
+}
+
+main {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+h1 {
+  margin: 0 0 24px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #8f8f98;
+}
+
+.field {
+  display: block;
+  margin-bottom: 20px;
+}
+
+.field > span {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.field small {
+  display: block;
+  margin-top: 6px;
+  color: #6e6e78;
+}
+
+.field.checkbox {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.field.checkbox > span {
+  margin: 0;
+}
+
+input[type='number'] {
+  width: 120px;
+  padding: 6px 8px;
+  border: 1px solid #2c2c33;
+  border-radius: 6px;
+  background: #202027;
+  color: #e6e6ea;
+  font: inherit;
+}
+
+.status {
+  min-height: 1.4em;
+  color: #7ec98f;
+}
