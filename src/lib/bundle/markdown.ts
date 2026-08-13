@@ -18,6 +18,8 @@ export interface BundleInput {
   captureMode: CaptureMode;
   /** Count of scroll-reveal elements that had to be force-revealed for this capture. */
   revealForced: number;
+  /** Segments stitched for the image (1 = true single-shot). */
+  segments: number;
 }
 
 function pad(value: number): string {
@@ -45,10 +47,33 @@ function escapeCell(value: string): string {
   return value.replace(/\|/g, '\\|');
 }
 
-/** Human-readable capture-mode string shared by the bundle metadata and the result page. */
-export function captureModeLabel(mode: CaptureMode, revealForced: number): string {
-  const base = mode === 'expanded-inner-scroll' ? 'expanded inner scroll' : 'standard';
-  return revealForced > 0 ? `${base} + reveal-forced (${revealForced} elements)` : base;
+/**
+ * Printed in place of console/network content when the MAIN-world recorder
+ * never ran on this page — the same signal the popup shows its amber warning
+ * for (BufferSnapshot.mainWorldActive). "Unavailable" and "none" are very
+ * different findings; only one of them is true here.
+ */
+const RECORDER_INACTIVE_NOTE =
+  '> **Recorder not active for this page — console and network data unavailable (NOT a clean page).** ' +
+  'The recorder hooks console and network at page load, so it cannot cover a tab that was already open ' +
+  'when the extension was installed or reloaded. Reload the tab, reproduce the issue, then capture again.';
+
+/**
+ * Human-readable capture-mode string shared by the bundle metadata and the
+ * result page. States the strategy AND the path actually taken, because an
+ * AI assistant reading the report cannot tell a true one-shot from a
+ * scroll-and-stitch otherwise — and stitched captures have different failure
+ * modes (vh re-measure, virtualized content).
+ */
+export function captureModeLabel(
+  mode: CaptureMode,
+  revealForced: number,
+  segments: number,
+): string {
+  const strategy = mode === 'expanded-inner-scroll' ? 'expanded inner scroll' : 'standard';
+  const path = segments > 1 ? `segmented, ${segments} segments` : 'single-shot';
+  const reveal = revealForced > 0 ? ` + reveal-forced (${revealForced} elements)` : '';
+  return `${strategy}, ${path}${reveal}`;
 }
 
 export function buildBundleMarkdown(input: BundleInput): string {
@@ -68,7 +93,12 @@ export function buildBundleMarkdown(input: BundleInput): string {
       `- **Captured at:** ${input.capturedAt.toISOString()}`,
       `- **Viewport:** ${meta.viewport.width}×${meta.viewport.height}`,
       `- **Full page:** ${input.contentSize.width}×${input.contentSize.height}`,
-      `- **Capture mode:** ${captureModeLabel(input.captureMode, input.revealForced)}`,
+      `- **Capture mode:** ${captureModeLabel(input.captureMode, input.revealForced, input.segments)}`,
+      `- **Recorder:** ${
+        input.recorderActive
+          ? 'active since page load — console and network data below are complete'
+          : 'NOT ACTIVE for this page — console and network data are unavailable, not empty'
+      }`,
       `- **User agent:** ${meta.userAgent}`,
     ].join('\n'),
   );
@@ -79,12 +109,20 @@ export function buildBundleMarkdown(input: BundleInput): string {
     );
   }
 
-  parts.push('## Console');
+  // When the recorder never ran, we were not listening — saying "no errors
+  // captured" would report a clean page to a reader who cannot tell the
+  // difference. State the gap instead, and print no counts at all.
   if (!input.recorderActive) {
-    parts.push(
-      '> The recorder was not active on this page since load (it starts at page load — reload the page after installing or updating the extension). Console and network data below may be missing.',
-    );
+    parts.push('## Console');
+    parts.push(RECORDER_INACTIVE_NOTE);
+    parts.push('## Network Failures');
+    parts.push(RECORDER_INACTIVE_NOTE);
+    parts.push('## Notes');
+    parts.push('');
+    return parts.join('\n\n') + '\n';
   }
+
+  parts.push('## Console');
 
   parts.push(`### Errors (${errors.length})`);
   parts.push(

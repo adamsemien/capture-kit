@@ -4,6 +4,11 @@ export function slugify(title: string): string {
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
+    // Typographic punctuation common in page titles: em/en dashes as in
+    // "Chateau Chloe - The Rooms", curly quotes, primes, "Section: Name",
+    // path separators. The catch-all below folds these anyway; they are
+    // explicit so the intent survives future edits.
+    .replace(/[\u2010-\u2015\u2018\u2019\u201c\u201d\u2032\u2033:|/\\]+/g, '-')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 60)

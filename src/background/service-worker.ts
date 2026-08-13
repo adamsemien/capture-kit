@@ -96,32 +96,17 @@ async function getSnapshot(tabId: number): Promise<SnapshotLookup> {
 // pointed at one path once and always read the newest capture.
 const DOWNLOAD_SUBFOLDER = 'capture-kit';
 
-// Re-assert our intended filename during Chrome's filename-determination
-// phase. Third-party extensions (download managers) that listen to
-// onDeterminingFilename override the filename passed to downloads.download(),
-// which is how every capture ends up as "download (1)". Among competing
-// listeners Chrome lets the most recently installed extension win — for an
-// unpacked extension that is us. Our downloads are initiated sequentially
-// (each awaited), so a FIFO of intended names maps onto event order.
-interface IntendedDownload {
-  filename: string;
-  conflictAction: 'overwrite' | 'uniquify';
-}
-const intendedDownloads: IntendedDownload[] = [];
-
-chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
-  if (item.byExtensionId !== chrome.runtime.id) {
-    suggest();
-    return;
-  }
-  const intended = intendedDownloads.shift();
-  if (intended) {
-    suggest({ filename: intended.filename, conflictAction: intended.conflictAction });
-  } else {
-    suggest();
-  }
-});
-
+// NO onDeterminingFilename listener here, deliberately. An earlier build
+// registered one to "re-assert" the filename; measurement showed it was the
+// bug, not the fix. Whenever that listener had no matching record — trivially
+// reachable, since its queue lived in memory and an MV3 worker can be torn
+// down between download() and the event — it called bare suggest(), which
+// tells Chrome to use its OWN default. For a data: URL that default is
+// literally "download" + an extension from the MIME type, producing
+// "download (10).jpeg". The filename passed to downloads.download() is
+// honored on its own; the listener could only ever lose (a third-party
+// download manager that listens wins by install recency regardless). The
+// name check below is the tripwire that makes any such interference visible.
 async function downloadBase64(
   filename: string,
   mime: string,
@@ -130,20 +115,37 @@ async function downloadBase64(
 ): Promise<number> {
   const fullPath = `${DOWNLOAD_SUBFOLDER}/${filename}`;
   const conflictAction: 'overwrite' | 'uniquify' = overwrite ? 'overwrite' : 'uniquify';
-  console.log(`[capture-kit] download filename: "${fullPath}" (${conflictAction})`);
-  intendedDownloads.push({ filename: fullPath, conflictAction });
+  let id: number;
   try {
-    return await chrome.downloads.download({
+    id = await chrome.downloads.download({
       url: `data:${mime};base64,${base64}`,
       filename: fullPath,
       conflictAction,
     });
   } catch (error) {
-    // Keep the FIFO in sync — a rejected call never reaches the determiner.
-    const index = intendedDownloads.findIndex((d) => d.filename === fullPath);
-    if (index !== -1) intendedDownloads.splice(index, 1);
     console.error(`[capture-kit] downloads.download rejected "${fullPath}":`, error);
     throw error;
+  }
+  void verifyDownloadedName(id, fullPath);
+  return id;
+}
+
+/** Tripwire: warn if what landed on disk isn't what we asked for. */
+async function verifyDownloadedName(id: number, requested: string): Promise<void> {
+  try {
+    await waitForDownloadComplete(id);
+    const [item] = await chrome.downloads.search({ id });
+    if (!item?.filename) return;
+    const actual = item.filename.split(/[\\/]/).pop() ?? '';
+    const expected = requested.split('/').pop() ?? '';
+    if (actual !== expected) {
+      console.warn(
+        `[capture-kit] filename was overridden: requested "${expected}", saved as "${actual}". ` +
+          'Another extension is claiming chrome.downloads.onDeterminingFilename.',
+      );
+    }
+  } catch {
+    /* the tripwire must never affect the capture */
   }
 }
 
@@ -301,6 +303,7 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
       imageFilename,
       captureMode: result.mode,
       revealForced: result.revealForced,
+      segments: result.segments,
     });
     const clipboardMarkdown = buildClipboardMarkdown(markdown, imageFilename);
 
@@ -343,7 +346,7 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
       await openResultTab(
         {
           kind: 'bundle',
-          captureModeLabel: captureModeLabel(result.mode, result.revealForced),
+          captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments),
           images: [
             {
               filename: imageFilename,
@@ -391,7 +394,7 @@ async function capturePage(): Promise<CaptureResponse> {
       await openResultTab(
         {
           kind: 'page',
-          captureModeLabel: captureModeLabel(result.mode, result.revealForced),
+          captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments),
           images: [
             {
               filename: imageFilename,
@@ -460,7 +463,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
       await openResultTab(
         {
           kind: 'sweep',
-          captureModeLabel: captureModeLabel(first.mode, first.revealForced),
+          captureModeLabel: captureModeLabel(first.mode, first.revealForced, first.segments),
           images: outcome.captures.map((capture, index) => ({
             filename: `${basename}_w${capture.width}.jpg`,
             label: `${capture.width} px`,
