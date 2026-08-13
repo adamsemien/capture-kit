@@ -16,6 +16,8 @@ export interface BundleInput {
   /** Timestamped image filename this bundle's screenshot was saved under. */
   imageFilename: string;
   captureMode: CaptureMode;
+  /** Count of scroll-reveal elements that had to be force-revealed for this capture. */
+  revealForced: number;
 }
 
 function pad(value: number): string {
@@ -60,7 +62,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
       `- **Captured at:** ${input.capturedAt.toISOString()}`,
       `- **Viewport:** ${meta.viewport.width}×${meta.viewport.height}`,
       `- **Full page:** ${input.contentSize.width}×${input.contentSize.height}`,
-      `- **Capture mode:** ${input.captureMode === 'expanded-inner-scroll' ? 'expanded inner scroll' : 'standard'}`,
+      `- **Capture mode:** ${input.captureMode === 'expanded-inner-scroll' ? 'expanded inner scroll' : 'standard'}${input.revealForced > 0 ? ` + reveal-forced (${input.revealForced} elements)` : ''}`,
       `- **User agent:** ${meta.userAgent}`,
     ].join('\n'),
   );

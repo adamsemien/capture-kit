@@ -57,12 +57,90 @@ async function readContentSize(
   return { width: Math.ceil(raw.width), height: Math.ceil(raw.height) };
 }
 
-function scrollAndSettleScript(x: number, y: number): string {
+function scrollAndSettleScript(x: number, y: number, settleMs = 0): string {
   return `(async () => {
     window.scrollTo({ left: ${x}, top: ${y}, behavior: 'instant' });
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    ${settleMs > 0 ? `await new Promise((resolve) => setTimeout(resolve, ${settleMs}));` : ''}
     return { x: window.scrollX, y: window.scrollY };
   })()`;
+}
+
+// Extra per-segment settle so IntersectionObserver-driven reveal states
+// commit before the segment is captured (reveal handlers run after the
+// scroll, and with transitions frozen the final state applies in one frame —
+// the delay covers the observer callback + style recalc).
+const SEGMENT_SETTLE_MS = 120;
+const REVEAL_SETTLE_MS = 90;
+const MAX_REVEAL_STEPS = 30;
+
+// Scroll-reveal neutralization. Pages that reveal sections on scroll
+// (IntersectionObserver toggling opacity/transform) captured those sections
+// black/empty. During capture: freeze all animations/transitions, run one
+// scroll pass through the page so observers fire naturally, then force the
+// stragglers that are still computed-hidden — specific elements only, never
+// a blanket *{opacity:1}, which would reveal intentionally hidden UI.
+const FREEZE_SCRIPT = `(() => {
+  if (document.getElementById('__capture_kit_freeze__')) return;
+  const style = document.createElement('style');
+  style.id = '__capture_kit_freeze__';
+  style.textContent = '*{animation:none !important;transition:none !important;}';
+  document.documentElement.appendChild(style);
+})()`;
+
+const UNFREEZE_SCRIPT = `(() => {
+  const style = document.getElementById('__capture_kit_freeze__');
+  if (style) style.remove();
+})()`;
+
+const FORCE_REVEAL_SCRIPT = `(() => {
+  const ATTR = 'data-capture-kit-force-reveal';
+  const STYLE_ID = '__capture_kit_force_reveal__';
+  let count = 0;
+  for (const el of document.querySelectorAll('*')) {
+    let cs;
+    try { cs = getComputedStyle(el); } catch { continue; }
+    if (cs.position === 'fixed') continue;
+    if (cs.display === 'none') continue;
+    const hidden = parseFloat(cs.opacity) === 0 || cs.visibility === 'hidden';
+    if (!hidden) continue;
+    el.setAttribute(ATTR, '');
+    count += 1;
+  }
+  if (count > 0 && !document.getElementById(STYLE_ID)) {
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent =
+      '[' + ATTR + ']{opacity:1 !important;visibility:visible !important;transform:none !important;}';
+    document.documentElement.appendChild(style);
+  }
+  return count;
+})()`;
+
+const UNFORCE_REVEAL_SCRIPT = `(() => {
+  const style = document.getElementById('__capture_kit_force_reveal__');
+  if (style) style.remove();
+  for (const el of document.querySelectorAll('[data-capture-kit-force-reveal]')) {
+    el.removeAttribute('data-capture-kit-force-reveal');
+  }
+})()`;
+
+// One pass down the page in real-viewport steps so IntersectionObservers
+// fire for every section (capped — the residual force catches anything a
+// coarse pass skips on extremely tall pages).
+async function revealScrollPass(target: chrome.debugger.Debuggee): Promise<void> {
+  const viewport = await evaluateInPage<number>(target, 'window.innerHeight || 800');
+  const size = await readContentSize(target);
+  const maxY = Math.max(0, size.height - viewport);
+  if (maxY === 0) return;
+  const stepCount = Math.min(MAX_REVEAL_STEPS, Math.ceil(maxY / viewport) + 1);
+  const stride = maxY / Math.max(1, stepCount - 1);
+  for (let i = 0; i < stepCount; i++) {
+    await evaluateInPage<ScrollPosition>(
+      target,
+      scrollAndSettleScript(0, Math.round(i * stride), REVEAL_SETTLE_MS),
+    );
+  }
 }
 
 // Sticky/fixed neutralization for the scroll-based segmented path. Without
@@ -109,19 +187,58 @@ export async function captureAttached(
   target: chrome.debugger.Debuggee,
   request: CaptureRequest,
 ): Promise<CaptureResult> {
-  const contentSize = await readContentSize(target);
-  // The one-shot surface is allocated at devicePixelRatio, so the safe
-  // ceiling is SINGLE_SHOT_SURFACE_LIMIT device px per axis — on Retina
-  // (DPR 2) a ~9k CSS-px page overflows it and comes back all black.
-  // The segmented path is immune (deviceScaleFactor: 1 override).
-  const dpr = await evaluateInPage<number>(target, 'window.devicePixelRatio || 1');
-  const surfaceCap = Math.floor(SINGLE_SHOT_SURFACE_LIMIT / Math.max(1, dpr || 1));
-  const singleShotCap = Math.min(request.segmentSize, surfaceCap);
-  const fitsInOneShot =
-    contentSize.width <= singleShotCap && contentSize.height <= singleShotCap;
-  return fitsInOneShot
-    ? captureSingleShot(target, contentSize, request.format)
-    : captureSegmented(target, contentSize, request);
+  const originalScroll = await evaluateInPage<ScrollPosition>(
+    target,
+    '({ x: window.scrollX, y: window.scrollY })',
+  );
+  let frozen = false;
+  let revealForced = 0;
+  try {
+    await evaluateInPage<void>(target, FREEZE_SCRIPT);
+    frozen = true;
+    await revealScrollPass(target);
+    revealForced = await evaluateInPage<number>(target, FORCE_REVEAL_SCRIPT);
+
+    // Measure AFTER reveal handling — forcing transform:none on translated
+    // reveal elements can change the layout height.
+    const contentSize = await readContentSize(target);
+    // The one-shot surface is allocated at devicePixelRatio, so the safe
+    // ceiling is SINGLE_SHOT_SURFACE_LIMIT device px per axis — on Retina
+    // (DPR 2) a ~9k CSS-px page overflows it and comes back all black.
+    // The segmented path is immune (deviceScaleFactor: 1 override).
+    const dpr = await evaluateInPage<number>(target, 'window.devicePixelRatio || 1');
+    const surfaceCap = Math.floor(SINGLE_SHOT_SURFACE_LIMIT / Math.max(1, dpr || 1));
+    const singleShotCap = Math.min(request.segmentSize, surfaceCap);
+    const fitsInOneShot =
+      contentSize.width <= singleShotCap && contentSize.height <= singleShotCap;
+    const result = fitsInOneShot
+      ? await captureSingleShot(target, contentSize, request.format)
+      : await captureSegmented(target, contentSize, request);
+    return { ...result, revealForced };
+  } finally {
+    if (revealForced > 0) {
+      try {
+        await evaluateInPage<void>(target, UNFORCE_REVEAL_SCRIPT);
+      } catch {
+        /* page navigated away mid-capture */
+      }
+    }
+    if (frozen) {
+      try {
+        await evaluateInPage<void>(target, UNFREEZE_SCRIPT);
+      } catch {
+        /* best-effort restore */
+      }
+    }
+    try {
+      await evaluateInPage<void>(
+        target,
+        `window.scrollTo(${originalScroll.x}, ${originalScroll.y})`,
+      );
+    } catch {
+      /* best-effort restore */
+    }
+  }
 }
 
 // An origin clip combined with captureBeyondViewport is reliable, and
@@ -148,6 +265,7 @@ async function captureSingleShot(
     contentSize,
     truncated: false,
     segments: 1,
+    revealForced: 0,
   };
 }
 
@@ -196,7 +314,7 @@ async function captureSegmented(
       for (const x of xOffsets) {
         const reached = await evaluateInPage<ScrollPosition>(
           target,
-          scrollAndSettleScript(x, y),
+          scrollAndSettleScript(x, y, SEGMENT_SETTLE_MS),
         );
         const shot = await sendCommand<ScreenshotResult>(target, 'Page.captureScreenshot', {
           format: 'png',
@@ -217,6 +335,7 @@ async function captureSegmented(
       contentSize: naturalSize,
       truncated,
       segments,
+      revealForced: 0,
     };
   } finally {
     if (unstuck) {

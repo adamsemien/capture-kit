@@ -262,6 +262,7 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
       capturedAt,
       imageFilename,
       captureMode: result.mode,
+      revealForced: result.revealForced,
     });
     const clipboardMarkdown = buildClipboardMarkdown(markdown, imageFilename);
 

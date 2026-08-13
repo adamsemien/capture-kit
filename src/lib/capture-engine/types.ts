@@ -37,6 +37,8 @@ export interface CaptureResult {
   contentSize: PageDimensions;
   truncated: boolean;
   segments: number;
+  /** Elements still computed-hidden after the reveal scroll pass that were force-revealed. */
+  revealForced: number;
 }
 
 /**
