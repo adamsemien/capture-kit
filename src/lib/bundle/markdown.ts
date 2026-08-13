@@ -1,6 +1,6 @@
 import type { ConsoleEntry, NetworkFailure, PageMeta } from '../messages';
 import { CONSOLE_LOGS_IN_BUNDLE } from '../messages';
-import type { PageDimensions } from '../capture-engine/types';
+import type { CaptureMode, PageDimensions } from '../capture-engine/types';
 
 export interface BundleInput {
   meta: PageMeta;
@@ -15,6 +15,7 @@ export interface BundleInput {
   capturedAt: Date;
   /** Timestamped image filename this bundle's screenshot was saved under. */
   imageFilename: string;
+  captureMode: CaptureMode;
 }
 
 function pad(value: number): string {
@@ -59,6 +60,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
       `- **Captured at:** ${input.capturedAt.toISOString()}`,
       `- **Viewport:** ${meta.viewport.width}×${meta.viewport.height}`,
       `- **Full page:** ${input.contentSize.width}×${input.contentSize.height}`,
+      `- **Capture mode:** ${input.captureMode === 'expanded-inner-scroll' ? 'expanded inner scroll' : 'standard'}`,
       `- **User agent:** ${meta.userAgent}`,
     ].join('\n'),
   );

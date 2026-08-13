@@ -172,6 +172,7 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
       includeLogs: settings.includeConsoleLogs,
       capturedAt,
       imageFilename,
+      captureMode: result.mode,
     });
     const clipboardMarkdown = buildClipboardMarkdown(markdown, imageFilename);
 

@@ -150,6 +150,7 @@ export class CdpFullPageStrategy implements CaptureStrategy {
     return {
       imageBase64: shot.data,
       format,
+      mode: 'standard',
       fullSize: contentSize,
       contentSize,
       truncated: false,
@@ -218,6 +219,7 @@ export class CdpFullPageStrategy implements CaptureStrategy {
       return {
         imageBase64: await canvas.toBase64(request.format),
         format: request.format,
+        mode: 'standard',
         fullSize: { width, height },
         contentSize: naturalSize,
         truncated,

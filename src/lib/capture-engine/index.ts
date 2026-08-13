@@ -1,8 +1,10 @@
 import type { CaptureRequest, CaptureResult, CaptureStrategy } from './types';
 import { CdpFullPageStrategy } from './cdp-fullpage';
+import { InnerScrollExpansionStrategy, detectInnerScroll } from './inner-scroll';
 
 export type {
   CaptureFormat,
+  CaptureMode,
   CaptureRequest,
   CaptureResult,
   CaptureStrategy,
@@ -10,13 +12,17 @@ export type {
 } from './types';
 
 /**
- * Phase 1 ships exactly one strategy. Phase 2 (inner scrollable containers)
- * registers its strategy here and this picker chooses per capture.
+ * Per-capture strategy picker. Pages where the document barely scrolls but a
+ * dominant inner scroller holds the content (Notion, Linear, Airtable) get
+ * the expansion strategy; everything else gets the plain CDP pipeline.
  */
-export function getCaptureStrategy(): CaptureStrategy {
-  return new CdpFullPageStrategy();
+export async function getCaptureStrategy(tabId: number): Promise<CaptureStrategy> {
+  return (await detectInnerScroll(tabId))
+    ? new InnerScrollExpansionStrategy()
+    : new CdpFullPageStrategy();
 }
 
 export async function captureFullPage(request: CaptureRequest): Promise<CaptureResult> {
-  return getCaptureStrategy().capture(request);
+  const strategy = await getCaptureStrategy(request.tabId);
+  return strategy.capture(request);
 }

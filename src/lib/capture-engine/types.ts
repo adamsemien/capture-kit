@@ -5,6 +5,9 @@ export interface PageDimensions {
 
 export type CaptureFormat = 'png' | 'jpeg';
 
+/** Which pipeline produced the image — logged into the bundle markdown. */
+export type CaptureMode = 'standard' | 'expanded-inner-scroll';
+
 /** CDP quality is 0–100; canvas encoding divides by 100. */
 export const JPEG_QUALITY = 85;
 
@@ -27,6 +30,7 @@ export interface CaptureRequest {
 export interface CaptureResult {
   imageBase64: string;
   format: CaptureFormat;
+  mode: CaptureMode;
   /** Actual captured size after canvas-limit clamping. */
   fullSize: PageDimensions;
   /** Content size the page reported (may exceed fullSize when truncated). */
