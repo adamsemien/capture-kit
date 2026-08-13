@@ -1,5 +1,6 @@
+/** Lowercase, hyphenate, strip to [a-z0-9-], collapse repeats, cap 60 chars. Empty in → empty out. */
 export function slugify(title: string): string {
-  const slug = title
+  return title
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -7,7 +8,15 @@ export function slugify(title: string): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 60)
     .replace(/-+$/, '');
-  return slug || 'capture';
+}
+
+function hostnameOf(url: string | undefined): string {
+  if (!url) return '';
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
 }
 
 function pad(value: number): string {
@@ -19,6 +28,8 @@ export function timestampForFilename(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}`;
 }
 
-export function captureBasename(title: string, date: Date): string {
-  return `${slugify(title)}_${timestampForFilename(date)}`;
+/** Slug falls back from page title → hostname → 'capture'. */
+export function captureBasename(title: string, url: string | undefined, date: Date): string {
+  const slug = slugify(title) || slugify(hostnameOf(url)) || 'capture';
+  return `${slug}_${timestampForFilename(date)}`;
 }
