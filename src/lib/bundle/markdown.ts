@@ -13,6 +13,8 @@ export interface BundleInput {
   recorderActive: boolean;
   includeLogs: boolean;
   capturedAt: Date;
+  /** Timestamped image filename this bundle's screenshot was saved under. */
+  imageFilename: string;
 }
 
 function pad(value: number): string {
@@ -51,6 +53,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
   parts.push(`# Capture — ${meta.title || meta.url}`);
   parts.push(
     [
+      `Image: ${input.imageFilename}`,
       `- **URL:** ${meta.url}`,
       `- **Title:** ${meta.title || '(untitled)'}`,
       `- **Captured at:** ${input.capturedAt.toISOString()}`,

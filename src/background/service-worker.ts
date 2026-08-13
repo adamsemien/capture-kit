@@ -82,8 +82,22 @@ async function getSnapshot(tabId: number): Promise<SnapshotLookup> {
   }
 }
 
-async function downloadBase64(filename: string, mime: string, base64: string): Promise<void> {
-  await chrome.downloads.download({ url: `data:${mime};base64,${base64}`, filename });
+// Every download lands in a capture-kit/ subfolder of the user's Downloads
+// directory. Stable-name files (latest.*) overwrite so an AI agent can be
+// pointed at one path once and always read the newest capture.
+const DOWNLOAD_SUBFOLDER = 'capture-kit';
+
+async function downloadBase64(
+  filename: string,
+  mime: string,
+  base64: string,
+  overwrite = false,
+): Promise<void> {
+  await chrome.downloads.download({
+    url: `data:${mime};base64,${base64}`,
+    filename: `${DOWNLOAD_SUBFOLDER}/${filename}`,
+    ...(overwrite ? { conflictAction: 'overwrite' as const } : {}),
+  });
 }
 
 async function flashBadge(text: string, color: string): Promise<void> {
@@ -157,11 +171,17 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
       recorderActive,
       includeLogs: settings.includeConsoleLogs,
       capturedAt,
+      imageFilename,
     });
     const clipboardMarkdown = buildClipboardMarkdown(markdown, imageFilename);
 
-    await downloadBase64(imageFilename, isJpeg ? 'image/jpeg' : 'image/png', result.imageBase64);
+    const imageMime = isJpeg ? 'image/jpeg' : 'image/png';
+    await downloadBase64(imageFilename, imageMime, result.imageBase64);
     await downloadBase64(`${basename}.md`, 'text/markdown', textToBase64(markdown));
+    // Stable pointers for the AI-agent bridge; the Image: line in the
+    // markdown keeps them referencing the archived timestamped copy.
+    await downloadBase64(`latest.${isJpeg ? 'jpg' : 'png'}`, imageMime, result.imageBase64, true);
+    await downloadBase64('latest.md', 'text/markdown', textToBase64(markdown), true);
 
     const lastBundle: LastBundle = {
       markdown: clipboardMarkdown,
