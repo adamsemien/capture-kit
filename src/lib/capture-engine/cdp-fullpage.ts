@@ -1,5 +1,5 @@
 import type { CaptureFormat, CaptureRequest, CaptureResult, CaptureStrategy } from './types';
-import { JPEG_QUALITY } from './types';
+import { JPEG_QUALITY, SINGLE_SHOT_SURFACE_LIMIT } from './types';
 import { SegmentCanvas, clampDimensions, planScrollOffsets } from './segments';
 
 const CDP_VERSION = '1.3';
@@ -108,8 +108,15 @@ export class CdpFullPageStrategy implements CaptureStrategy {
     await chrome.debugger.attach(target, CDP_VERSION);
     try {
       const contentSize = await readContentSize(target);
+      // The one-shot surface is allocated at devicePixelRatio, so the safe
+      // ceiling is SINGLE_SHOT_SURFACE_LIMIT device px per axis — on Retina
+      // (DPR 2) a ~9k CSS-px page overflows it and comes back all black.
+      // The segmented path is immune (deviceScaleFactor: 1 override).
+      const dpr = await evaluateInPage<number>(target, 'window.devicePixelRatio || 1');
+      const surfaceCap = Math.floor(SINGLE_SHOT_SURFACE_LIMIT / Math.max(1, dpr || 1));
+      const singleShotCap = Math.min(request.segmentSize, surfaceCap);
       const fitsInOneShot =
-        contentSize.width <= request.segmentSize && contentSize.height <= request.segmentSize;
+        contentSize.width <= singleShotCap && contentSize.height <= singleShotCap;
       return fitsInOneShot
         ? await this.captureSingleShot(target, contentSize, request.format)
         : await this.captureSegmented(target, contentSize, request);

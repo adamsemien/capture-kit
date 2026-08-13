@@ -8,6 +8,15 @@ export type CaptureFormat = 'png' | 'jpeg';
 /** CDP quality is 0–100; canvas encoding divides by 100. */
 export const JPEG_QUALITY = 85;
 
+/**
+ * Max render-surface dimension (in DEVICE pixels) a captureBeyondViewport
+ * single-shot can safely allocate. Beyond this the GPU silently hands back an
+ * all-black texture on common hardware. The single-shot gate divides this by
+ * devicePixelRatio, since the surface is allocated at DPR even though
+ * clip.scale: 1 pins the encoded output to CSS pixels.
+ */
+export const SINGLE_SHOT_SURFACE_LIMIT = 16384;
+
 export interface CaptureRequest {
   tabId: number;
   /** Max px per segment dimension; pages larger per axis are captured in segments. */
