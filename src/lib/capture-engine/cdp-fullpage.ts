@@ -2,7 +2,7 @@ import type { CaptureFormat, CaptureRequest, CaptureResult, CaptureStrategy } fr
 import { JPEG_QUALITY, SINGLE_SHOT_SURFACE_LIMIT } from './types';
 import { SegmentCanvas, clampDimensions, planScrollOffsets } from './segments';
 
-const CDP_VERSION = '1.3';
+export const CDP_VERSION = '1.3';
 
 interface LayoutMetrics {
   cssContentSize?: { width: number; height: number };
@@ -23,7 +23,7 @@ interface ScrollPosition {
   y: number;
 }
 
-async function sendCommand<T>(
+export async function sendCommand<T>(
   target: chrome.debugger.Debuggee,
   method: string,
   params?: Record<string, unknown>,
@@ -31,7 +31,10 @@ async function sendCommand<T>(
   return (await chrome.debugger.sendCommand(target, method, params)) as unknown as T;
 }
 
-async function evaluateInPage<T>(target: chrome.debugger.Debuggee, expression: string): Promise<T> {
+export async function evaluateInPage<T>(
+  target: chrome.debugger.Debuggee,
+  expression: string,
+): Promise<T> {
   const response = await sendCommand<EvaluateResult<T>>(target, 'Runtime.evaluate', {
     expression,
     awaitPromise: true,
@@ -96,6 +99,150 @@ const RESTICK_SCRIPT = `(() => {
 })()`;
 
 /**
+ * Post-attach capture core: measure the page, then single-shot or segmented.
+ * Exposed separately from the strategy so callers that hold their own
+ * debugger attachment (the responsive sweep) can reuse the pipeline —
+ * Emulation overrides reset on detach, and a second attach on the same tab
+ * throws.
+ */
+export async function captureAttached(
+  target: chrome.debugger.Debuggee,
+  request: CaptureRequest,
+): Promise<CaptureResult> {
+  const contentSize = await readContentSize(target);
+  // The one-shot surface is allocated at devicePixelRatio, so the safe
+  // ceiling is SINGLE_SHOT_SURFACE_LIMIT device px per axis — on Retina
+  // (DPR 2) a ~9k CSS-px page overflows it and comes back all black.
+  // The segmented path is immune (deviceScaleFactor: 1 override).
+  const dpr = await evaluateInPage<number>(target, 'window.devicePixelRatio || 1');
+  const surfaceCap = Math.floor(SINGLE_SHOT_SURFACE_LIMIT / Math.max(1, dpr || 1));
+  const singleShotCap = Math.min(request.segmentSize, surfaceCap);
+  const fitsInOneShot =
+    contentSize.width <= singleShotCap && contentSize.height <= singleShotCap;
+  return fitsInOneShot
+    ? captureSingleShot(target, contentSize, request.format)
+    : captureSegmented(target, contentSize, request);
+}
+
+// An origin clip combined with captureBeyondViewport is reliable, and
+// clip.scale: 1 pins the output to CSS pixels regardless of
+// devicePixelRatio. Non-origin clips are NOT reliable with
+// captureBeyondViewport (documented Chromium bugs: the clip gets ignored
+// and the visible viewport is captured instead) — which is why the
+// segmented path below never uses clip at all.
+async function captureSingleShot(
+  target: chrome.debugger.Debuggee,
+  contentSize: { width: number; height: number },
+  format: CaptureFormat,
+): Promise<CaptureResult> {
+  const shot = await sendCommand<ScreenshotResult>(target, 'Page.captureScreenshot', {
+    ...(format === 'jpeg' ? { format: 'jpeg', quality: JPEG_QUALITY } : { format: 'png' }),
+    captureBeyondViewport: true,
+    clip: { x: 0, y: 0, width: contentSize.width, height: contentSize.height, scale: 1 },
+  });
+  return {
+    imageBase64: shot.data,
+    format,
+    mode: 'standard',
+    fullSize: contentSize,
+    contentSize,
+    truncated: false,
+    segments: 1,
+  };
+}
+
+// Boring reliable segmented path: override the viewport to segment size at
+// deviceScaleFactor 1, scroll to each offset, capture the plain visible
+// viewport (no clip, no captureBeyondViewport), and place each shot at the
+// scroll offset the page actually reached (edge segments clamp, producing
+// harmless identical-content overlap). Metrics, scroll position, and
+// sticky neutralization are all restored in the finally block.
+async function captureSegmented(
+  target: chrome.debugger.Debuggee,
+  naturalSize: { width: number; height: number },
+  request: CaptureRequest,
+): Promise<CaptureResult> {
+  const originalScroll = await evaluateInPage<ScrollPosition>(
+    target,
+    '({ x: window.scrollX, y: window.scrollY })',
+  );
+
+  await sendCommand(target, 'Emulation.setDeviceMetricsOverride', {
+    width: Math.min(naturalSize.width, request.segmentSize),
+    height: Math.min(naturalSize.height, request.segmentSize),
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  let unstuck = false;
+  try {
+    await evaluateInPage<void>(target, UNSTICK_SCRIPT);
+    unstuck = true;
+
+    // The virtual viewport can change layout (vh units, media queries), so
+    // re-measure before planning the grid.
+    const overriddenSize = await readContentSize(target);
+    const { width, height, truncated } = clampDimensions(
+      overriddenSize.width,
+      overriddenSize.height,
+    );
+    const viewportWidth = Math.min(width, request.segmentSize);
+    const viewportHeight = Math.min(height, request.segmentSize);
+    const xOffsets = planScrollOffsets(width, viewportWidth);
+    const yOffsets = planScrollOffsets(height, viewportHeight);
+
+    const canvas = new SegmentCanvas(width, height);
+    let segments = 0;
+    for (const y of yOffsets) {
+      for (const x of xOffsets) {
+        const reached = await evaluateInPage<ScrollPosition>(
+          target,
+          scrollAndSettleScript(x, y),
+        );
+        const shot = await sendCommand<ScreenshotResult>(target, 'Page.captureScreenshot', {
+          format: 'png',
+        });
+        // Sequential on purpose: bounded memory, one decoded segment at a time.
+        await canvas.add(Math.round(reached.x), Math.round(reached.y), shot.data);
+        segments += 1;
+      }
+    }
+
+    // Segments are always captured as PNG (lossless intermediates); the
+    // joined canvas encodes once into the requested output format.
+    return {
+      imageBase64: await canvas.toBase64(request.format),
+      format: request.format,
+      mode: 'standard',
+      fullSize: { width, height },
+      contentSize: naturalSize,
+      truncated,
+      segments,
+    };
+  } finally {
+    if (unstuck) {
+      try {
+        await evaluateInPage<void>(target, RESTICK_SCRIPT);
+      } catch {
+        /* page navigated away mid-capture */
+      }
+    }
+    try {
+      await sendCommand(target, 'Emulation.clearDeviceMetricsOverride');
+    } catch {
+      /* best-effort restore */
+    }
+    try {
+      await evaluateInPage<void>(
+        target,
+        `window.scrollTo(${originalScroll.x}, ${originalScroll.y})`,
+      );
+    } catch {
+      /* best-effort restore */
+    }
+  }
+}
+
+/**
  * True one-shot full-page capture over the Chrome DevTools Protocol — no
  * scroll-and-stitch for pages within the segment cap. Oversized pages use a
  * virtual-viewport scroll strategy (see captureSegmented).
@@ -107,19 +254,7 @@ export class CdpFullPageStrategy implements CaptureStrategy {
     const target: chrome.debugger.Debuggee = { tabId: request.tabId };
     await chrome.debugger.attach(target, CDP_VERSION);
     try {
-      const contentSize = await readContentSize(target);
-      // The one-shot surface is allocated at devicePixelRatio, so the safe
-      // ceiling is SINGLE_SHOT_SURFACE_LIMIT device px per axis — on Retina
-      // (DPR 2) a ~9k CSS-px page overflows it and comes back all black.
-      // The segmented path is immune (deviceScaleFactor: 1 override).
-      const dpr = await evaluateInPage<number>(target, 'window.devicePixelRatio || 1');
-      const surfaceCap = Math.floor(SINGLE_SHOT_SURFACE_LIMIT / Math.max(1, dpr || 1));
-      const singleShotCap = Math.min(request.segmentSize, surfaceCap);
-      const fitsInOneShot =
-        contentSize.width <= singleShotCap && contentSize.height <= singleShotCap;
-      return fitsInOneShot
-        ? await this.captureSingleShot(target, contentSize, request.format)
-        : await this.captureSegmented(target, contentSize, request);
+      return await captureAttached(target, request);
     } finally {
       // Detach immediately, capture success or not. May already be detached
       // if the tab closed mid-capture.
@@ -127,124 +262,6 @@ export class CdpFullPageStrategy implements CaptureStrategy {
         await chrome.debugger.detach(target);
       } catch {
         /* already detached */
-      }
-    }
-  }
-
-  // An origin clip combined with captureBeyondViewport is reliable, and
-  // clip.scale: 1 pins the output to CSS pixels regardless of
-  // devicePixelRatio. Non-origin clips are NOT reliable with
-  // captureBeyondViewport (documented Chromium bugs: the clip gets ignored
-  // and the visible viewport is captured instead) — which is why the
-  // segmented path below never uses clip at all.
-  private async captureSingleShot(
-    target: chrome.debugger.Debuggee,
-    contentSize: { width: number; height: number },
-    format: CaptureFormat,
-  ): Promise<CaptureResult> {
-    const shot = await sendCommand<ScreenshotResult>(target, 'Page.captureScreenshot', {
-      ...(format === 'jpeg' ? { format: 'jpeg', quality: JPEG_QUALITY } : { format: 'png' }),
-      captureBeyondViewport: true,
-      clip: { x: 0, y: 0, width: contentSize.width, height: contentSize.height, scale: 1 },
-    });
-    return {
-      imageBase64: shot.data,
-      format,
-      mode: 'standard',
-      fullSize: contentSize,
-      contentSize,
-      truncated: false,
-      segments: 1,
-    };
-  }
-
-  // Boring reliable segmented path: override the viewport to segment size at
-  // deviceScaleFactor 1, scroll to each offset, capture the plain visible
-  // viewport (no clip, no captureBeyondViewport), and place each shot at the
-  // scroll offset the page actually reached (edge segments clamp, producing
-  // harmless identical-content overlap). Metrics, scroll position, and
-  // sticky neutralization are all restored in the finally block.
-  private async captureSegmented(
-    target: chrome.debugger.Debuggee,
-    naturalSize: { width: number; height: number },
-    request: CaptureRequest,
-  ): Promise<CaptureResult> {
-    const originalScroll = await evaluateInPage<ScrollPosition>(
-      target,
-      '({ x: window.scrollX, y: window.scrollY })',
-    );
-
-    await sendCommand(target, 'Emulation.setDeviceMetricsOverride', {
-      width: Math.min(naturalSize.width, request.segmentSize),
-      height: Math.min(naturalSize.height, request.segmentSize),
-      deviceScaleFactor: 1,
-      mobile: false,
-    });
-    let unstuck = false;
-    try {
-      await evaluateInPage<void>(target, UNSTICK_SCRIPT);
-      unstuck = true;
-
-      // The virtual viewport can change layout (vh units, media queries), so
-      // re-measure before planning the grid.
-      const overriddenSize = await readContentSize(target);
-      const { width, height, truncated } = clampDimensions(
-        overriddenSize.width,
-        overriddenSize.height,
-      );
-      const viewportWidth = Math.min(width, request.segmentSize);
-      const viewportHeight = Math.min(height, request.segmentSize);
-      const xOffsets = planScrollOffsets(width, viewportWidth);
-      const yOffsets = planScrollOffsets(height, viewportHeight);
-
-      const canvas = new SegmentCanvas(width, height);
-      let segments = 0;
-      for (const y of yOffsets) {
-        for (const x of xOffsets) {
-          const reached = await evaluateInPage<ScrollPosition>(
-            target,
-            scrollAndSettleScript(x, y),
-          );
-          const shot = await sendCommand<ScreenshotResult>(target, 'Page.captureScreenshot', {
-            format: 'png',
-          });
-          // Sequential on purpose: bounded memory, one decoded segment at a time.
-          await canvas.add(Math.round(reached.x), Math.round(reached.y), shot.data);
-          segments += 1;
-        }
-      }
-
-      // Segments are always captured as PNG (lossless intermediates); the
-      // joined canvas encodes once into the requested output format.
-      return {
-        imageBase64: await canvas.toBase64(request.format),
-        format: request.format,
-        mode: 'standard',
-        fullSize: { width, height },
-        contentSize: naturalSize,
-        truncated,
-        segments,
-      };
-    } finally {
-      if (unstuck) {
-        try {
-          await evaluateInPage<void>(target, RESTICK_SCRIPT);
-        } catch {
-          /* page navigated away mid-capture */
-        }
-      }
-      try {
-        await sendCommand(target, 'Emulation.clearDeviceMetricsOverride');
-      } catch {
-        /* best-effort restore */
-      }
-      try {
-        await evaluateInPage<void>(
-          target,
-          `window.scrollTo(${originalScroll.x}, ${originalScroll.y})`,
-        );
-      } catch {
-        /* best-effort restore */
       }
     }
   }

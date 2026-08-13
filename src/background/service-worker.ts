@@ -8,6 +8,12 @@
 // nothing is corrupted.
 
 import { captureFullPage } from '../lib/capture-engine';
+import { captureSweep } from '../lib/capture-engine/sweep';
+import {
+  applyInnerScrollExpansion,
+  detectInnerScroll,
+  restoreInnerScrollExpansion,
+} from '../lib/capture-engine/inner-scroll';
 import { buildBundleMarkdown, buildClipboardMarkdown } from '../lib/bundle/markdown';
 import { captureBasename } from '../lib/bundle/filename';
 import { textToBase64 } from '../lib/base64';
@@ -18,6 +24,7 @@ import type {
   LastBundle,
   LastError,
   RuntimeMessage,
+  SweepResponse,
 } from '../lib/messages';
 
 const PROTECTED_PREFIXES = [
@@ -241,6 +248,55 @@ async function capturePage(): Promise<CaptureResponse> {
   }
 }
 
+async function captureResponsiveSweep(): Promise<SweepResponse> {
+  try {
+    const tab = await activeTab();
+    const blocked = protectedPageReason(tab.url);
+    if (blocked) {
+      await recordError(blocked, false);
+      return { ok: false, reason: blocked };
+    }
+    const tabId = tab.id as number;
+    const settings = await getSettings();
+
+    // Inner-scroll expansion applies once for the whole sweep, restored at
+    // the end — same detection the single captures run.
+    const expanded = await detectInnerScroll(tabId);
+    if (expanded) await applyInnerScrollExpansion(tabId);
+    let outcome;
+    try {
+      outcome = await captureSweep(tabId, settings.segmentSize);
+    } finally {
+      if (expanded) await restoreInnerScrollExpansion(tabId);
+    }
+
+    const basename = captureBasename(tab.title || 'capture', new Date());
+    for (const capture of outcome.captures) {
+      await downloadBase64(
+        `${basename}_w${capture.width}.jpg`,
+        'image/jpeg',
+        capture.result.imageBase64,
+      );
+    }
+
+    if (outcome.captures.length === 0) {
+      const reason = outcome.failures[0]?.reason ?? 'Sweep produced no captures.';
+      await recordError(reason, false);
+      return { ok: false, reason };
+    }
+    return {
+      ok: true,
+      saved: outcome.captures.map((c) => c.width),
+      failed: outcome.failures,
+    };
+  } catch (error) {
+    const reason = describeError(error);
+    console.error('[capture-kit] responsive sweep failed:', error);
+    await recordError(reason, false);
+    return { ok: false, reason };
+  }
+}
+
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
   if (message?.type === 'CAPTURE_BUNDLE') {
     void captureBundle(false).then(sendResponse);
@@ -248,6 +304,10 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
   }
   if (message?.type === 'CAPTURE_PAGE') {
     void capturePage().then(sendResponse);
+    return true;
+  }
+  if (message?.type === 'CAPTURE_SWEEP') {
+    void captureResponsiveSweep().then(sendResponse);
     return true;
   }
   return false;

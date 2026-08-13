@@ -1,9 +1,16 @@
-import type { BufferStats, CaptureResponse, LastBundle, LastError } from '../lib/messages';
+import type {
+  BufferStats,
+  CaptureResponse,
+  LastBundle,
+  LastError,
+  SweepResponse,
+} from '../lib/messages';
 
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
 const statsEl = document.getElementById('stats') as HTMLParagraphElement;
 const capturePageBtn = document.getElementById('capture-page') as HTMLButtonElement;
 const captureBundleBtn = document.getElementById('capture-bundle') as HTMLButtonElement;
+const responsiveSweepBtn = document.getElementById('responsive-sweep') as HTMLButtonElement;
 const copyLastBtn = document.getElementById('copy-last') as HTMLButtonElement;
 
 function setStatus(text: string, kind: '' | 'ok' | 'error' = ''): void {
@@ -12,7 +19,7 @@ function setStatus(text: string, kind: '' | 'ok' | 'error' = ''): void {
 }
 
 function setBusy(busy: boolean): void {
-  for (const button of [capturePageBtn, captureBundleBtn, copyLastBtn]) {
+  for (const button of [capturePageBtn, captureBundleBtn, responsiveSweepBtn, copyLastBtn]) {
     button.disabled = busy;
   }
 }
@@ -85,6 +92,30 @@ capturePageBtn.addEventListener('click', () => {
     const response = (await chrome.runtime.sendMessage({ type: 'CAPTURE_PAGE' })) as CaptureResponse;
     if (response.ok) {
       setStatus(`Done — saved ${response.imageFilename}.`, 'ok');
+    } else {
+      setStatus(response.reason, 'error');
+    }
+    setBusy(false);
+  })();
+});
+
+responsiveSweepBtn.addEventListener('click', () => {
+  void (async () => {
+    setBusy(true);
+    setStatus('sweeping 375 / 768 / 1440…');
+    const response = (await chrome.runtime.sendMessage({
+      type: 'CAPTURE_SWEEP',
+    })) as SweepResponse;
+    if (response.ok) {
+      if (response.failed.length === 0) {
+        setStatus(`Done — ${response.saved.length} widths saved.`, 'ok');
+      } else {
+        const savedText = response.saved.map((w) => `w${w}`).join(', ');
+        const failedText = response.failed
+          .map((f) => `w${f.width} failed: ${f.reason}`)
+          .join('; ');
+        setStatus(`Saved ${savedText} — ${failedText}`, 'ok');
+      }
     } else {
       setStatus(response.reason, 'error');
     }

@@ -55,7 +55,10 @@ export type RecorderEventDetail =
   | { kind: 'network'; entry: NetworkFailure };
 
 /** Popup → service worker. */
-export type RuntimeMessage = { type: 'CAPTURE_BUNDLE' } | { type: 'CAPTURE_PAGE' };
+export type RuntimeMessage =
+  | { type: 'CAPTURE_BUNDLE' }
+  | { type: 'CAPTURE_PAGE' }
+  | { type: 'CAPTURE_SWEEP' };
 
 /** Service worker / popup → isolated content script. */
 export type TabMessage =
@@ -65,6 +68,10 @@ export type TabMessage =
 
 export type CaptureResponse =
   | { ok: true; imageFilename: string; markdown?: string }
+  | { ok: false; reason: string };
+
+export type SweepResponse =
+  | { ok: true; saved: number[]; failed: { width: number; reason: string }[] }
   | { ok: false; reason: string };
 
 /** Stored in chrome.storage.session — survives service-worker death. */
