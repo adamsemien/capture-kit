@@ -1,0 +1,143 @@
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: #17171a;
+  color: #d9d9de;
+  font: 13px/1.45 system-ui, sans-serif;
+}
+
+header {
+  position: sticky;
+  top: 0;
+  background: #17171a;
+  border-bottom: 1px solid #2c2c33;
+  padding: 12px 20px;
+  z-index: 1;
+}
+
+h1 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #8f8f98;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #8f8f98;
+}
+
+.meta {
+  margin: 0 0 10px;
+  color: #a6a6ae;
+  word-break: break-all;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+button {
+  appearance: none;
+  border: 1px solid #2c2c33;
+  border-radius: 6px;
+  background: #202027;
+  color: #e6e6ea;
+  padding: 6px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #26262e;
+}
+
+button.primary {
+  background: #2b3a55;
+  border-color: #375077;
+}
+
+button.primary:hover:not(:disabled) {
+  background: #32446a;
+}
+
+.status {
+  color: #7ec98f;
+  min-height: 1.4em;
+}
+
+.status.error {
+  color: #e07a6a;
+}
+
+main {
+  padding: 16px 20px 32px;
+}
+
+.images {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.images figure {
+  margin: 0;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.images figcaption {
+  margin-bottom: 6px;
+  color: #8f8f98;
+  font-size: 12px;
+}
+
+.images .frame {
+  overflow: auto;
+  border: 1px solid #2c2c33;
+  border-radius: 6px;
+  background: #101013;
+}
+
+.images img {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: zoom-in;
+}
+
+.images img.zoomed {
+  width: auto;
+  max-width: none;
+  cursor: zoom-out;
+}
+
+.expired {
+  padding: 24px;
+  color: #d8a05a;
+}
+
+.markdown-pane {
+  margin-top: 20px;
+}
+
+.markdown-pane pre {
+  margin: 0;
+  padding: 14px;
+  border: 1px solid #2c2c33;
+  border-radius: 6px;
+  background: #101013;
+  color: #c9c9cf;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -54,11 +54,12 @@ export type RecorderEventDetail =
   | { kind: 'console'; entry: ConsoleEntry }
   | { kind: 'network'; entry: NetworkFailure };
 
-/** Popup → service worker. */
+/** Popup / result page → service worker. */
 export type RuntimeMessage =
   | { type: 'CAPTURE_BUNDLE' }
   | { type: 'CAPTURE_PAGE' }
-  | { type: 'CAPTURE_SWEEP' };
+  | { type: 'CAPTURE_SWEEP' }
+  | { type: 'GET_RESULT_IMAGE'; captureId: string; index: number };
 
 /** Service worker / popup → isolated content script. */
 export type TabMessage =
@@ -73,6 +74,31 @@ export type CaptureResponse =
 export type SweepResponse =
   | { ok: true; saved: number[]; failed: { width: number; reason: string }[] }
   | { ok: false; reason: string };
+
+/** One image of a capture result — metadata only; pixels stay in SW memory. */
+export interface ResultImage {
+  /** Basename inside Downloads/capture-kit, e.g. foo_2026-08-13_18-05.png */
+  filename: string;
+  /** Sweep width label, e.g. "375 px". Absent for single captures. */
+  label?: string;
+  width: number;
+  height: number;
+  bytes: number;
+  downloadId: number;
+}
+
+/** Stored in chrome.storage.session as `result:<captureId>` for the result tab. */
+export interface CaptureResultMeta {
+  kind: 'page' | 'bundle' | 'sweep';
+  captureModeLabel: string;
+  images: ResultImage[];
+  /** Bundle markdown (plain — the result page composes the clipboard variant). */
+  markdown?: string;
+  createdAt: number;
+}
+
+/** Service worker → result page image transfer. Null when the preview expired. */
+export type ResultImagePayload = { mime: string; base64: string } | null;
 
 /** Stored in chrome.storage.session — survives service-worker death. */
 export interface LastBundle {

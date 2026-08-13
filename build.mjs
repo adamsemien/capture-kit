@@ -29,6 +29,7 @@ await esbuild.build({
     'content/recorder-isolated': 'src/content/recorder-isolated.ts',
     'popup/popup': 'src/popup/popup.ts',
     'options/options': 'src/options/options.ts',
+    'result/result': 'src/result/result.ts',
   },
 });
 
@@ -38,5 +39,7 @@ cpSync('src/popup/popup.html', `${outdir}/popup/popup.html`);
 cpSync('src/popup/popup.css', `${outdir}/popup/popup.css`);
 cpSync('src/options/options.html', `${outdir}/options/options.html`);
 cpSync('src/options/options.css', `${outdir}/options/options.css`);
+cpSync('src/result/result.html', `${outdir}/result/result.html`);
+cpSync('src/result/result.css', `${outdir}/result/result.css`);
 
 console.log('Built dist/ — load it unpacked via chrome://extensions.');

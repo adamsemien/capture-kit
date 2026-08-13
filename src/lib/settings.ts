@@ -9,6 +9,8 @@ export interface Settings {
   bundleFormat: CaptureFormat;
   /** Keep overwriting latest.md / latest.jpg|png after each bundle (the AI-agent bridge). */
   maintainLatest: boolean;
+  /** Open the result preview tab after each capture. */
+  openResult: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -16,6 +18,7 @@ export const DEFAULT_SETTINGS: Settings = {
   includeConsoleLogs: true,
   bundleFormat: 'jpeg',
   maintainLatest: true,
+  openResult: true,
 };
 
 export function normalizeBundleFormat(value: unknown): CaptureFormat {
@@ -37,6 +40,7 @@ export async function getSettings(): Promise<Settings> {
     includeConsoleLogs: Boolean(stored.includeConsoleLogs),
     bundleFormat: normalizeBundleFormat(stored.bundleFormat),
     maintainLatest: stored.maintainLatest !== false,
+    openResult: stored.openResult !== false,
   };
 }
 
@@ -46,5 +50,6 @@ export async function saveSettings(settings: Settings): Promise<void> {
     includeConsoleLogs: settings.includeConsoleLogs,
     bundleFormat: normalizeBundleFormat(settings.bundleFormat),
     maintainLatest: settings.maintainLatest !== false,
+    openResult: settings.openResult !== false,
   });
 }

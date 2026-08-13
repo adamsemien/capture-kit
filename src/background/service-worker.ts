@@ -14,15 +14,17 @@ import {
   detectInnerScroll,
   restoreInnerScrollExpansion,
 } from '../lib/capture-engine/inner-scroll';
-import { buildBundleMarkdown, buildClipboardMarkdown } from '../lib/bundle/markdown';
+import { buildBundleMarkdown, buildClipboardMarkdown, captureModeLabel } from '../lib/bundle/markdown';
 import { captureBasename } from '../lib/bundle/filename';
 import { textToBase64 } from '../lib/base64';
 import { getSettings } from '../lib/settings';
 import type {
   BufferSnapshot,
   CaptureResponse,
+  CaptureResultMeta,
   LastBundle,
   LastError,
+  ResultImagePayload,
   RuntimeMessage,
   SweepResponse,
 } from '../lib/messages';
@@ -185,6 +187,42 @@ async function downloadLatestPointer(
   }
 }
 
+// Result-tab plumbing. Metadata (small) goes to chrome.storage.session; the
+// image pixels (potentially tens of MB of base64 for a 9k-px PNG) stay in
+// this in-memory map so they never hit the session-storage quota. If the
+// worker dies before the result tab asks — or the tab is reloaded much
+// later — the page shows a "preview expired" note and Show in Finder still
+// works. Capped so back-to-back captures can't pile up memory.
+interface ResultImageData {
+  mime: string;
+  base64: string;
+}
+const resultImages = new Map<string, ResultImageData[]>();
+const MAX_RESULT_IMAGE_SETS = 4;
+
+function base64Bytes(base64: string): number {
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+  return Math.floor((base64.length * 3) / 4) - padding;
+}
+
+async function openResultTab(meta: CaptureResultMeta, images: ResultImageData[]): Promise<void> {
+  try {
+    const captureId = crypto.randomUUID();
+    resultImages.set(captureId, images);
+    while (resultImages.size > MAX_RESULT_IMAGE_SETS) {
+      const oldest = resultImages.keys().next().value as string;
+      resultImages.delete(oldest);
+    }
+    await chrome.storage.session.set({ [`result:${captureId}`]: meta });
+    await chrome.tabs.create({
+      url: `${chrome.runtime.getURL('result/result.html')}?id=${captureId}`,
+    });
+  } catch (error) {
+    // The capture itself succeeded — a failed result tab must not fail it.
+    console.error('[capture-kit] result tab failed:', error);
+  }
+}
+
 async function flashBadge(text: string, color: string): Promise<void> {
   try {
     await chrome.action.setBadgeBackgroundColor({ color });
@@ -267,7 +305,7 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
     const clipboardMarkdown = buildClipboardMarkdown(markdown, imageFilename);
 
     const imageMime = isJpeg ? 'image/jpeg' : 'image/png';
-    await downloadBase64(imageFilename, imageMime, result.imageBase64);
+    const imageDownloadId = await downloadBase64(imageFilename, imageMime, result.imageBase64);
     await downloadBase64(`${basename}.md`, 'text/markdown', textToBase64(markdown));
     if (settings.maintainLatest) {
       // Stable pointers for the AI-agent bridge; the Image: line in the
@@ -301,6 +339,27 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
       /* no recorder to copy through */
     }
 
+    if (settings.openResult) {
+      await openResultTab(
+        {
+          kind: 'bundle',
+          captureModeLabel: captureModeLabel(result.mode, result.revealForced),
+          images: [
+            {
+              filename: imageFilename,
+              width: result.fullSize.width,
+              height: result.fullSize.height,
+              bytes: base64Bytes(result.imageBase64),
+              downloadId: imageDownloadId,
+            },
+          ],
+          markdown,
+          createdAt: capturedAt.getTime(),
+        },
+        [{ mime: imageMime, base64: result.imageBase64 }],
+      );
+    }
+
     if (viaCommand) await flashBadge('OK', '#1e8449');
     return { ok: true, imageFilename, markdown: clipboardMarkdown };
   } catch (error) {
@@ -327,7 +386,26 @@ async function capturePage(): Promise<CaptureResponse> {
       format: 'png',
     });
     const imageFilename = `${captureBasename(tab.title || '', tab.url, new Date())}.png`;
-    await downloadBase64(imageFilename, 'image/png', result.imageBase64);
+    const downloadId = await downloadBase64(imageFilename, 'image/png', result.imageBase64);
+    if (settings.openResult) {
+      await openResultTab(
+        {
+          kind: 'page',
+          captureModeLabel: captureModeLabel(result.mode, result.revealForced),
+          images: [
+            {
+              filename: imageFilename,
+              width: result.fullSize.width,
+              height: result.fullSize.height,
+              bytes: base64Bytes(result.imageBase64),
+              downloadId,
+            },
+          ],
+          createdAt: Date.now(),
+        },
+        [{ mime: 'image/png', base64: result.imageBase64 }],
+      );
+    }
     return { ok: true, imageFilename };
   } catch (error) {
     const reason = describeError(error);
@@ -360,11 +438,14 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
     }
 
     const basename = captureBasename(tab.title || '', tab.url, new Date());
+    const downloadIds: number[] = [];
     for (const capture of outcome.captures) {
-      await downloadBase64(
-        `${basename}_w${capture.width}.jpg`,
-        'image/jpeg',
-        capture.result.imageBase64,
+      downloadIds.push(
+        await downloadBase64(
+          `${basename}_w${capture.width}.jpg`,
+          'image/jpeg',
+          capture.result.imageBase64,
+        ),
       );
     }
 
@@ -372,6 +453,29 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
       const reason = outcome.failures[0]?.reason ?? 'Sweep produced no captures.';
       await recordError(reason, false);
       return { ok: false, reason };
+    }
+
+    if (settings.openResult) {
+      const first = outcome.captures[0].result;
+      await openResultTab(
+        {
+          kind: 'sweep',
+          captureModeLabel: captureModeLabel(first.mode, first.revealForced),
+          images: outcome.captures.map((capture, index) => ({
+            filename: `${basename}_w${capture.width}.jpg`,
+            label: `${capture.width} px`,
+            width: capture.result.fullSize.width,
+            height: capture.result.fullSize.height,
+            bytes: base64Bytes(capture.result.imageBase64),
+            downloadId: downloadIds[index],
+          })),
+          createdAt: Date.now(),
+        },
+        outcome.captures.map((capture) => ({
+          mime: 'image/jpeg',
+          base64: capture.result.imageBase64,
+        })),
+      );
     }
     return {
       ok: true,
@@ -398,6 +502,12 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
   if (message?.type === 'CAPTURE_SWEEP') {
     void captureResponsiveSweep().then(sendResponse);
     return true;
+  }
+  if (message?.type === 'GET_RESULT_IMAGE') {
+    const images = resultImages.get(message.captureId);
+    const payload: ResultImagePayload = images?.[message.index] ?? null;
+    sendResponse(payload);
+    return false;
   }
   return false;
 });

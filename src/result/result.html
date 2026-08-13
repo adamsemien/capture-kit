@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>capture-kit — result</title>
+    <link rel="stylesheet" href="result.css" />
+  </head>
+  <body>
+    <header>
+      <h1>capture-kit</h1>
+      <p id="meta" class="meta"></p>
+      <div class="actions">
+        <button id="show-in-finder">Show in Finder</button>
+        <button id="copy-markdown" class="primary" hidden>Copy markdown</button>
+        <span id="status" class="status"></span>
+      </div>
+    </header>
+    <main>
+      <div id="images" class="images"></div>
+      <section id="markdown-pane" class="markdown-pane" hidden>
+        <h2>Bundle markdown</h2>
+        <pre id="markdown"></pre>
+      </section>
+    </main>
+    <script src="result.js"></script>
+  </body>
+</html>

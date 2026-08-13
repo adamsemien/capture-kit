@@ -45,6 +45,12 @@ function escapeCell(value: string): string {
   return value.replace(/\|/g, '\\|');
 }
 
+/** Human-readable capture-mode string shared by the bundle metadata and the result page. */
+export function captureModeLabel(mode: CaptureMode, revealForced: number): string {
+  const base = mode === 'expanded-inner-scroll' ? 'expanded inner scroll' : 'standard';
+  return revealForced > 0 ? `${base} + reveal-forced (${revealForced} elements)` : base;
+}
+
 export function buildBundleMarkdown(input: BundleInput): string {
   const { meta } = input;
   const errors = input.consoleEntries.filter((e) => e.level === 'error');
@@ -62,7 +68,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
       `- **Captured at:** ${input.capturedAt.toISOString()}`,
       `- **Viewport:** ${meta.viewport.width}×${meta.viewport.height}`,
       `- **Full page:** ${input.contentSize.width}×${input.contentSize.height}`,
-      `- **Capture mode:** ${input.captureMode === 'expanded-inner-scroll' ? 'expanded inner scroll' : 'standard'}${input.revealForced > 0 ? ` + reveal-forced (${input.revealForced} elements)` : ''}`,
+      `- **Capture mode:** ${captureModeLabel(input.captureMode, input.revealForced)}`,
       `- **User agent:** ${meta.userAgent}`,
     ].join('\n'),
   );
