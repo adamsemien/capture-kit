@@ -2,6 +2,7 @@ import { clampSegmentSize, getSettings, normalizeBundleFormat, saveSettings } fr
 
 const segmentInput = document.getElementById('segment-size') as HTMLInputElement;
 const includeLogsInput = document.getElementById('include-logs') as HTMLInputElement;
+const maintainLatestInput = document.getElementById('maintain-latest') as HTMLInputElement;
 const formatInputs = Array.from(
   document.querySelectorAll<HTMLInputElement>('input[name="bundle-format"]'),
 );
@@ -13,6 +14,7 @@ async function load(): Promise<void> {
   const settings = await getSettings();
   segmentInput.value = String(settings.segmentSize);
   includeLogsInput.checked = settings.includeConsoleLogs;
+  maintainLatestInput.checked = settings.maintainLatest;
   for (const input of formatInputs) {
     input.checked = input.value === settings.bundleFormat;
   }
@@ -21,7 +23,12 @@ async function load(): Promise<void> {
 async function save(): Promise<void> {
   const segmentSize = clampSegmentSize(Number(segmentInput.value));
   const bundleFormat = normalizeBundleFormat(formatInputs.find((input) => input.checked)?.value);
-  await saveSettings({ segmentSize, includeConsoleLogs: includeLogsInput.checked, bundleFormat });
+  await saveSettings({
+    segmentSize,
+    includeConsoleLogs: includeLogsInput.checked,
+    bundleFormat,
+    maintainLatest: maintainLatestInput.checked,
+  });
   segmentInput.value = String(segmentSize);
   statusEl.textContent = 'Saved.';
   clearTimeout(statusTimer);
@@ -32,6 +39,7 @@ async function save(): Promise<void> {
 
 segmentInput.addEventListener('change', () => void save());
 includeLogsInput.addEventListener('change', () => void save());
+maintainLatestInput.addEventListener('change', () => void save());
 for (const input of formatInputs) {
   input.addEventListener('change', () => void save());
 }

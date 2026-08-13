@@ -7,12 +7,15 @@ export interface Settings {
   includeConsoleLogs: boolean;
   /** Image format for Capture Bundle. The Capture Page button always saves PNG. */
   bundleFormat: CaptureFormat;
+  /** Keep overwriting latest.md / latest.jpg|png after each bundle (the AI-agent bridge). */
+  maintainLatest: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   segmentSize: 8192,
   includeConsoleLogs: true,
   bundleFormat: 'jpeg',
+  maintainLatest: true,
 };
 
 export function normalizeBundleFormat(value: unknown): CaptureFormat {
@@ -33,6 +36,7 @@ export async function getSettings(): Promise<Settings> {
     segmentSize: clampSegmentSize(stored.segmentSize),
     includeConsoleLogs: Boolean(stored.includeConsoleLogs),
     bundleFormat: normalizeBundleFormat(stored.bundleFormat),
+    maintainLatest: stored.maintainLatest !== false,
   };
 }
 
@@ -41,5 +45,6 @@ export async function saveSettings(settings: Settings): Promise<void> {
     segmentSize: clampSegmentSize(settings.segmentSize),
     includeConsoleLogs: settings.includeConsoleLogs,
     bundleFormat: normalizeBundleFormat(settings.bundleFormat),
+    maintainLatest: settings.maintainLatest !== false,
   });
 }

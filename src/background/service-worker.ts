@@ -145,6 +145,46 @@ async function downloadBase64(
   }
 }
 
+function waitForDownloadComplete(id: number, timeoutMs = 5000): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      chrome.downloads.onChanged.removeListener(listener);
+      resolve();
+    }, timeoutMs);
+    const done = () => {
+      clearTimeout(timer);
+      chrome.downloads.onChanged.removeListener(listener);
+      resolve();
+    };
+    const listener = (delta: chrome.downloads.DownloadDelta) => {
+      if (delta.id === id && delta.state && delta.state.current !== 'in_progress') done();
+    };
+    chrome.downloads.onChanged.addListener(listener);
+    // The state may already be terminal by the time the listener registers.
+    void chrome.downloads.search({ id }).then(([item]) => {
+      if (item && item.state !== 'in_progress') done();
+    });
+  });
+}
+
+// The latest.* pointer files are plumbing, not user downloads — keep them out
+// of the shelf and history. erase() only removes the download record; the
+// file stays on disk (never removeFile here). Erasing an in-progress
+// download would cancel it, so completion is awaited first.
+async function downloadLatestPointer(
+  filename: string,
+  mime: string,
+  base64: string,
+): Promise<void> {
+  const id = await downloadBase64(filename, mime, base64, true);
+  await waitForDownloadComplete(id);
+  try {
+    await chrome.downloads.erase({ id });
+  } catch {
+    /* record cleanup is best-effort; the file is already written */
+  }
+}
+
 async function flashBadge(text: string, color: string): Promise<void> {
   try {
     await chrome.action.setBadgeBackgroundColor({ color });
@@ -228,10 +268,16 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
     const imageMime = isJpeg ? 'image/jpeg' : 'image/png';
     await downloadBase64(imageFilename, imageMime, result.imageBase64);
     await downloadBase64(`${basename}.md`, 'text/markdown', textToBase64(markdown));
-    // Stable pointers for the AI-agent bridge; the Image: line in the
-    // markdown keeps them referencing the archived timestamped copy.
-    await downloadBase64(`latest.${isJpeg ? 'jpg' : 'png'}`, imageMime, result.imageBase64, true);
-    await downloadBase64('latest.md', 'text/markdown', textToBase64(markdown), true);
+    if (settings.maintainLatest) {
+      // Stable pointers for the AI-agent bridge; the Image: line in the
+      // markdown keeps them referencing the archived timestamped copy.
+      await downloadLatestPointer(
+        `latest.${isJpeg ? 'jpg' : 'png'}`,
+        imageMime,
+        result.imageBase64,
+      );
+      await downloadLatestPointer('latest.md', 'text/markdown', textToBase64(markdown));
+    }
 
     const lastBundle: LastBundle = {
       markdown: clipboardMarkdown,
