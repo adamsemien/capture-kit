@@ -22,6 +22,7 @@ import type {
   BufferSnapshot,
   CaptureResponse,
   CaptureResultMeta,
+  FilenameConflict,
   LastBundle,
   LastError,
   ResultImagePayload,
@@ -126,27 +127,45 @@ async function downloadBase64(
     console.error(`[capture-kit] downloads.download rejected "${fullPath}":`, error);
     throw error;
   }
-  void verifyDownloadedName(id, fullPath);
+  pendingNameChecks.push(verifyDownloadedName(id, fullPath));
   return id;
 }
 
-/** Tripwire: warn if what landed on disk isn't what we asked for. */
-async function verifyDownloadedName(id: number, requested: string): Promise<void> {
+// Tripwire results for the capture in flight. Captures are user-driven and
+// sequential, so a single drain point is enough; the result tab renders
+// whatever this collects, because a console warning is invisible to a user.
+const pendingNameChecks: Promise<FilenameConflict | null>[] = [];
+
+/** Tripwire: report if what landed on disk isn't what we asked for. */
+async function verifyDownloadedName(
+  id: number,
+  requested: string,
+): Promise<FilenameConflict | null> {
   try {
     await waitForDownloadComplete(id);
     const [item] = await chrome.downloads.search({ id });
-    if (!item?.filename) return;
-    const actual = item.filename.split(/[\\/]/).pop() ?? '';
+    if (!item?.filename) return null;
+    const saved = item.filename.split(/[\\/]/).pop() ?? '';
     const expected = requested.split('/').pop() ?? '';
-    if (actual !== expected) {
-      console.warn(
-        `[capture-kit] filename was overridden: requested "${expected}", saved as "${actual}". ` +
-          'Another extension is claiming chrome.downloads.onDeterminingFilename.',
-      );
-    }
+    if (saved === expected) return null;
+    console.warn(
+      `[capture-kit] filename was overridden: requested "${expected}", saved as "${saved}". ` +
+        'Another extension is claiming chrome.downloads.onDeterminingFilename.',
+    );
+    return { requested: expected, saved };
   } catch {
-    /* the tripwire must never affect the capture */
+    // The tripwire must never affect the capture.
+    return null;
   }
+}
+
+/** Drains the checks for the capture that just finished. */
+async function collectFilenameConflicts(): Promise<FilenameConflict[]> {
+  const checks = pendingNameChecks.splice(0, pendingNameChecks.length);
+  const settled = await Promise.allSettled(checks);
+  return settled
+    .map((r) => (r.status === 'fulfilled' ? r.value : null))
+    .filter((c): c is FilenameConflict => c !== null);
 }
 
 function waitForDownloadComplete(id: number, timeoutMs = 5000): Promise<void> {
@@ -347,6 +366,7 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
         {
           kind: 'bundle',
           captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments),
+          filenameConflicts: await collectFilenameConflicts(),
           images: [
             {
               filename: imageFilename,
@@ -373,7 +393,7 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
   }
 }
 
-async function capturePage(): Promise<CaptureResponse> {
+async function capturePage(asPng: boolean): Promise<CaptureResponse> {
   try {
     const tab = await activeTab();
     const blocked = protectedPageReason(tab.url);
@@ -382,19 +402,25 @@ async function capturePage(): Promise<CaptureResponse> {
       return { ok: false, reason: blocked };
     }
     const settings = await getSettings();
-    // The Capture Page button is PNG-only by contract.
+    // JPEG by default: a tall page as PNG runs to tens of MB for no benefit
+    // on a screenshot. PNG is an explicit, sticky opt-in from the popup.
+    const format = asPng ? 'png' : 'jpeg';
     const result = await captureFullPage({
       tabId: tab.id as number,
       segmentSize: settings.segmentSize,
-      format: 'png',
+      format,
     });
-    const imageFilename = `${captureBasename(tab.title || '', tab.url, new Date())}.png`;
-    const downloadId = await downloadBase64(imageFilename, 'image/png', result.imageBase64);
+    const mime = format === 'png' ? 'image/png' : 'image/jpeg';
+    const imageFilename = `${captureBasename(tab.title || '', tab.url, new Date())}.${
+      format === 'png' ? 'png' : 'jpg'
+    }`;
+    const downloadId = await downloadBase64(imageFilename, mime, result.imageBase64);
     if (settings.openResult) {
       await openResultTab(
         {
           kind: 'page',
           captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments),
+          filenameConflicts: await collectFilenameConflicts(),
           images: [
             {
               filename: imageFilename,
@@ -406,7 +432,7 @@ async function capturePage(): Promise<CaptureResponse> {
           ],
           createdAt: Date.now(),
         },
-        [{ mime: 'image/png', base64: result.imageBase64 }],
+        [{ mime, base64: result.imageBase64 }],
       );
     }
     return { ok: true, imageFilename };
@@ -464,6 +490,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
         {
           kind: 'sweep',
           captureModeLabel: captureModeLabel(first.mode, first.revealForced, first.segments),
+          filenameConflicts: await collectFilenameConflicts(),
           images: outcome.captures.map((capture, index) => ({
             filename: `${basename}_w${capture.width}.jpg`,
             label: `${capture.width} px`,
@@ -499,7 +526,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
     return true;
   }
   if (message?.type === 'CAPTURE_PAGE') {
-    void capturePage().then(sendResponse);
+    void capturePage(message.png === true).then(sendResponse);
     return true;
   }
   if (message?.type === 'CAPTURE_SWEEP') {

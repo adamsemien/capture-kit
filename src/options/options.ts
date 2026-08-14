@@ -25,12 +25,16 @@ async function load(): Promise<void> {
 async function save(): Promise<void> {
   const segmentSize = clampSegmentSize(Number(segmentInput.value));
   const bundleFormat = normalizeBundleFormat(formatInputs.find((input) => input.checked)?.value);
+  // imageOnlyPng belongs to the popup checkbox; carry it through untouched
+  // so saving from this page can't silently reset it.
+  const { imageOnlyPng } = await getSettings();
   await saveSettings({
     segmentSize,
     includeConsoleLogs: includeLogsInput.checked,
     bundleFormat,
     maintainLatest: maintainLatestInput.checked,
     openResult: openResultInput.checked,
+    imageOnlyPng,
   });
   segmentInput.value = String(segmentSize);
   statusEl.textContent = 'Saved.';

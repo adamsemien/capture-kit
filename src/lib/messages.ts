@@ -57,7 +57,7 @@ export type RecorderEventDetail =
 /** Popup / result page → service worker. */
 export type RuntimeMessage =
   | { type: 'CAPTURE_BUNDLE' }
-  | { type: 'CAPTURE_PAGE' }
+  | { type: 'CAPTURE_PAGE'; png?: boolean }
   | { type: 'CAPTURE_SWEEP' }
   | { type: 'GET_RESULT_IMAGE'; captureId: string; index: number };
 
@@ -87,11 +87,19 @@ export interface ResultImage {
   downloadId: number;
 }
 
+/** A download whose saved name differs from the one we asked Chrome for. */
+export interface FilenameConflict {
+  requested: string;
+  saved: string;
+}
+
 /** Stored in chrome.storage.session as `result:<captureId>` for the result tab. */
 export interface CaptureResultMeta {
   kind: 'page' | 'bundle' | 'sweep';
   captureModeLabel: string;
   images: ResultImage[];
+  /** Non-empty when another extension claimed onDeterminingFilename. */
+  filenameConflicts: FilenameConflict[];
   /** Bundle markdown (plain — the result page composes the clipboard variant). */
   markdown?: string;
   createdAt: number;

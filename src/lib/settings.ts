@@ -11,6 +11,11 @@ export interface Settings {
   maintainLatest: boolean;
   /** Open the result preview tab after each capture. */
   openResult: boolean;
+  /**
+   * "Image only" writes PNG instead of the JPEG default. Sticky, because a
+   * PNG user is being deliberate — set from the popup checkbox, not options.
+   */
+  imageOnlyPng: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -19,6 +24,7 @@ export const DEFAULT_SETTINGS: Settings = {
   bundleFormat: 'jpeg',
   maintainLatest: true,
   openResult: true,
+  imageOnlyPng: false,
 };
 
 export function normalizeBundleFormat(value: unknown): CaptureFormat {
@@ -41,6 +47,7 @@ export async function getSettings(): Promise<Settings> {
     bundleFormat: normalizeBundleFormat(stored.bundleFormat),
     maintainLatest: stored.maintainLatest !== false,
     openResult: stored.openResult !== false,
+    imageOnlyPng: stored.imageOnlyPng === true,
   };
 }
 
@@ -51,5 +58,11 @@ export async function saveSettings(settings: Settings): Promise<void> {
     bundleFormat: normalizeBundleFormat(settings.bundleFormat),
     maintainLatest: settings.maintainLatest !== false,
     openResult: settings.openResult !== false,
+    imageOnlyPng: settings.imageOnlyPng === true,
   });
+}
+
+/** Popup-owned toggle; written without disturbing the options-page settings. */
+export async function setImageOnlyPng(value: boolean): Promise<void> {
+  await chrome.storage.sync.set({ imageOnlyPng: value });
 }

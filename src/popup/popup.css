@@ -28,6 +28,33 @@ h1 {
   gap: 8px;
 }
 
+.buttons .row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.buttons .row button {
+  flex: 1 1 auto;
+}
+
+.png-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  border: 1px solid #2c2c33;
+  border-radius: 6px;
+  background: #202027;
+  color: #a6a6ae;
+  cursor: pointer;
+  user-select: none;
+}
+
+.png-toggle:hover {
+  background: #26262e;
+}
+
 button {
   appearance: none;
   border: 1px solid #2c2c33;

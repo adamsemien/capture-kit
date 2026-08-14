@@ -83,6 +83,43 @@ main {
   padding: 16px 20px 32px;
 }
 
+.warnings:not(:empty) {
+  margin-bottom: 16px;
+}
+
+.warn-band {
+  border: 1px solid #6b4a1f;
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: #211a10;
+  color: #e0be8a;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+}
+
+.warn-band strong {
+  color: #f0d4a4;
+}
+
+.warn-band code {
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #f0d4a4;
+  word-break: break-all;
+}
+
+.warn-band p {
+  margin: 6px 0 0;
+}
+
+.warn-band ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.warn-band li {
+  margin: 2px 0;
+}
+
 .images {
   display: flex;
   gap: 16px;

@@ -5,12 +5,14 @@ import type {
   LastError,
   SweepResponse,
 } from '../lib/messages';
+import { getSettings, setImageOnlyPng } from '../lib/settings';
 
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
 const statsEl = document.getElementById('stats') as HTMLParagraphElement;
 const capturePageBtn = document.getElementById('capture-page') as HTMLButtonElement;
 const captureBundleBtn = document.getElementById('capture-bundle') as HTMLButtonElement;
 const responsiveSweepBtn = document.getElementById('responsive-sweep') as HTMLButtonElement;
+const imageOnlyPngInput = document.getElementById('image-only-png') as HTMLInputElement;
 const copyLastBtn = document.getElementById('copy-last') as HTMLButtonElement;
 
 function setStatus(text: string, kind: '' | 'ok' | 'error' = ''): void {
@@ -71,10 +73,12 @@ captureBundleBtn.addEventListener('click', () => {
     })) as CaptureResponse;
     if (response.ok) {
       const copied = response.markdown ? await copyToClipboard(response.markdown) : false;
+      // Name the format actually written — this used to always say PNG.
+      const imageKind = response.imageFilename.endsWith('.png') ? 'PNG' : 'JPEG';
       setStatus(
         copied
-          ? 'Done — PNG + markdown downloaded, markdown copied.'
-          : 'Done — PNG + markdown downloaded.',
+          ? `Done — ${imageKind} + report downloaded, report copied.`
+          : `Done — ${imageKind} + report downloaded.`,
         'ok',
       );
     } else {
@@ -89,7 +93,10 @@ capturePageBtn.addEventListener('click', () => {
   void (async () => {
     setBusy(true);
     setStatus('capturing…');
-    const response = (await chrome.runtime.sendMessage({ type: 'CAPTURE_PAGE' })) as CaptureResponse;
+    const response = (await chrome.runtime.sendMessage({
+      type: 'CAPTURE_PAGE',
+      png: imageOnlyPngInput.checked,
+    })) as CaptureResponse;
     if (response.ok) {
       setStatus(`Done — saved ${response.imageFilename}.`, 'ok');
     } else {
@@ -129,20 +136,25 @@ copyLastBtn.addEventListener('click', () => {
       lastBundle?: LastBundle;
     };
     if (!lastBundle) {
-      setStatus('No bundle captured yet this browser session.', 'error');
+      setStatus('No report captured yet this browser session.', 'error');
       return;
     }
     const copied = await copyToClipboard(lastBundle.markdown);
     setStatus(
       copied
-        ? `Copied bundle from ${new Date(lastBundle.at).toLocaleTimeString()}.`
+        ? `Copied report from ${new Date(lastBundle.at).toLocaleTimeString()}.`
         : 'Clipboard write failed.',
       copied ? 'ok' : 'error',
     );
   })();
 });
 
+imageOnlyPngInput.addEventListener('change', () => {
+  void setImageOnlyPng(imageOnlyPngInput.checked);
+});
+
 void (async () => {
+  imageOnlyPngInput.checked = (await getSettings()).imageOnlyPng;
   await refreshStats();
   // Surface the most recent shortcut-triggered failure (there was no popup
   // open to show it at the time).

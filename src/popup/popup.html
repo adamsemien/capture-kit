@@ -8,10 +8,16 @@
     <main>
       <h1>capture-kit</h1>
       <div class="buttons">
-        <button id="capture-page">Capture Page</button>
-        <button id="capture-bundle" class="primary">Capture Bundle</button>
-        <button id="responsive-sweep">Responsive Sweep</button>
-        <button id="copy-last">Copy Last Bundle</button>
+        <button id="capture-bundle" class="primary">Capture + Report</button>
+        <div class="row">
+          <button id="capture-page">Image only</button>
+          <label class="png-toggle" title="PNG is lossless but far larger — a tall page can run to tens of MB.">
+            <input id="image-only-png" type="checkbox" />
+            PNG
+          </label>
+        </div>
+        <button id="copy-last">Copy last report</button>
+        <button id="responsive-sweep">Responsive sweep (3 widths)</button>
       </div>
       <p id="status" class="status"></p>
       <p id="stats" class="stats"></p>

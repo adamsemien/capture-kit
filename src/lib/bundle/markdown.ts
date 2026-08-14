@@ -76,6 +76,43 @@ export function captureModeLabel(
   return `${strategy}, ${path}${reveal}`;
 }
 
+/**
+ * One machine-parseable line stating what this file actually contains — the
+ * seed of the Phase 3 multi-page manifest.
+ *
+ *   Contents: <item>[ + <item>]*
+ *
+ * Items are `full-page image`, `partial image (W×H of W×H)`, `<n> console
+ * error|warning|log(s)`, `<n> network failure(s)`, `no console or network
+ * issues`, or `recorder not active (no console or network data)`. Counts are
+ * what this file CONTAINS — never what exists elsewhere — so excluded or
+ * truncated log entries are never claimed.
+ */
+function contentsLine(
+  input: BundleInput,
+  counts: { errors: number; warnings: number; logs: number },
+): string {
+  const image = input.truncated
+    ? `partial image (${input.fullSize.width}×${input.fullSize.height} of ${input.contentSize.width}×${input.contentSize.height})`
+    : 'full-page image';
+  const items = [image];
+
+  if (!input.recorderActive) {
+    items.push('recorder not active (no console or network data)');
+    return `Contents: ${items.join(' + ')}`;
+  }
+
+  const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+  if (counts.errors) items.push(plural(counts.errors, 'console error'));
+  if (counts.warnings) items.push(plural(counts.warnings, 'console warning'));
+  if (counts.logs) items.push(plural(counts.logs, 'console log'));
+  if (input.networkFailures.length) {
+    items.push(plural(input.networkFailures.length, 'network failure'));
+  }
+  if (items.length === 1) items.push('no console or network issues');
+  return `Contents: ${items.join(' + ')}`;
+}
+
 export function buildBundleMarkdown(input: BundleInput): string {
   const { meta } = input;
   const errors = input.consoleEntries.filter((e) => e.level === 'error');
@@ -88,6 +125,11 @@ export function buildBundleMarkdown(input: BundleInput): string {
   parts.push(
     [
       `Image: ${input.imageFilename}`,
+      contentsLine(input, {
+        errors: errors.length,
+        warnings: warnings.length,
+        logs: input.includeLogs ? logs.length : 0,
+      }),
       `- **URL:** ${meta.url}`,
       `- **Title:** ${meta.title || '(untitled)'}`,
       `- **Captured at:** ${input.capturedAt.toISOString()}`,

@@ -15,20 +15,20 @@
       </label>
       <label class="field checkbox">
         <input id="include-logs" type="checkbox" />
-        <span>Include log-level console entries in bundles (errors and warnings are always included)</span>
+        <span>Include log-level console entries in reports (errors and warnings are always included)</span>
       </label>
       <label class="field checkbox">
         <input id="open-result" type="checkbox" />
         <span>Open result after capture</span>
-        <small>Shows the captured image(s), the bundle markdown, and Show in Finder in a new tab so you can see what you got without opening files.</small>
+        <small>Shows the captured image(s), the report markdown, and Show in Finder in a new tab so you can see what you got without opening files.</small>
       </label>
       <label class="field checkbox">
         <input id="maintain-latest" type="checkbox" />
         <span>Maintain latest.* pointer files</span>
-        <small>After every bundle, latest.md and latest.jpg/png in Downloads/capture-kit are overwritten with the newest capture, so an AI coding agent can be told once to read ~/Downloads/capture-kit/latest.md and always get the current one. These writes are hidden from the download shelf and history.</small>
+        <small>After every report, latest.md and latest.jpg/png in Downloads/capture-kit are overwritten with the newest capture, so an AI coding agent can be told once to read ~/Downloads/capture-kit/latest.md and always get the current one. These writes are hidden from the download shelf and history.</small>
       </label>
       <div class="field">
-        <span>Bundle image format</span>
+        <span>Report image format</span>
         <label class="radio">
           <input type="radio" name="bundle-format" value="jpeg" />
           JPEG — smaller files (default)
@@ -37,7 +37,7 @@
           <input type="radio" name="bundle-format" value="png" />
           PNG — lossless
         </label>
-        <small>The "Capture Page" button always saves PNG.</small>
+        <small>"Image only" saves JPEG unless you tick PNG next to it in the popup.</small>
       </div>
       <p id="status" class="status"></p>
     </main>
