@@ -3,41 +3,50 @@
   <head>
     <meta charset="utf-8" />
     <title>capture-kit — capture session</title>
+    <link rel="stylesheet" href="../tokens.css" />
     <link rel="stylesheet" href="session.css" />
   </head>
   <body>
     <main>
-      <h1>capture-kit</h1>
-      <h2>Capture session</h2>
-      <p class="lede">
-        Capture several tabs into one folder with an index that lists, per page, the console
-        errors and network failures — the file you hand an AI assistant.
-      </p>
+      <div class="wordmark">
+        <span class="mark"></span>
+        <span class="label">capture-kit</span>
+      </div>
 
       <section id="setup">
-        <div class="options">
+        <h1>Capture a session</h1>
+        <p class="lede">
+          Pick the tabs you are working across. Each one is captured in turn, and you get a single
+          folder with an index that names the console errors and network failures on every page —
+          the file you hand your AI assistant.
+        </p>
+
+        <div class="card setup-card">
           <label class="check">
             <input id="reload-first" type="checkbox" />
-            <span>Reload tabs first (catches console output)</span>
+            <span>Reload tabs first, so the console is captured from page load</span>
           </label>
           <p class="hint">
-            Reloading loses unsaved page state — forms, editors, anything not yet submitted.
-            Left off, tabs opened before the extension loaded will report console data as
-            unavailable rather than pretending they are clean.
+            Without this, tabs opened before capture-kit started will say their console data is
+            unavailable rather than pretending they were clean. Reloading loses anything unsaved on
+            the page.
           </p>
-          <p class="hint notice">
-            During the run the browser switches to each tab in turn. That is expected: Chrome
-            does not render a tab that is not in front, so a backgrounded tab would capture blank.
+          <p class="note">
+            <span class="dot"></span>
+            <span>
+              While this runs, the browser moves through your tabs one at a time. Chrome only draws
+              the tab you are looking at, so each one has to come to the front to be captured.
+            </span>
           </p>
         </div>
 
         <div class="list-head">
           <span id="selection-count" class="count"></span>
           <span class="spacer"></span>
-          <button id="select-all" class="link">Select all capturable</button>
+          <button id="select-all" class="link">Select all</button>
           <button id="select-none" class="link">Clear</button>
         </div>
-        <div id="tabs" class="tabs"></div>
+        <div id="tabs" class="card tabs"></div>
 
         <div class="actions">
           <button id="start" class="primary">Capture session</button>
@@ -45,25 +54,45 @@
         </div>
       </section>
 
-      <section id="progress" hidden>
+      <section id="progress" class="card progress-card" hidden>
         <p id="progress-line" class="progress-line"></p>
+        <p id="progress-count" class="progress-count"></p>
         <div class="bar"><div id="bar-fill" class="bar-fill"></div></div>
-        <button id="cancel">Cancel after this page</button>
+        <button id="cancel">Stop after this page</button>
       </section>
 
       <section id="summary" hidden>
-        <h3 id="summary-head"></h3>
-        <p id="summary-detail" class="summary-detail"></p>
-        <div class="handoff">
-          <p class="handoff-label">Hand this to your AI assistant:</p>
-          <pre id="handoff-text"></pre>
-          <div class="actions">
-            <button id="copy-instruction" class="primary">Copy instruction</button>
-            <button id="show-folder">Show in Finder</button>
-            <span id="summary-status" class="status"></span>
+        <h2 id="summary-head"></h2>
+        <div class="card summary-card">
+          <div class="tally">
+            <div class="tally-item">
+              <span id="tally-pages" class="tally-value"></span>
+              <span class="label">Pages captured</span>
+            </div>
+            <div class="tally-item">
+              <span id="tally-issues" class="tally-value"></span>
+              <span class="label">With errors</span>
+            </div>
+            <div class="tally-item">
+              <span id="tally-time" class="tally-value"></span>
+              <span class="label">Time taken</span>
+            </div>
           </div>
+
+          <span id="summary-folder" class="folder"></span>
+
+          <div id="handoff" class="handoff">
+            <p class="handoff-label label">Paste this to your AI assistant</p>
+            <pre id="handoff-text"></pre>
+            <div class="actions">
+              <button id="copy-instruction" class="primary">Copy instruction</button>
+              <button id="show-folder" class="quiet">Show in Finder</button>
+              <span id="summary-status" class="status"></span>
+            </div>
+          </div>
+
+          <div id="summary-failures"></div>
         </div>
-        <div id="summary-failures"></div>
       </section>
     </main>
     <script src="session.js"></script>

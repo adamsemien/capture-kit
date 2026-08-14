@@ -1,0 +1,175 @@
+/*
+ * capture-kit design tokens — the only file in this extension containing a
+ * raw colour. Every surface (popup, options, result, session) links this
+ * first and consumes the names below; if you find a hex anywhere else, that
+ * is drift and should come back here.
+ *
+ * Light and dark reassign the same names, so no stylesheet ever has to ask
+ * which scheme is active.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* ---- accent: warm ember. Deliberately not browser-blue and not devtool
+     grey, and deliberately far from the status hues below so the amber
+     "not listening" dot can never read as branding. ---- */
+  --accent: #d9543a;
+  --accent-hover: #c4472f;
+  --accent-quiet: #fbeee9;
+  --on-accent: #ffffff;
+
+  /* ---- status: distinct from the accent at a glance ---- */
+  --ok: #2f8a56;
+  --ok-quiet: #e8f3ec;
+  --warn: #b0761c;
+  --warn-quiet: #fbf2e0;
+
+  /* ---- neutrals: three surfaces, one border, two text steps ---- */
+  --surface: #fbfaf9;
+  --surface-raised: #ffffff;
+  --surface-sunken: #f2f0ee;
+  --border: #e4e0dc;
+  --border-strong: #d3cec9;
+  --text: #1e1c1b;
+  --text-muted: #6f6963;
+
+  /* ---- shape ---- */
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(24, 20, 16, 0.05), 0 8px 24px rgba(24, 20, 16, 0.07);
+
+  /* ---- spacing ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+
+  /* ---- type: system stack, two sizes plus a label style ---- */
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-body: 13px;
+  --text-title: 20px;
+  --leading: 1.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #f0785c;
+    --accent-hover: #f68b71;
+    --accent-quiet: #2c1d18;
+    --on-accent: #1a1210;
+
+    --ok: #62c187;
+    --ok-quiet: #16261c;
+    --warn: #d9a24e;
+    --warn-quiet: #2a2114;
+
+    --surface: #191817;
+    --surface-raised: #211f1e;
+    --surface-sunken: #131211;
+    --border: #322f2d;
+    --border-strong: #423e3b;
+    --text: #ece9e6;
+    --text-muted: #9c948d;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.32);
+  }
+}
+
+/* ---- primitives shared by every surface ---- */
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: var(--text-body) / var(--leading) var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+.label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+button {
+  appearance: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--surface-sunken);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+button.quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+button.quiet:hover:not(:disabled) {
+  background: var(--surface-sunken);
+  color: var(--text);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Status dot: colour comes from the caller via --dot. */
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dot, var(--text-muted));
+  flex: none;
+}
+
+/* Metadata chip: label + value, used in the result header. */
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  white-space: nowrap;
+}
+
+.chip b {
+  font-weight: 500;
+}

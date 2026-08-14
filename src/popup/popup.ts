@@ -10,6 +10,7 @@ import { getSettings, setImageOnlyPng } from '../lib/settings';
 
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
 const statsEl = document.getElementById('stats') as HTMLParagraphElement;
+const statsTextEl = document.getElementById('stats-text') as HTMLSpanElement;
 const capturePageBtn = document.getElementById('capture-page') as HTMLButtonElement;
 const captureBundleBtn = document.getElementById('capture-bundle') as HTMLButtonElement;
 const responsiveSweepBtn = document.getElementById('responsive-sweep') as HTMLButtonElement;
@@ -40,8 +41,7 @@ async function activeTabId(): Promise<number | null> {
 }
 
 function showRecorderInactive(): void {
-  statsEl.textContent =
-    'Recorder not active — reload this tab to record console/network data.';
+  statsTextEl.textContent = "Not listening yet — reload this tab and I'll catch the console";
   statsEl.className = 'stats warn';
 }
 
@@ -54,10 +54,19 @@ async function refreshStats(): Promise<void> {
       showRecorderInactive();
       return;
     }
-    const consoleWord = stats.consoleCount === 1 ? 'entry' : 'entries';
-    const networkWord = stats.networkCount === 1 ? 'failure' : 'failures';
     statsEl.className = 'stats';
-    statsEl.textContent = `${stats.consoleCount} console ${consoleWord}, ${stats.networkCount} network ${networkWord} recorded on this page.`;
+    const parts: string[] = [];
+    if (stats.consoleCount) {
+      parts.push(`${stats.consoleCount} console ${stats.consoleCount === 1 ? 'entry' : 'entries'}`);
+    }
+    if (stats.networkCount) {
+      parts.push(
+        `${stats.networkCount} network ${stats.networkCount === 1 ? 'failure' : 'failures'}`,
+      );
+    }
+    statsTextEl.textContent = parts.length
+      ? `Listening — ${parts.join(', ')} buffered`
+      : 'Listening — nothing to report yet';
   } catch {
     showRecorderInactive();
   }
@@ -75,7 +84,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
 captureBundleBtn.addEventListener('click', () => {
   void (async () => {
     setBusy(true);
-    setStatus('capturing…');
+    setStatus('Capturing…');
     const response = (await chrome.runtime.sendMessage({
       type: 'CAPTURE_BUNDLE',
     })) as CaptureResponse;
@@ -85,8 +94,8 @@ captureBundleBtn.addEventListener('click', () => {
       const imageKind = response.imageFilename.endsWith('.png') ? 'PNG' : 'JPEG';
       setStatus(
         copied
-          ? `Done — ${imageKind} + report downloaded, report copied.`
-          : `Done — ${imageKind} + report downloaded.`,
+          ? `Saved the ${imageKind} and report — report is on your clipboard.`
+          : `Saved the ${imageKind} and report.`,
         'ok',
       );
     } else {
@@ -100,13 +109,13 @@ captureBundleBtn.addEventListener('click', () => {
 capturePageBtn.addEventListener('click', () => {
   void (async () => {
     setBusy(true);
-    setStatus('capturing…');
+    setStatus('Capturing…');
     const response = (await chrome.runtime.sendMessage({
       type: 'CAPTURE_PAGE',
       png: imageOnlyPngInput.checked,
     })) as CaptureResponse;
     if (response.ok) {
-      setStatus(`Done — saved ${response.imageFilename}.`, 'ok');
+      setStatus(`Saved ${response.imageFilename}.`, 'ok');
     } else {
       setStatus(response.reason, 'error');
     }
@@ -117,13 +126,13 @@ capturePageBtn.addEventListener('click', () => {
 responsiveSweepBtn.addEventListener('click', () => {
   void (async () => {
     setBusy(true);
-    setStatus('sweeping 375 / 768 / 1440…');
+    setStatus('Capturing 375, 768 and 1440…');
     const response = (await chrome.runtime.sendMessage({
       type: 'CAPTURE_SWEEP',
     })) as SweepResponse;
     if (response.ok) {
       if (response.failed.length === 0) {
-        setStatus(`Done — ${response.saved.length} widths saved.`, 'ok');
+        setStatus(`Saved all ${response.saved.length} widths.`, 'ok');
       } else {
         const savedText = response.saved.map((w) => `w${w}`).join(', ');
         const failedText = response.failed
@@ -144,14 +153,14 @@ copyLastBtn.addEventListener('click', () => {
       lastBundle?: LastBundle;
     };
     if (!lastBundle) {
-      setStatus('No report captured yet this browser session.', 'error');
+      setStatus('Nothing captured yet in this browser session.', 'error');
       return;
     }
     const copied = await copyToClipboard(lastBundle.markdown);
     setStatus(
       copied
         ? `Copied report from ${new Date(lastBundle.at).toLocaleTimeString()}.`
-        : 'Clipboard write failed.',
+        : 'Could not reach the clipboard.',
       copied ? 'ok' : 'error',
     );
   })();

@@ -37,7 +37,7 @@ async function save(): Promise<void> {
     imageOnlyPng,
   });
   segmentInput.value = String(segmentSize);
-  statusEl.textContent = 'Saved.';
+  statusEl.textContent = 'Saved';
   clearTimeout(statusTimer);
   statusTimer = window.setTimeout(() => {
     statusEl.textContent = '';

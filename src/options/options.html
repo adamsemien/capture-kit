@@ -2,43 +2,85 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>capture-kit settings</title>
+    <title>capture-kit — settings</title>
+    <link rel="stylesheet" href="../tokens.css" />
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
     <main>
-      <h1>capture-kit settings</h1>
-      <label class="field">
-        <span>Segment size cap (px)</span>
-        <input id="segment-size" type="number" min="1024" max="16384" step="256" />
-        <small>Pages larger than this per dimension are captured in segments and joined. Default 8192.</small>
-      </label>
-      <label class="field checkbox">
-        <input id="include-logs" type="checkbox" />
-        <span>Include log-level console entries in reports (errors and warnings are always included)</span>
-      </label>
-      <label class="field checkbox">
-        <input id="open-result" type="checkbox" />
-        <span>Open result after capture</span>
-        <small>Shows the captured image(s), the report markdown, and Show in Finder in a new tab so you can see what you got without opening files.</small>
-      </label>
-      <label class="field checkbox">
-        <input id="maintain-latest" type="checkbox" />
-        <span>Maintain latest.* pointer files</span>
-        <small>After every report, latest.md and latest.jpg/png in Downloads/capture-kit are overwritten with the newest capture, so an AI coding agent can be told once to read ~/Downloads/capture-kit/latest.md and always get the current one. These writes are hidden from the download shelf and history.</small>
-      </label>
-      <div class="field">
-        <span>Report image format</span>
-        <label class="radio">
-          <input type="radio" name="bundle-format" value="jpeg" />
-          JPEG — smaller files (default)
-        </label>
-        <label class="radio">
-          <input type="radio" name="bundle-format" value="png" />
-          PNG — lossless
-        </label>
-        <small>"Image only" saves JPEG unless you tick PNG next to it in the popup.</small>
+      <div class="wordmark">
+        <span class="mark"></span>
+        <span class="label">capture-kit</span>
       </div>
+      <h1>Settings</h1>
+
+      <section class="card">
+        <h2 class="label">After a capture</h2>
+
+        <label class="field">
+          <input id="open-result" type="checkbox" />
+          <span class="field-text">
+            <span class="field-title">Show me what I captured</span>
+            <small>Opens a tab with the image, the report, and a button to reveal the files.</small>
+          </span>
+        </label>
+
+        <label class="field">
+          <input id="maintain-latest" type="checkbox" />
+          <span class="field-text">
+            <span class="field-title">Keep a "latest" copy for my AI assistant</span>
+            <small>
+              Every report also overwrites latest.md and latest.jpg in Downloads/capture-kit, so you
+              can point an assistant at one path forever instead of pasting a new one each time.
+              These copies stay out of your download history.
+            </small>
+          </span>
+        </label>
+      </section>
+
+      <section class="card">
+        <h2 class="label">What goes in the report</h2>
+
+        <label class="field">
+          <input id="include-logs" type="checkbox" />
+          <span class="field-text">
+            <span class="field-title">Include ordinary console logs</span>
+            <small>
+              Errors and warnings are always included. Logs add detail but are usually noise.
+            </small>
+          </span>
+        </label>
+
+        <div class="field">
+          <span class="field-text">
+            <span class="field-title">Image format for reports</span>
+            <small>
+              JPEG keeps files small enough to share. PNG is pixel-exact and much larger. "Image
+              only" has its own PNG switch in the popup.
+            </small>
+            <span class="radios">
+              <label class="radio"><input type="radio" name="bundle-format" value="jpeg" /> JPEG</label>
+              <label class="radio"><input type="radio" name="bundle-format" value="png" /> PNG</label>
+            </span>
+          </span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="label">Long pages</h2>
+
+        <div class="field">
+          <span class="field-text">
+            <span class="field-title">Stitch pages taller than this</span>
+            <small>
+              Pages beyond this height are captured in pieces and joined. Lower it if very long
+              pages come out blank; higher is faster. Between 1024 and 16384 pixels.
+            </small>
+            <input id="segment-size" type="number" min="1024" max="16384" step="256" />
+          </span>
+        </div>
+      </section>
+
       <p id="status" class="status"></p>
     </main>
     <script src="options.js"></script>

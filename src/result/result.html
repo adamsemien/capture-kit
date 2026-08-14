@@ -3,15 +3,26 @@
   <head>
     <meta charset="utf-8" />
     <title>capture-kit — result</title>
+    <link rel="stylesheet" href="../tokens.css" />
     <link rel="stylesheet" href="result.css" />
   </head>
   <body>
     <header>
-      <h1>capture-kit</h1>
-      <p id="meta" class="meta"></p>
+      <div class="wordmark">
+        <span class="mark"></span>
+        <span class="label">capture-kit</span>
+      </div>
+      <h1 id="headline"></h1>
+      <div id="meta" class="chips"></div>
       <div class="actions">
-        <button id="show-in-finder">Show in Finder</button>
-        <button id="copy-markdown" class="primary" hidden>Copy markdown</button>
+        <button id="copy-for-ai" class="primary">Copy for AI</button>
+        <button id="copy-markdown" hidden>Copy markdown</button>
+        <button id="show-in-finder" class="quiet">Show in Finder</button>
+        <span class="spacer"></span>
+        <div id="zoom" class="segmented">
+          <button id="view-fit" class="on">Fit</button>
+          <button id="view-full">100%</button>
+        </div>
         <span id="status" class="status"></span>
       </div>
     </header>
@@ -19,7 +30,7 @@
       <div id="warnings" class="warnings"></div>
       <div id="images" class="images"></div>
       <section id="markdown-pane" class="markdown-pane" hidden>
-        <h2>Report markdown</h2>
+        <h2 class="label">The report</h2>
         <pre id="markdown"></pre>
       </section>
     </main>

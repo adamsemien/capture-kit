@@ -2,26 +2,37 @@
 <html>
   <head>
     <meta charset="utf-8" />
+    <link rel="stylesheet" href="../tokens.css" />
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <main>
-      <h1>capture-kit</h1>
+      <div class="wordmark">
+        <span class="mark"></span>
+        <span class="label">capture-kit</span>
+      </div>
+
       <div class="buttons">
-        <button id="capture-bundle" class="primary">Capture + Report</button>
+        <button id="capture-bundle" class="primary hero">
+          <span>Capture + Report</span>
+          <span class="shortcut">⌘⇧9</span>
+        </button>
+
         <div class="row">
           <button id="capture-page">Image only</button>
-          <label class="png-toggle" title="PNG is lossless but far larger — a tall page can run to tens of MB.">
+          <label class="png-chip" title="Lossless, but far larger — a tall page can run to tens of megabytes.">
             <input id="image-only-png" type="checkbox" />
-            PNG
+            <span>PNG</span>
           </label>
         </div>
-        <button id="capture-session">Capture session (multiple tabs)</button>
-        <button id="copy-last">Copy last report</button>
-        <button id="responsive-sweep">Responsive sweep (3 widths)</button>
+
+        <button id="capture-session" class="quiet">Capture session (multiple tabs)</button>
+        <button id="copy-last" class="quiet">Copy last report</button>
+        <button id="responsive-sweep" class="quiet">Responsive sweep (3 widths)</button>
       </div>
+
       <p id="status" class="status"></p>
-      <p id="stats" class="stats"></p>
+      <p id="stats" class="stats"><span class="dot"></span><span id="stats-text"></span></p>
     </main>
     <script src="popup.js"></script>
   </body>

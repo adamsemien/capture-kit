@@ -16,10 +16,15 @@ const selectAllBtn = document.getElementById('select-all') as HTMLButtonElement;
 const selectNoneBtn = document.getElementById('select-none') as HTMLButtonElement;
 const setupStatusEl = document.getElementById('setup-status') as HTMLSpanElement;
 const progressLineEl = document.getElementById('progress-line') as HTMLParagraphElement;
+const progressCountEl = document.getElementById('progress-count') as HTMLParagraphElement;
 const barFillEl = document.getElementById('bar-fill') as HTMLDivElement;
 const cancelBtn = document.getElementById('cancel') as HTMLButtonElement;
 const summaryHeadEl = document.getElementById('summary-head') as HTMLHeadingElement;
-const summaryDetailEl = document.getElementById('summary-detail') as HTMLParagraphElement;
+const tallyPagesEl = document.getElementById('tally-pages') as HTMLSpanElement;
+const tallyIssuesEl = document.getElementById('tally-issues') as HTMLSpanElement;
+const tallyTimeEl = document.getElementById('tally-time') as HTMLSpanElement;
+const summaryFolderEl = document.getElementById('summary-folder') as HTMLSpanElement;
+const handoffEl = document.getElementById('handoff') as HTMLDivElement;
 const handoffTextEl = document.getElementById('handoff-text') as HTMLPreElement;
 const copyInstructionBtn = document.getElementById('copy-instruction') as HTMLButtonElement;
 const showFolderBtn = document.getElementById('show-folder') as HTMLButtonElement;
@@ -30,7 +35,8 @@ const checkboxes = new Map<number, HTMLInputElement>();
 
 function updateSelectionCount(): void {
   const selected = [...checkboxes.values()].filter((c) => c.checked).length;
-  selectionCountEl.textContent = `${selected} of ${checkboxes.size} capturable tabs selected`;
+  const tabWord = checkboxes.size === 1 ? 'tab' : 'tabs';
+  selectionCountEl.textContent = `${selected} of ${checkboxes.size} ${tabWord} selected`;
   startBtn.disabled = selected === 0;
 }
 
@@ -89,19 +95,20 @@ function showProgress(progress: SessionProgress): void {
   setupEl.hidden = true;
   progressEl.hidden = false;
   progressLineEl.textContent =
-    progress.state === 'running'
-      ? `Capturing ${progress.current} of ${progress.total} — ${progress.title}`
-      : 'Finishing…';
+    progress.state === 'running' ? `Capturing ${progress.title}` : 'Wrapping up…';
+  progressCountEl.textContent =
+    progress.state === 'running' ? `Page ${progress.current} of ${progress.total}` : '';
   const pct = progress.total ? (progress.current / progress.total) * 100 : 0;
   barFillEl.style.width = `${pct}%`;
 }
 
 function handoffInstruction(summary: SessionSummary): string {
+  const pageWord = summary.pages === 1 ? 'page' : 'pages';
   return (
-    `Read ~/Downloads/${summary.pointerFolder}/index.md — it is the index of the ${summary.pages} ` +
-    'page(s) I just captured, listing the console errors and network failures for each. ' +
-    'Open the per-page .md files it references (same folder) when you need the full report ' +
-    'for a page, and the matching image to see what it looked like.'
+    `Read ~/Downloads/${summary.pointerFolder}/index.md — it indexes the ${summary.pages} ` +
+    `${pageWord} I just captured, with the console errors and network failures for each. ` +
+    'Open the per-page .md files it references (same folder) for a full report, and the ' +
+    'matching image to see what the page looked like.'
   );
 }
 
@@ -110,19 +117,24 @@ function showSummary(summary: SessionSummary): void {
   progressEl.hidden = true;
   summaryEl.hidden = false;
 
-  const pageWord = summary.pages === 1 ? 'page' : 'pages';
   summaryHeadEl.textContent = summary.cancelled
-    ? `Cancelled — ${summary.pages} ${pageWord} captured`
-    : `Captured ${summary.pages} ${pageWord}`;
+    ? 'Stopped early — here is what was captured'
+    : 'Session captured';
 
-  const seconds = (summary.totalMs / 1000).toFixed(1);
-  const issues =
-    summary.withIssues === 0
-      ? 'none with errors or network failures'
-      : `${summary.withIssues} with errors or network failures`;
-  summaryDetailEl.textContent =
-    `${issues} · ${seconds}s · saved to ~/Downloads/${summary.folder}/ ` +
-    `and mirrored to ~/Downloads/${summary.pointerFolder}/`;
+  tallyPagesEl.textContent = String(summary.pages);
+  tallyIssuesEl.textContent = String(summary.withIssues);
+  tallyIssuesEl.classList.toggle('has-errors', summary.withIssues > 0);
+  tallyTimeEl.textContent = `${(summary.totalMs / 1000).toFixed(1)}s`;
+  // Two lines: one long mono path wrapping mid-word is hard to read back.
+  summaryFolderEl.replaceChildren();
+  for (const line of [
+    `Saved to ~/Downloads/${summary.folder}/`,
+    `Newest copy always at ~/Downloads/${summary.pointerFolder}/`,
+  ]) {
+    const span = document.createElement('span');
+    span.textContent = line;
+    summaryFolderEl.appendChild(span);
+  }
 
   const instruction = handoffInstruction(summary);
   handoffTextEl.textContent = instruction;
@@ -131,11 +143,18 @@ function showSummary(summary: SessionSummary): void {
       .writeText(instruction)
       .then(() => {
         summaryStatusEl.className = 'status';
-        summaryStatusEl.textContent = 'Copied — paste it to your assistant.';
+        summaryStatusEl.textContent = 'Copied';
+        copyInstructionBtn.textContent = 'Copied';
+        // A brief tint on the panel, so the copy registers without a toast.
+        handoffEl.classList.add('flash');
+        setTimeout(() => {
+          handoffEl.classList.remove('flash');
+          copyInstructionBtn.textContent = 'Copy instruction';
+        }, 1800);
       })
       .catch(() => {
         summaryStatusEl.className = 'status error';
-        summaryStatusEl.textContent = 'Clipboard write failed — select the text above.';
+        summaryStatusEl.textContent = 'Could not reach the clipboard — select the text above.';
       });
   });
 
@@ -151,7 +170,10 @@ function showSummary(summary: SessionSummary): void {
     const box = document.createElement('div');
     box.className = 'failures';
     const head = document.createElement('strong');
-    head.textContent = `${summary.failures.length} tab(s) could not be captured`;
+    head.textContent =
+      summary.failures.length === 1
+        ? 'One tab could not be captured'
+        : `${summary.failures.length} tabs could not be captured`;
     const list = document.createElement('ul');
     for (const failure of summary.failures) {
       const li = document.createElement('li');
@@ -190,7 +212,7 @@ startBtn.addEventListener('click', () => {
 
 cancelBtn.addEventListener('click', () => {
   cancelBtn.disabled = true;
-  cancelBtn.textContent = 'Cancelling…';
+  cancelBtn.textContent = 'Stopping…';
   void chrome.runtime.sendMessage({ type: 'SESSION_CANCEL' });
 });
 

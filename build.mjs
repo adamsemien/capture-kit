@@ -35,6 +35,8 @@ await esbuild.build({
 });
 
 cpSync('manifest.json', `${outdir}/manifest.json`);
+// Shared design tokens — every page links ../tokens.css before its own.
+cpSync('src/tokens.css', `${outdir}/tokens.css`);
 cpSync('icons', `${outdir}/icons`, { recursive: true });
 cpSync('src/popup/popup.html', `${outdir}/popup/popup.html`);
 cpSync('src/popup/popup.css', `${outdir}/popup/popup.css`);
