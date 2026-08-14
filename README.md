@@ -15,11 +15,23 @@ Chrome extension for full-page captures plus console & network failure reports, 
 | **Capture + Report** | Screenshot (JPEG or PNG per settings) + markdown report, both downloaded; report copied to the clipboard. Also on `Ctrl/Cmd+Shift+9`. |
 | **Image only** | Full-page screenshot, no report. JPEG by default; tick the adjacent **PNG** box for lossless (far larger — a tall page runs to tens of MB). |
 | **Copy last report** | Re-copies the most recent report markdown to the clipboard. |
-| **Responsive sweep (3 widths)** | The current page at 375 / 768 / 1440 px widths — three JPEGs named `{slug}_{date}_w{width}.jpg`. No markdown, no clipboard. |
+| **Capture session (multiple tabs)** | Opens a tab picker, then captures the selected tabs one at a time into `capture-kit/session_{date}_{time}/` with an `index.md` triage manifest. Mirrored to `capture-kit/latest-session/`. |
+| **Responsive sweep (3 widths)** | The current page at 375 / 768 / 1440 px widths — three JPEGs plus one `_sweep.md` report listing each width. No clipboard. |
 
 ## AI agent bridge
 
 Every report capture also overwrites two stable-name files: `capture-kit/latest.md` (the report markdown, whose `Image:` line names the archived timestamped screenshot) and `capture-kit/latest.jpg` or `latest.png`. Tell your coding agent once — for example: *"When I say 'check my capture', read `~/Downloads/capture-kit/latest.md` and the image file sitting next to it in that folder, then act on what you see."* — and it will always get the newest capture without you pasting anything.
+
+## Session capture
+
+"Capture session" is the multi-tab path: pick tabs across all windows, capture them sequentially, and get one folder plus `index.md` — a **triage** document listing, per page, its URL, its `Contents:` line, and the full text of its console errors and network failures. Warnings, logs and page metadata stay in the per-page report, so a session that emitted 200 third-party deprecation warnings still yields an index you can read. Pages with errors sort first; pages whose recorder never ran sort last and say so.
+
+`capture-kit/latest-session/` mirrors the newest session with numbered files (`01.jpg`, `01.md`, …) plus its own `index.md`, so an assistant can be pointed at one stable path. That folder is overwritten in place and never pruned — its `index.md` states the true page count and tells the reader to ignore higher-numbered leftovers from a longer previous session.
+
+Two behaviours worth knowing before the first run:
+
+- **The browser visibly switches to each tab in turn.** Chrome does not render a backgrounded tab, so a tab must be in front to capture anything but blank pixels. Nothing is wrong when the window starts flipping.
+- **"Reload tabs first" is off by default.** Left off, tabs opened before the extension loaded report console data as unavailable rather than pretending they are clean. Turned on, each tab reloads before capture — which loses unsaved page state.
 
 ## Settings
 

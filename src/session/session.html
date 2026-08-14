@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>capture-kit — capture session</title>
+    <link rel="stylesheet" href="session.css" />
+  </head>
+  <body>
+    <main>
+      <h1>capture-kit</h1>
+      <h2>Capture session</h2>
+      <p class="lede">
+        Capture several tabs into one folder with an index that lists, per page, the console
+        errors and network failures — the file you hand an AI assistant.
+      </p>
+
+      <section id="setup">
+        <div class="options">
+          <label class="check">
+            <input id="reload-first" type="checkbox" />
+            <span>Reload tabs first (catches console output)</span>
+          </label>
+          <p class="hint">
+            Reloading loses unsaved page state — forms, editors, anything not yet submitted.
+            Left off, tabs opened before the extension loaded will report console data as
+            unavailable rather than pretending they are clean.
+          </p>
+          <p class="hint notice">
+            During the run the browser switches to each tab in turn. That is expected: Chrome
+            does not render a tab that is not in front, so a backgrounded tab would capture blank.
+          </p>
+        </div>
+
+        <div class="list-head">
+          <span id="selection-count" class="count"></span>
+          <span class="spacer"></span>
+          <button id="select-all" class="link">Select all capturable</button>
+          <button id="select-none" class="link">Clear</button>
+        </div>
+        <div id="tabs" class="tabs"></div>
+
+        <div class="actions">
+          <button id="start" class="primary">Capture session</button>
+          <span id="setup-status" class="status"></span>
+        </div>
+      </section>
+
+      <section id="progress" hidden>
+        <p id="progress-line" class="progress-line"></p>
+        <div class="bar"><div id="bar-fill" class="bar-fill"></div></div>
+        <button id="cancel">Cancel after this page</button>
+      </section>
+
+      <section id="summary" hidden>
+        <h3 id="summary-head"></h3>
+        <p id="summary-detail" class="summary-detail"></p>
+        <div class="handoff">
+          <p class="handoff-label">Hand this to your AI assistant:</p>
+          <pre id="handoff-text"></pre>
+          <div class="actions">
+            <button id="copy-instruction" class="primary">Copy instruction</button>
+            <button id="show-folder">Show in Finder</button>
+            <span id="summary-status" class="status"></span>
+          </div>
+        </div>
+        <div id="summary-failures"></div>
+      </section>
+    </main>
+    <script src="session.js"></script>
+  </body>
+</html>

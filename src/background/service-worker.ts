@@ -14,19 +14,34 @@ import {
   detectInnerScroll,
   restoreInnerScrollExpansion,
 } from '../lib/capture-engine/inner-scroll';
-import { buildBundleMarkdown, buildClipboardMarkdown, captureModeLabel } from '../lib/bundle/markdown';
-import { captureBasename } from '../lib/bundle/filename';
+import {
+  buildBundleMarkdown,
+  buildClipboardMarkdown,
+  buildContentsLine,
+  buildSweepMarkdown,
+  captureModeLabel,
+} from '../lib/bundle/markdown';
+import { captureBasename, slugify, timestampForFilename } from '../lib/bundle/filename';
+import { buildSessionIndex } from '../lib/session/manifest';
+import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
 import { getSettings } from '../lib/settings';
+import type { Settings } from '../lib/settings';
+import { CONSOLE_LOGS_IN_BUNDLE, SESSION_PROGRESS_KEY, SESSION_SUMMARY_KEY } from '../lib/messages';
 import type {
   BufferSnapshot,
   CaptureResponse,
   CaptureResultMeta,
+  ConsoleEntry,
   FilenameConflict,
   LastBundle,
   LastError,
+  NetworkFailure,
   ResultImagePayload,
   RuntimeMessage,
+  SessionProgress,
+  SessionSummary,
+  SessionTab,
   SweepResponse,
 } from '../lib/messages';
 
@@ -277,6 +292,118 @@ function describeError(error: unknown): string {
   return message;
 }
 
+/**
+ * One page report: capture, build markdown, write both files. Shared by the
+ * single-page button and the session runner, which is why the tab and the
+ * output folder are parameters rather than "whatever is active".
+ */
+interface ReportArtifacts {
+  capturedAt: Date;
+  basename: string;
+  imageFilename: string;
+  markdownFilename: string;
+  markdown: string;
+  clipboardMarkdown: string;
+  contents: string;
+  errors: ConsoleEntry[];
+  networkFailures: NetworkFailure[];
+  warningCount: number;
+  recorderActive: boolean;
+  imageMime: string;
+  imageDownloadId: number;
+  result: Awaited<ReturnType<typeof captureFullPage>>;
+  title: string;
+  url: string;
+}
+
+/** `folder` is a path inside capture-kit/, e.g. "session_2026-08-14_10-35/". */
+async function captureReport(
+  tab: chrome.tabs.Tab,
+  settings: Settings,
+  folder = '',
+): Promise<ReportArtifacts> {
+  const tabId = tab.id as number;
+  const { snapshot, recorderActive } = await getSnapshot(tabId);
+  const result = await captureFullPage({
+    tabId,
+    segmentSize: settings.segmentSize,
+    format: settings.bundleFormat,
+  });
+
+  const capturedAt = new Date();
+  const basename = captureBasename(
+    snapshot?.meta.title || tab.title || '',
+    snapshot?.meta.url || tab.url,
+    capturedAt,
+  );
+  const isJpeg = result.format === 'jpeg';
+  const imageFilename = `${basename}.${isJpeg ? 'jpg' : 'png'}`;
+  const markdownFilename = `${basename}.md`;
+  const meta = snapshot?.meta ?? {
+    url: tab.url ?? '',
+    title: tab.title ?? '',
+    viewport: { width: tab.width ?? 0, height: tab.height ?? 0 },
+    userAgent: navigator.userAgent,
+  };
+  const consoleEntries = snapshot?.console ?? [];
+  const networkFailures = snapshot?.network ?? [];
+
+  const markdown = buildBundleMarkdown({
+    meta,
+    contentSize: result.contentSize,
+    fullSize: result.fullSize,
+    truncated: result.truncated,
+    consoleEntries,
+    networkFailures,
+    recorderActive,
+    includeLogs: settings.includeConsoleLogs,
+    capturedAt,
+    imageFilename,
+    captureMode: result.mode,
+    revealForced: result.revealForced,
+    segments: result.segments,
+  });
+
+  const errors = consoleEntries.filter((e) => e.level === 'error');
+  const warningCount = consoleEntries.filter((e) => e.level === 'warn').length;
+  const logCount = consoleEntries.filter((e) => e.level === 'log').length;
+  const imageMime = isJpeg ? 'image/jpeg' : 'image/png';
+  const imageDownloadId = await downloadBase64(
+    `${folder}${imageFilename}`,
+    imageMime,
+    result.imageBase64,
+  );
+  await downloadBase64(`${folder}${markdownFilename}`, 'text/markdown', textToBase64(markdown));
+
+  return {
+    capturedAt,
+    basename,
+    imageFilename,
+    markdownFilename,
+    markdown,
+    clipboardMarkdown: buildClipboardMarkdown(markdown, imageFilename),
+    contents: buildContentsLine({
+      truncated: result.truncated,
+      fullSize: result.fullSize,
+      contentSize: result.contentSize,
+      recorderActive,
+      errors: errors.length,
+      warnings: warningCount,
+      logs: settings.includeConsoleLogs ? Math.min(logCount, CONSOLE_LOGS_IN_BUNDLE) : 0,
+      networkFailures: networkFailures.length,
+    }),
+    errors,
+    networkFailures,
+    warningCount,
+    recorderActive,
+    imageMime,
+    imageDownloadId,
+    result,
+    title: meta.title || tab.title || '',
+    url: meta.url || tab.url || '',
+  };
+}
+
 async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
   try {
     const tab = await activeTab();
@@ -286,49 +413,15 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
       return { ok: false, reason: blocked };
     }
     const tabId = tab.id as number;
-
-    const { snapshot, recorderActive } = await getSnapshot(tabId);
     const settings = await getSettings();
-    const result = await captureFullPage({
-      tabId,
-      segmentSize: settings.segmentSize,
-      format: settings.bundleFormat,
-    });
 
-    const capturedAt = new Date();
-    const basename = captureBasename(
-      snapshot?.meta.title || tab.title || '',
-      snapshot?.meta.url || tab.url,
-      capturedAt,
-    );
+    const report = await captureReport(tab, settings);
+    const {
+      capturedAt, imageFilename, markdown, clipboardMarkdown,
+      imageMime, imageDownloadId, result,
+    } = report;
     const isJpeg = result.format === 'jpeg';
-    const imageFilename = `${basename}.${isJpeg ? 'jpg' : 'png'}`;
 
-    const markdown = buildBundleMarkdown({
-      meta: snapshot?.meta ?? {
-        url: tab.url ?? '',
-        title: tab.title ?? '',
-        viewport: { width: tab.width ?? 0, height: tab.height ?? 0 },
-        userAgent: navigator.userAgent,
-      },
-      contentSize: result.contentSize,
-      fullSize: result.fullSize,
-      truncated: result.truncated,
-      consoleEntries: snapshot?.console ?? [],
-      networkFailures: snapshot?.network ?? [],
-      recorderActive,
-      includeLogs: settings.includeConsoleLogs,
-      capturedAt,
-      imageFilename,
-      captureMode: result.mode,
-      revealForced: result.revealForced,
-      segments: result.segments,
-    });
-    const clipboardMarkdown = buildClipboardMarkdown(markdown, imageFilename);
-
-    const imageMime = isJpeg ? 'image/jpeg' : 'image/png';
-    const imageDownloadId = await downloadBase64(imageFilename, imageMime, result.imageBase64);
-    await downloadBase64(`${basename}.md`, 'text/markdown', textToBase64(markdown));
     if (settings.maintainLatest) {
       // Stable pointers for the AI-agent bridge; the Image: line in the
       // markdown keeps them referencing the archived timestamped copy.
@@ -454,6 +547,9 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
     }
     const tabId = tab.id as number;
     const settings = await getSettings();
+    // A sweep is one page at three widths, so console/network state is read
+    // once and stated once in the report.
+    const { snapshot, recorderActive } = await getSnapshot(tabId);
 
     // Inner-scroll expansion applies once for the whole sweep, restored at
     // the end — same detection the single captures run.
@@ -484,6 +580,33 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
       return { ok: false, reason };
     }
 
+    // A sweep is a one-page session: it writes a report alongside the images.
+    const sweepMarkdown = buildSweepMarkdown({
+      meta: snapshot?.meta ?? {
+        url: tab.url ?? '',
+        title: tab.title ?? '',
+        viewport: { width: tab.width ?? 0, height: tab.height ?? 0 },
+        userAgent: navigator.userAgent,
+      },
+      capturedAt: new Date(),
+      widths: outcome.captures.map((capture) => ({
+        width: capture.width,
+        filename: `${basename}_w${capture.width}.jpg`,
+        fullSize: capture.result.fullSize,
+        contentSize: capture.result.contentSize,
+        truncated: capture.result.truncated,
+        captureMode: capture.result.mode,
+        revealForced: capture.result.revealForced,
+        segments: capture.result.segments,
+      })),
+      failures: outcome.failures,
+      consoleEntries: snapshot?.console ?? [],
+      networkFailures: snapshot?.network ?? [],
+      recorderActive,
+      includeLogs: settings.includeConsoleLogs,
+    });
+    await downloadBase64(`${basename}_sweep.md`, 'text/markdown', textToBase64(sweepMarkdown));
+
     if (settings.openResult) {
       const first = outcome.captures[0].result;
       await openResultTab(
@@ -499,6 +622,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
             bytes: base64Bytes(capture.result.imageBase64),
             downloadId: downloadIds[index],
           })),
+          markdown: sweepMarkdown,
           createdAt: Date.now(),
         },
         outcome.captures.map((capture) => ({
@@ -520,6 +644,229 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
   }
 }
 
+// ---------------------------------------------------------------- session --
+//
+// Capture several tabs into one folder with a triage manifest. Two hard
+// constraints shape this: the debugger attaches to one tab at a time, and
+// Chrome does not paint a backgrounded tab — so tabs are captured strictly
+// sequentially, each one activated first. The visible tab-flipping is
+// unavoidable and is announced in the picker UI before the run starts.
+
+const SESSION_POINTER_FOLDER = 'latest-session';
+let sessionCancelled = false;
+let sessionRunning = false;
+
+function sessionTabReason(tab: chrome.tabs.Tab): string | null {
+  // Without the "tabs" permission Chrome withholds url/title for pages we
+  // hold no host permission for — which is exactly the set we cannot capture.
+  if (!tab.url) {
+    return 'Restricted browser page — Chrome hides its address from extensions.';
+  }
+  const protectedReason = protectedPageReason(tab.url);
+  if (protectedReason) return protectedReason;
+  if (/\.pdf($|[?#])/i.test(tab.url)) {
+    return "Chrome's PDF viewer has no page to capture.";
+  }
+  return null;
+}
+
+async function listSessionTabs(): Promise<SessionTab[]> {
+  const tabs = await chrome.tabs.query({});
+  return tabs
+    .filter((tab) => tab.id !== undefined)
+    .map((tab) => ({
+      id: tab.id as number,
+      title: tab.title ?? '',
+      url: tab.url ?? '',
+      favIconUrl: tab.favIconUrl ?? null,
+      active: tab.active === true,
+      windowId: tab.windowId,
+      blockedReason: sessionTabReason(tab),
+    }));
+}
+
+async function setSessionProgress(progress: SessionProgress): Promise<void> {
+  try {
+    await chrome.storage.session.set({ [SESSION_PROGRESS_KEY]: progress });
+  } catch {
+    /* progress display is best-effort */
+  }
+}
+
+/** Reload and wait for the load to finish, so the recorder covers page load. */
+async function reloadAndSettle(tabId: number, timeoutMs = 20000): Promise<void> {
+  await chrome.tabs.reload(tabId);
+  const startedAt = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 300));
+    let tab: chrome.tabs.Tab | undefined;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      return; // tab closed mid-run; the capture below will report it
+    }
+    if (tab.status === 'complete') break;
+    if (Date.now() - startedAt > timeoutMs) break;
+  }
+  // Let post-load scripts run and log before the snapshot is taken.
+  await new Promise((r) => setTimeout(r, 1200));
+}
+
+async function runSession(tabIds: number[], reload: boolean): Promise<SessionSummary> {
+  sessionCancelled = false;
+  sessionRunning = true;
+  const startedAt = Date.now();
+  const settings = await getSettings();
+  const stamp = new Date();
+  const folderName = `session_${timestampForFilename(stamp)}`;
+  const folder = `${folderName}/`;
+  const pointer = `${SESSION_POINTER_FOLDER}/`;
+
+  const restoreTabId = (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id;
+  const pages: SessionPage[] = [];
+  const failures: SessionFailure[] = [];
+  const timings: { title: string; ms: number }[] = [];
+
+  try {
+    for (let index = 0; index < tabIds.length; index++) {
+      if (sessionCancelled) break;
+      const tabId = tabIds[index];
+      const tabStartedAt = Date.now();
+      let title = '';
+      let url = '';
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        title = tab.title ?? '';
+        url = tab.url ?? '';
+        await setSessionProgress({
+          state: 'running',
+          current: index + 1,
+          total: tabIds.length,
+          title: title || url,
+          startedAt,
+        });
+
+        const blocked = sessionTabReason(tab);
+        if (blocked) throw new Error(blocked);
+
+        // Chrome does not render a backgrounded tab, so it must be focused
+        // for the capture to contain pixels.
+        await chrome.tabs.update(tabId, { active: true });
+        await chrome.windows.update(tab.windowId, { focused: true });
+        await new Promise((r) => setTimeout(r, 250));
+        if (reload) await reloadAndSettle(tabId);
+
+        const fresh = await chrome.tabs.get(tabId);
+        const report = await captureReport(fresh, settings, folder);
+        // Mirror into the stable pointer folder immediately, while the bytes
+        // are still in hand — numbered so overwrite is deterministic.
+        const ordinal = String(pages.length + 1).padStart(2, '0');
+        const mirrorImage = `${ordinal}.${report.imageMime === 'image/png' ? 'png' : 'jpg'}`;
+        await downloadPointerFile(
+          `${pointer}${mirrorImage}`,
+          report.imageMime,
+          report.result.imageBase64,
+        );
+        await downloadPointerFile(
+          `${pointer}${ordinal}.md`,
+          'text/markdown',
+          textToBase64(report.markdown),
+        );
+
+        pages.push({
+          title: report.title,
+          url: report.url,
+          contents: report.contents,
+          imageFilename: report.imageFilename,
+          markdownFilename: report.markdownFilename,
+          mirrorImageFilename: mirrorImage,
+          mirrorMarkdownFilename: `${ordinal}.md`,
+          errors: report.errors,
+          networkFailures: report.networkFailures,
+          warningCount: report.warningCount,
+          recorderActive: report.recorderActive,
+        });
+      } catch (error) {
+        const reason = describeError(error);
+        console.error(`[capture-kit] session: tab ${tabId} failed:`, error);
+        failures.push({ title, url, reason });
+      }
+      timings.push({ title: title || `tab ${tabId}`, ms: Date.now() - tabStartedAt });
+    }
+
+    const totalMs = Date.now() - startedAt;
+    const indexInput = {
+      capturedAt: stamp,
+      pages,
+      failures,
+      timings,
+      totalMs,
+      cancelled: sessionCancelled,
+    };
+    const indexMarkdown = buildSessionIndex(indexInput);
+    const indexDownloadId = await downloadBase64(
+      `${folder}index.md`,
+      'text/markdown',
+      textToBase64(indexMarkdown),
+    );
+    await downloadPointerFile(
+      `${pointer}index.md`,
+      'text/markdown',
+      textToBase64(buildSessionIndex({ ...indexInput, pointerFolder: true })),
+    );
+
+    if (restoreTabId !== undefined) {
+      try {
+        await chrome.tabs.update(restoreTabId, { active: true });
+      } catch {
+        /* the original tab may be gone */
+      }
+    }
+
+    const summary: SessionSummary = {
+      folder: `capture-kit/${folderName}`,
+      pointerFolder: `capture-kit/${SESSION_POINTER_FOLDER}`,
+      pages: pages.length,
+      withIssues: pages.filter((p) => p.errors.length || p.networkFailures.length).length,
+      failures: failures.map((f) => ({ title: f.title || f.url, reason: f.reason })),
+      timings,
+      totalMs,
+      cancelled: sessionCancelled,
+      indexDownloadId,
+    };
+    try {
+      await chrome.storage.session.set({ [SESSION_SUMMARY_KEY]: summary });
+    } catch {
+      /* best-effort */
+    }
+    await setSessionProgress({
+      state: sessionCancelled ? 'cancelled' : 'done',
+      current: pages.length,
+      total: tabIds.length,
+      title: '',
+      startedAt,
+    });
+    return summary;
+  } finally {
+    sessionRunning = false;
+  }
+}
+
+/** Pointer-folder writes are plumbing: same erase-the-record treatment as latest.*. */
+async function downloadPointerFile(
+  filename: string,
+  mime: string,
+  base64: string,
+): Promise<void> {
+  const id = await downloadBase64(filename, mime, base64, true);
+  await waitForDownloadComplete(id);
+  try {
+    await chrome.downloads.erase({ id });
+  } catch {
+    /* record cleanup is best-effort; the file is already written */
+  }
+}
+
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
   if (message?.type === 'CAPTURE_BUNDLE') {
     void captureBundle(false).then(sendResponse);
@@ -532,6 +879,25 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
   if (message?.type === 'CAPTURE_SWEEP') {
     void captureResponsiveSweep().then(sendResponse);
     return true;
+  }
+  if (message?.type === 'SESSION_LIST_TABS') {
+    void listSessionTabs().then(sendResponse);
+    return true;
+  }
+  if (message?.type === 'SESSION_START') {
+    if (sessionRunning) {
+      sendResponse({ ok: false, reason: 'A session capture is already running.' });
+      return false;
+    }
+    void runSession(message.tabIds, message.reload)
+      .then((summary) => sendResponse({ ok: true, summary }))
+      .catch((error) => sendResponse({ ok: false, reason: describeError(error) }));
+    return true;
+  }
+  if (message?.type === 'SESSION_CANCEL') {
+    sessionCancelled = true;
+    sendResponse({ ok: true });
+    return false;
   }
   if (message?.type === 'GET_RESULT_IMAGE') {
     const images = resultImages.get(message.captureId);

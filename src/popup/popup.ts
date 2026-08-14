@@ -5,6 +5,7 @@ import type {
   LastError,
   SweepResponse,
 } from '../lib/messages';
+import { SESSION_SEED_TAB_KEY } from '../lib/messages';
 import { getSettings, setImageOnlyPng } from '../lib/settings';
 
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
@@ -13,6 +14,7 @@ const capturePageBtn = document.getElementById('capture-page') as HTMLButtonElem
 const captureBundleBtn = document.getElementById('capture-bundle') as HTMLButtonElement;
 const responsiveSweepBtn = document.getElementById('responsive-sweep') as HTMLButtonElement;
 const imageOnlyPngInput = document.getElementById('image-only-png') as HTMLInputElement;
+const captureSessionBtn = document.getElementById('capture-session') as HTMLButtonElement;
 const copyLastBtn = document.getElementById('copy-last') as HTMLButtonElement;
 
 function setStatus(text: string, kind: '' | 'ok' | 'error' = ''): void {
@@ -21,7 +23,13 @@ function setStatus(text: string, kind: '' | 'ok' | 'error' = ''): void {
 }
 
 function setBusy(busy: boolean): void {
-  for (const button of [capturePageBtn, captureBundleBtn, responsiveSweepBtn, copyLastBtn]) {
+  for (const button of [
+    capturePageBtn,
+    captureBundleBtn,
+    responsiveSweepBtn,
+    copyLastBtn,
+    captureSessionBtn,
+  ]) {
     button.disabled = busy;
   }
 }
@@ -146,6 +154,23 @@ copyLastBtn.addEventListener('click', () => {
         : 'Clipboard write failed.',
       copied ? 'ok' : 'error',
     );
+  })();
+});
+
+captureSessionBtn.addEventListener('click', () => {
+  void (async () => {
+    // Hand the picker the tab the user was actually looking at — opening the
+    // picker makes the picker active, so it cannot work that out itself.
+    const seedTabId = await activeTabId();
+    try {
+      await chrome.storage.session.set({ [SESSION_SEED_TAB_KEY]: seedTabId });
+    } catch {
+      /* the picker simply starts with nothing pre-checked */
+    }
+    // The picker runs as a page, not in here: the popup closes the moment the
+    // run switches tabs, and a session capture must outlive that.
+    await chrome.tabs.create({ url: chrome.runtime.getURL('session/session.html') });
+    window.close();
   })();
 });
 

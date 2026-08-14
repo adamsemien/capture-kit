@@ -88,10 +88,23 @@ export function captureModeLabel(
  * what this file CONTAINS — never what exists elsewhere — so excluded or
  * truncated log entries are never claimed.
  */
-function contentsLine(
-  input: BundleInput,
-  counts: { errors: number; warnings: number; logs: number },
-): string {
+export interface ContentsInput {
+  truncated: boolean;
+  fullSize: PageDimensions;
+  contentSize: PageDimensions;
+  recorderActive: boolean;
+  errors: number;
+  warnings: number;
+  logs: number;
+  networkFailures: number;
+}
+
+/**
+ * THE grammar. Session manifests, page reports and sweep reports all call
+ * this — there is exactly one implementation, so a parser written against a
+ * report row also parses a manifest row.
+ */
+export function buildContentsLine(input: ContentsInput): string {
   const image = input.truncated
     ? `partial image (${input.fullSize.width}×${input.fullSize.height} of ${input.contentSize.width}×${input.contentSize.height})`
     : 'full-page image';
@@ -103,14 +116,28 @@ function contentsLine(
   }
 
   const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
-  if (counts.errors) items.push(plural(counts.errors, 'console error'));
-  if (counts.warnings) items.push(plural(counts.warnings, 'console warning'));
-  if (counts.logs) items.push(plural(counts.logs, 'console log'));
-  if (input.networkFailures.length) {
-    items.push(plural(input.networkFailures.length, 'network failure'));
-  }
+  if (input.errors) items.push(plural(input.errors, 'console error'));
+  if (input.warnings) items.push(plural(input.warnings, 'console warning'));
+  if (input.logs) items.push(plural(input.logs, 'console log'));
+  if (input.networkFailures) items.push(plural(input.networkFailures, 'network failure'));
   if (items.length === 1) items.push('no console or network issues');
   return `Contents: ${items.join(' + ')}`;
+}
+
+function contentsLine(
+  input: BundleInput,
+  counts: { errors: number; warnings: number; logs: number },
+): string {
+  return buildContentsLine({
+    truncated: input.truncated,
+    fullSize: input.fullSize,
+    contentSize: input.contentSize,
+    recorderActive: input.recorderActive,
+    errors: counts.errors,
+    warnings: counts.warnings,
+    logs: counts.logs,
+    networkFailures: input.networkFailures.length,
+  });
 }
 
 export function buildBundleMarkdown(input: BundleInput): string {
@@ -151,37 +178,62 @@ export function buildBundleMarkdown(input: BundleInput): string {
     );
   }
 
-  // When the recorder never ran, we were not listening — saying "no errors
-  // captured" would report a clean page to a reader who cannot tell the
-  // difference. State the gap instead, and print no counts at all.
+  parts.push(...consoleAndNetworkSections({
+    recorderActive: input.recorderActive,
+    errors,
+    warnings,
+    logs,
+    includeLogs: input.includeLogs,
+    networkFailures: input.networkFailures,
+  }));
+
+  parts.push('## Notes');
+  parts.push('');
+
+  return parts.join('\n\n') + '\n';
+}
+
+interface SectionsInput {
+  recorderActive: boolean;
+  errors: ConsoleEntry[];
+  warnings: ConsoleEntry[];
+  logs: ConsoleEntry[];
+  includeLogs: boolean;
+  networkFailures: NetworkFailure[];
+}
+
+/**
+ * Console + network sections, shared by page reports and sweep reports.
+ * When the recorder never ran we were not listening, so the sections say the
+ * data is unavailable rather than printing counts a reader would take for
+ * "clean".
+ */
+function consoleAndNetworkSections(input: SectionsInput): string[] {
   if (!input.recorderActive) {
-    parts.push('## Console');
-    parts.push(RECORDER_INACTIVE_NOTE);
-    parts.push('## Network Failures');
-    parts.push(RECORDER_INACTIVE_NOTE);
-    parts.push('## Notes');
-    parts.push('');
-    return parts.join('\n\n') + '\n';
+    return ['## Console', RECORDER_INACTIVE_NOTE, '## Network Failures', RECORDER_INACTIVE_NOTE];
   }
 
-  parts.push('## Console');
-
-  parts.push(`### Errors (${errors.length})`);
+  const parts: string[] = ['## Console'];
+  parts.push(`### Errors (${input.errors.length})`);
   parts.push(
-    errors.length ? errors.map(consoleBlock).join('\n') : 'No console errors captured since page load.',
+    input.errors.length
+      ? input.errors.map(consoleBlock).join('\n')
+      : 'No console errors captured since page load.',
   );
 
-  parts.push(`### Warnings (${warnings.length})`);
+  parts.push(`### Warnings (${input.warnings.length})`);
   parts.push(
-    warnings.length
-      ? warnings.map(consoleBlock).join('\n')
+    input.warnings.length
+      ? input.warnings.map(consoleBlock).join('\n')
       : 'No console warnings captured since page load.',
   );
 
   if (input.includeLogs) {
     parts.push(`### Logs (last ${CONSOLE_LOGS_IN_BUNDLE})`);
     parts.push(
-      logs.length ? logs.map(consoleBlock).join('\n') : 'No console logs captured since page load.',
+      input.logs.length
+        ? input.logs.map(consoleBlock).join('\n')
+        : 'No console logs captured since page load.',
     );
   } else {
     parts.push('### Logs');
@@ -200,9 +252,90 @@ export function buildBundleMarkdown(input: BundleInput): string {
   } else {
     parts.push('No failed network requests captured since page load.');
   }
+  return parts;
+}
 
-  parts.push('## Notes');
-  parts.push('');
+export interface SweepWidthInput {
+  width: number;
+  filename: string;
+  fullSize: PageDimensions;
+  contentSize: PageDimensions;
+  truncated: boolean;
+  captureMode: CaptureMode;
+  revealForced: number;
+  segments: number;
+}
+
+export interface SweepMarkdownInput {
+  meta: PageMeta;
+  capturedAt: Date;
+  widths: SweepWidthInput[];
+  failures: { width: number; reason: string }[];
+  consoleEntries: ConsoleEntry[];
+  networkFailures: NetworkFailure[];
+  recorderActive: boolean;
+  includeLogs: boolean;
+}
+
+/**
+ * A sweep is one page at three widths, so console/network state is stated
+ * once at document level; each width carries its own Contents line for the
+ * image it produced.
+ */
+export function buildSweepMarkdown(input: SweepMarkdownInput): string {
+  const { meta } = input;
+  const errors = input.consoleEntries.filter((e) => e.level === 'error');
+  const warnings = input.consoleEntries.filter((e) => e.level === 'warn');
+  const logs = input.consoleEntries.filter((e) => e.level === 'log').slice(-CONSOLE_LOGS_IN_BUNDLE);
+
+  const parts: string[] = [];
+  parts.push(`# Responsive sweep — ${meta.title || meta.url}`);
+  parts.push(
+    [
+      `- **URL:** ${meta.url}`,
+      `- **Title:** ${meta.title || '(untitled)'}`,
+      `- **Captured at:** ${input.capturedAt.toISOString()}`,
+      `- **Widths:** ${input.widths.map((w) => `${w.width} px`).join(', ') || '(none)'}`,
+      `- **User agent:** ${meta.userAgent}`,
+    ].join('\n'),
+  );
+
+  for (const width of input.widths) {
+    parts.push(`## ${width.width} px`);
+    parts.push(
+      [
+        `Image: ${width.filename}`,
+        buildContentsLine({
+          truncated: width.truncated,
+          fullSize: width.fullSize,
+          contentSize: width.contentSize,
+          // Console data belongs to the page, not to each width — the
+          // document-level section below states it once.
+          recorderActive: true,
+          errors: 0,
+          warnings: 0,
+          logs: 0,
+          networkFailures: 0,
+        }),
+        `- **Size:** ${width.fullSize.width}×${width.fullSize.height}`,
+        `- **Capture mode:** ${captureModeLabel(width.captureMode, width.revealForced, width.segments)}`,
+      ].join('\n'),
+    );
+  }
+
+  for (const failure of input.failures) {
+    parts.push(`## ${failure.width} px — failed`);
+    parts.push(`> ${failure.reason}`);
+  }
+
+  parts.push(...consoleAndNetworkSections({
+    recorderActive: input.recorderActive,
+    errors,
+    warnings,
+    logs,
+    includeLogs: input.includeLogs,
+    networkFailures: input.networkFailures,
+  }));
 
   return parts.join('\n\n') + '\n';
 }

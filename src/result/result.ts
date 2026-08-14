@@ -114,7 +114,7 @@ async function main(): Promise<void> {
     chrome.downloads.show(meta.images[0].downloadId);
   });
 
-  if (meta.kind === 'bundle' && meta.markdown) {
+  if (meta.markdown) {
     const markdown = meta.markdown;
     const clipboardVariant = buildClipboardMarkdown(markdown, meta.images[0].filename);
     markdownPane.hidden = false;
@@ -128,12 +128,15 @@ async function main(): Promise<void> {
     });
     // The popup closes when this tab opens, which kills its clipboard write —
     // this page has focus now, so it honors the "markdown copied" promise.
-    void navigator.clipboard
-      .writeText(clipboardVariant)
-      .then(() => setStatus('Markdown copied to clipboard.'))
-      .catch(() => {
-        /* user can use the button */
-      });
+    // Sweeps never promised a clipboard write, so they only get the button.
+    if (meta.kind === 'bundle') {
+      void navigator.clipboard
+        .writeText(clipboardVariant)
+        .then(() => setStatus('Markdown copied to clipboard.'))
+        .catch(() => {
+          /* user can use the button */
+        });
+    }
   }
 
   for (let index = 0; index < meta.images.length; index++) {

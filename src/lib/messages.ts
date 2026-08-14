@@ -59,7 +59,53 @@ export type RuntimeMessage =
   | { type: 'CAPTURE_BUNDLE' }
   | { type: 'CAPTURE_PAGE'; png?: boolean }
   | { type: 'CAPTURE_SWEEP' }
-  | { type: 'GET_RESULT_IMAGE'; captureId: string; index: number };
+  | { type: 'GET_RESULT_IMAGE'; captureId: string; index: number }
+  | { type: 'SESSION_LIST_TABS' }
+  | { type: 'SESSION_START'; tabIds: number[]; reload: boolean }
+  | { type: 'SESSION_CANCEL' };
+
+/** One row in the session picker. */
+export interface SessionTab {
+  id: number;
+  title: string;
+  url: string;
+  favIconUrl: string | null;
+  active: boolean;
+  windowId: number;
+  /** Non-null when the tab cannot be captured; the row is shown, greyed. */
+  blockedReason: string | null;
+}
+
+/** Live progress for the picker page, via chrome.storage.session. */
+export interface SessionProgress {
+  state: 'running' | 'done' | 'cancelled' | 'error';
+  current: number;
+  total: number;
+  /** Title of the tab being captured right now. */
+  title: string;
+  startedAt: number;
+}
+
+export interface SessionSummary {
+  folder: string;
+  pointerFolder: string;
+  pages: number;
+  withIssues: number;
+  failures: { title: string; reason: string }[];
+  timings: { title: string; ms: number }[];
+  totalMs: number;
+  cancelled: boolean;
+  /** Download id of the session index.md, for Show in Finder. */
+  indexDownloadId: number | null;
+}
+
+/**
+ * Tab the picker should pre-check. Opening the picker makes IT the active
+ * tab, so "the tab you were looking at" has to be handed over explicitly.
+ */
+export const SESSION_SEED_TAB_KEY = 'sessionSeedTabId';
+export const SESSION_PROGRESS_KEY = 'sessionProgress';
+export const SESSION_SUMMARY_KEY = 'sessionSummary';
 
 /** Service worker / popup → isolated content script. */
 export type TabMessage =
