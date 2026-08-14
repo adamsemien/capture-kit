@@ -3,6 +3,7 @@ import { CONSOLE_LOGS_IN_BUNDLE } from '../messages';
 import type { CaptureMode, PageDimensions } from '../capture-engine/types';
 import {
   collapseFailures,
+  formatDemotedHost,
   formatFailureLine,
   mergeHosts,
   splitConsoleErrors,
@@ -304,7 +305,9 @@ function consoleAndNetworkSections(input: SectionsInput): string[] {
   // gets it wrong, the user can see that it happened instead of wondering
   // why a failure disappeared from the section above.
   if (thirdPartyHosts.length) {
-    parts.push(`Hosts treated as third-party on this page: ${thirdPartyHosts.join(', ')}`);
+    parts.push(
+      `Hosts treated as third-party on this page: ${thirdPartyHosts.map(formatDemotedHost).join(', ')}`,
+    );
   }
   return parts;
 }

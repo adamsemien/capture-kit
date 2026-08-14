@@ -43,14 +43,78 @@ function hostOf(url: string, base: string): string | null {
   }
 }
 
+/**
+ * Path segments that mark a request as telemetry. Deliberately short and
+ * matched as whole segments: these demote a request even when it shares the
+ * page's domain, which is the only way to catch platform beacons served from
+ * sibling subdomains (calendar.google.com → play.google.com/log).
+ *
+ * Known false-negative risk, accepted: an app whose OWN endpoint is named
+ * like these — /api/log for server-side logging, /metrics for an app-facing
+ * dashboard fetch, /stats for a user-visible statistics endpoint — will be
+ * demoted. It is still printed, in a labelled section, and the hosts line
+ * names it as a same-domain demotion.
+ */
+const TELEMETRY_SEGMENTS = new Set([
+  'log', 'logs', 'collect', 'beacon', 'track', 'tracking', 'telemetry',
+  'metrics', 'analytics', 'pixel', 'stats', 'gen_204', 'e',
+]);
+
+/** Subdomain prefixes that exist to carry telemetry. */
+const TELEMETRY_HOST_PREFIXES = [
+  'analytics.', 'metrics.', 'telemetry.', 'logs.', 'log.', 'beacon.',
+  'stats.', 'tracking.',
+];
+
+function hasTelemetryShape(url: string, base: string): boolean {
+  try {
+    const parsed = new URL(url, base || undefined);
+    const host = parsed.hostname.toLowerCase();
+    if (TELEMETRY_HOST_PREFIXES.some((prefix) => host.startsWith(prefix))) return true;
+    return parsed.pathname
+      .toLowerCase()
+      .split('/')
+      .filter(Boolean)
+      .some((segment) => TELEMETRY_SEGMENTS.has(segment));
+  } catch {
+    return false;
+  }
+}
+
+export type PartyReason = 'same-domain' | 'cross-domain' | 'telemetry-shape';
+
+export interface PartyVerdict {
+  firstParty: boolean;
+  reason: PartyReason;
+  host: string | null;
+}
+
+/**
+ * First-party requires BOTH signals to agree: same registrable domain AND no
+ * telemetry shape. Domain alone matched calendar.google.com to
+ * play.google.com/log — correct by the domain rule, wrong in substance, since
+ * that is precisely the beacon the split exists to demote. Large platforms
+ * serve telemetry from sibling subdomains, so this recurs by design.
+ */
+export function classifyUrl(url: string, pageUrl: string): PartyVerdict {
+  const pageHost = hostOf(pageUrl, '');
+  const host = hostOf(url, pageUrl);
+  // A relative URL is the page's own; an unparseable one is treated as the
+  // page's, since an unattributable failure must not be demoted out of sight.
+  if (!pageHost || !host) return { firstParty: true, reason: 'same-domain', host };
+
+  const sameDomain =
+    host === pageHost || registrableDomain(host) === registrableDomain(pageHost);
+  if (!sameDomain) return { firstParty: false, reason: 'cross-domain', host };
+  if (hasTelemetryShape(url, pageUrl)) {
+    return { firstParty: false, reason: 'telemetry-shape', host };
+  }
+  return { firstParty: true, reason: 'same-domain', host };
+}
+
 /** A relative URL is the page's own by definition; an unparseable one is treated as the page's. */
 export function isFirstParty(url: string, pageUrl: string): boolean {
-  const pageHost = hostOf(pageUrl, '');
-  if (!pageHost) return true;
-  const host = hostOf(url, pageUrl);
-  if (!host) return true;
-  if (host === pageHost) return true;
-  return registrableDomain(host) === registrableDomain(pageHost);
+  return classifyUrl(url, pageUrl).firstParty;
 }
 
 export interface CollapsedFailure {
@@ -137,31 +201,69 @@ export function formatFailureLine(failure: CollapsedFailure): string {
   return `- ${failure.method} ${failure.url} — ${status} — ${repetition}${duration}${variants}`;
 }
 
+/** A host that was demoted, and why — the hosts line prints both. */
+export interface DemotedHost {
+  host: string;
+  reason: Exclude<PartyReason, 'same-domain'>;
+}
+
 export interface PartySplit<T> {
   firstParty: T[];
   thirdParty: T[];
-  /** Hosts classified third-party, for the inspectability line. */
-  thirdPartyHosts: string[];
+  /** Hosts classified third-party, with the reason, for the inspectability line. */
+  thirdPartyHosts: DemotedHost[];
 }
 
-function splitByParty<T>(items: T[], urlOf: (item: T) => string | undefined, pageUrl: string): PartySplit<T> {
+function splitByParty<T>(
+  items: T[],
+  urlOf: (item: T) => string | undefined,
+  pageUrl: string,
+  /** Console errors classify on domain alone — see splitConsoleErrors. */
+  domainOnly = false,
+): PartySplit<T> {
   const firstParty: T[] = [];
   const thirdParty: T[] = [];
-  const hosts = new Set<string>();
+  const hosts = new Map<string, DemotedHost>();
   for (const item of items) {
     const url = urlOf(item);
     // No resolvable source → first-party. An unattributable failure is more
     // dangerous de-emphasized than shown; the same reasoning as the
     // recorder-status line.
-    if (!url || isFirstParty(url, pageUrl)) {
+    if (!url) {
+      firstParty.push(item);
+      continue;
+    }
+    const verdict = classifyUrl(url, pageUrl);
+    const demoted = domainOnly ? verdict.reason === 'cross-domain' : !verdict.firstParty;
+    if (!demoted) {
       firstParty.push(item);
       continue;
     }
     thirdParty.push(item);
-    const host = hostOf(url, pageUrl);
-    if (host) hosts.add(host);
+    if (verdict.host && !hosts.has(verdict.host)) {
+      hosts.set(verdict.host, {
+        host: verdict.host,
+        reason: verdict.reason === 'telemetry-shape' ? 'telemetry-shape' : 'cross-domain',
+      });
+    }
   }
-  return { firstParty, thirdParty, thirdPartyHosts: [...hosts].sort() };
+  return {
+    firstParty,
+    thirdParty,
+    thirdPartyHosts: [...hosts.values()].sort((a, b) => a.host.localeCompare(b.host)),
+  };
+}
+
+/**
+ * `doubleclick.net (other domain)`, or for the case most likely to be a
+ * misjudgment: `play.google.com (telemetry path — same domain as the page)`.
+ * A demoted host that shares the page's domain must say so, or it reads
+ * identically to an obvious third party.
+ */
+export function formatDemotedHost(entry: DemotedHost): string {
+  return entry.reason === 'telemetry-shape'
+    ? `${entry.host} (telemetry path — same domain as the page)`
+    : `${entry.host} (other domain)`;
 }
 
 export function splitFailures(failures: NetworkFailure[], pageUrl: string): PartySplit<NetworkFailure> {
@@ -173,14 +275,25 @@ export function splitFailures(failures: NetworkFailure[], pageUrl: string): Part
  * event. Entries with no source stay first-party by the rule above.
  */
 export function splitConsoleErrors(errors: ConsoleEntry[], pageUrl: string): PartySplit<ConsoleEntry> {
+  // Domain rule only: an error's source is a script URL, and script-name
+  // heuristics ("analytics.js") are far weaker evidence than endpoint paths.
+  // A same-domain script keeps its errors in the main section.
   return splitByParty(
     errors,
     (e) => (e.source ? e.source.replace(/:\d+:\d+$/, '') : undefined),
     pageUrl,
+    true,
   );
 }
 
-/** Union of hosts reclassified on a page, for the report's inspectability line. */
-export function mergeHosts(...lists: string[][]): string[] {
-  return [...new Set(lists.flat())].sort();
+/** Union of demoted hosts on a page, for the report's inspectability line. */
+export function mergeHosts(...lists: DemotedHost[][]): DemotedHost[] {
+  const merged = new Map<string, DemotedHost>();
+  for (const entry of lists.flat()) {
+    // A host demoted for both reasons on one page keeps the same-domain
+    // explanation, since that is the one worth questioning.
+    const existing = merged.get(entry.host);
+    if (!existing || entry.reason === 'telemetry-shape') merged.set(entry.host, entry);
+  }
+  return [...merged.values()].sort((a, b) => a.host.localeCompare(b.host));
 }
