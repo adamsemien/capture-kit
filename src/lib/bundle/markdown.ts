@@ -1,6 +1,13 @@
 import type { ConsoleEntry, NetworkFailure, PageMeta } from '../messages';
 import { CONSOLE_LOGS_IN_BUNDLE } from '../messages';
 import type { CaptureMode, PageDimensions } from '../capture-engine/types';
+import {
+  collapseFailures,
+  formatFailureLine,
+  mergeHosts,
+  splitConsoleErrors,
+  splitFailures,
+} from '../net-classify';
 
 export interface BundleInput {
   meta: PageMeta;
@@ -93,10 +100,14 @@ export interface ContentsInput {
   fullSize: PageDimensions;
   contentSize: PageDimensions;
   recorderActive: boolean;
+  /** First-party console errors, plus any whose source could not be resolved. */
   errors: number;
   warnings: number;
   logs: number;
+  /** First-party network failures only. */
   networkFailures: number;
+  thirdPartyErrors: number;
+  thirdPartyFailures: number;
 }
 
 /**
@@ -120,23 +131,38 @@ export function buildContentsLine(input: ContentsInput): string {
   if (input.warnings) items.push(plural(input.warnings, 'console warning'));
   if (input.logs) items.push(plural(input.logs, 'console log'));
   if (input.networkFailures) items.push(plural(input.networkFailures, 'network failure'));
+  // Distinct nouns: a blocked analytics beacon is not the page's own failure,
+  // and counting it as one made working pages read as broken. Counts stay raw
+  // — collapsing is a display concern, 13 requests really did fail.
+  if (input.thirdPartyErrors) {
+    items.push(plural(input.thirdPartyErrors, 'third-party script error'));
+  }
+  if (input.thirdPartyFailures) {
+    items.push(
+      `${input.thirdPartyFailures} third-party request${input.thirdPartyFailures === 1 ? '' : 's'} blocked or failed`,
+    );
+  }
   if (items.length === 1) items.push('no console or network issues');
   return `Contents: ${items.join(' + ')}`;
 }
 
 function contentsLine(
   input: BundleInput,
-  counts: { errors: number; warnings: number; logs: number },
+  counts: { errors: ConsoleEntry[]; warnings: number; logs: number },
 ): string {
+  const errorSplit = splitConsoleErrors(counts.errors, input.meta.url);
+  const failureSplit = splitFailures(input.networkFailures, input.meta.url);
   return buildContentsLine({
     truncated: input.truncated,
     fullSize: input.fullSize,
     contentSize: input.contentSize,
     recorderActive: input.recorderActive,
-    errors: counts.errors,
+    errors: errorSplit.firstParty.length,
     warnings: counts.warnings,
     logs: counts.logs,
-    networkFailures: input.networkFailures.length,
+    networkFailures: failureSplit.firstParty.length,
+    thirdPartyErrors: errorSplit.thirdParty.length,
+    thirdPartyFailures: failureSplit.thirdParty.length,
   });
 }
 
@@ -153,7 +179,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
     [
       `Image: ${input.imageFilename}`,
       contentsLine(input, {
-        errors: errors.length,
+        errors,
         warnings: warnings.length,
         logs: input.includeLogs ? logs.length : 0,
       }),
@@ -185,6 +211,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
     logs,
     includeLogs: input.includeLogs,
     networkFailures: input.networkFailures,
+    pageUrl: meta.url,
   }));
 
   parts.push('## Notes');
@@ -200,6 +227,8 @@ interface SectionsInput {
   logs: ConsoleEntry[];
   includeLogs: boolean;
   networkFailures: NetworkFailure[];
+  /** Page URL, for first-party/third-party classification. */
+  pageUrl: string;
 }
 
 /**
@@ -213,13 +242,25 @@ function consoleAndNetworkSections(input: SectionsInput): string[] {
     return ['## Console', RECORDER_INACTIVE_NOTE, '## Network Failures', RECORDER_INACTIVE_NOTE];
   }
 
+  const errorSplit = splitConsoleErrors(input.errors, input.pageUrl);
+  const failureSplit = splitFailures(input.networkFailures, input.pageUrl);
+  const thirdPartyHosts = mergeHosts(errorSplit.thirdPartyHosts, failureSplit.thirdPartyHosts);
+
   const parts: string[] = ['## Console'];
-  parts.push(`### Errors (${input.errors.length})`);
+  parts.push(`### Errors (${errorSplit.firstParty.length})`);
   parts.push(
-    input.errors.length
-      ? input.errors.map(consoleBlock).join('\n')
+    errorSplit.firstParty.length
+      ? errorSplit.firstParty.map(consoleBlock).join('\n')
       : 'No console errors captured since page load.',
   );
+
+  if (errorSplit.thirdParty.length) {
+    parts.push(`### Third-party script errors (${errorSplit.thirdParty.length})`);
+    parts.push(
+      'Thrown by scripts served from another domain — usually a vendor widget, not this page\'s code.',
+    );
+    parts.push(errorSplit.thirdParty.map(consoleBlock).join('\n'));
+  }
 
   parts.push(`### Warnings (${input.warnings.length})`);
   parts.push(
@@ -241,16 +282,29 @@ function consoleAndNetworkSections(input: SectionsInput): string[] {
   }
 
   parts.push('## Network Failures');
-  if (input.networkFailures.length) {
-    const rows = input.networkFailures.map(
-      (f) =>
-        `| ${escapeCell(f.method)} | ${f.status === 0 ? 'failed' : f.status} | ${escapeCell(f.url)} | ${Math.round(f.durationMs)} ms |`,
-    );
+  if (failureSplit.firstParty.length) {
     parts.push(
-      ['| Method | Status | URL | Duration |', '| --- | --- | --- | --- |', ...rows].join('\n'),
+      collapseFailures(failureSplit.firstParty, input.pageUrl).map(formatFailureLine).join('\n'),
     );
   } else {
-    parts.push('No failed network requests captured since page load.');
+    parts.push('No failed first-party network requests captured since page load.');
+  }
+
+  if (failureSplit.thirdParty.length) {
+    parts.push('## Third-party requests (blocked or failed)');
+    parts.push(
+      'Requests to other domains — commonly analytics or ad beacons stopped by a blocker, not defects in this page.',
+    );
+    parts.push(
+      collapseFailures(failureSplit.thirdParty, input.pageUrl).map(formatFailureLine).join('\n'),
+    );
+  }
+
+  // Inspectability: state which hosts were reclassified. If the rule ever
+  // gets it wrong, the user can see that it happened instead of wondering
+  // why a failure disappeared from the section above.
+  if (thirdPartyHosts.length) {
+    parts.push(`Hosts treated as third-party on this page: ${thirdPartyHosts.join(', ')}`);
   }
   return parts;
 }
@@ -316,6 +370,8 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
           warnings: 0,
           logs: 0,
           networkFailures: 0,
+          thirdPartyErrors: 0,
+          thirdPartyFailures: 0,
         }),
         `- **Size:** ${width.fullSize.width}×${width.fullSize.height}`,
         `- **Capture mode:** ${captureModeLabel(width.captureMode, width.revealForced, width.segments)}`,
@@ -335,6 +391,7 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
     logs,
     includeLogs: input.includeLogs,
     networkFailures: input.networkFailures,
+    pageUrl: meta.url,
   }));
 
   return parts.join('\n\n') + '\n';

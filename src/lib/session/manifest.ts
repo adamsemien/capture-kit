@@ -1,4 +1,5 @@
 import type { ConsoleEntry, NetworkFailure } from '../messages';
+import { collapseFailures, formatFailureLine } from '../net-classify';
 
 /**
  * The session index is a TRIAGE document, not an archive. A real browser
@@ -19,8 +20,14 @@ export interface SessionPage {
   /** Numbered names this page has in the latest-session mirror (01.jpg, 01.md). */
   mirrorImageFilename: string;
   mirrorMarkdownFilename: string;
+  /** First-party console errors, plus any whose source could not be resolved. */
   errors: ConsoleEntry[];
+  /** Errors thrown by scripts on other domains — listed, but not counted as this page's. */
+  thirdPartyErrors: ConsoleEntry[];
+  /** First-party network failures only. */
   networkFailures: NetworkFailure[];
+  /** Blocked or failed requests to other domains — usually a blocker doing its job. */
+  thirdPartyFailures: NetworkFailure[];
   warningCount: number;
   recorderActive: boolean;
 }
@@ -43,11 +50,15 @@ export interface SessionIndexInput {
   pointerFolder?: boolean;
 }
 
-/** Errors/network first, then warnings-only, then clean, then unrecorded. */
+/**
+ * First-party trouble first, then "probably not your bug" (warnings and
+ * third-party noise), then clean, then unrecorded. A page whose only
+ * failures are blocked third-party beacons is neither broken nor clean.
+ */
 function severityRank(page: SessionPage): number {
   if (!page.recorderActive) return 3;
   if (page.errors.length || page.networkFailures.length) return 0;
-  if (page.warningCount) return 1;
+  if (page.warningCount || page.thirdPartyErrors.length || page.thirdPartyFailures.length) return 1;
   return 2;
 }
 
@@ -73,11 +84,6 @@ function shortTitle(title: string): string {
 function errorLine(entry: ConsoleEntry): string {
   const message = entry.message.replace(/\s*\n\s*/g, ' ').trim();
   return entry.source ? `- ${message} — ${entry.source}` : `- ${message}`;
-}
-
-function networkLine(failure: NetworkFailure): string {
-  const status = failure.status === 0 ? 'failed' : String(failure.status);
-  return `- ${failure.method} ${failure.url} — ${status} — ${Math.round(failure.durationMs)}ms`;
 }
 
 export function buildSessionIndex(input: SessionIndexInput): string {
@@ -125,7 +131,25 @@ export function buildSessionIndex(input: SessionIndexInput): string {
       parts.push(['Errors:', ...page.errors.map(errorLine)].join('\n'));
     }
     if (page.networkFailures.length) {
-      parts.push(['Network failures:', ...page.networkFailures.map(networkLine)].join('\n'));
+      parts.push(
+        [
+          'Network failures:',
+          ...collapseFailures(page.networkFailures, page.url).map(formatFailureLine),
+        ].join('\n'),
+      );
+    }
+    if (page.thirdPartyErrors.length) {
+      parts.push(
+        ['Third-party script errors:', ...page.thirdPartyErrors.map(errorLine)].join('\n'),
+      );
+    }
+    if (page.thirdPartyFailures.length) {
+      parts.push(
+        [
+          'Third-party requests (blocked or failed):',
+          ...collapseFailures(page.thirdPartyFailures, page.url).map(formatFailureLine),
+        ].join('\n'),
+      );
     }
   });
 

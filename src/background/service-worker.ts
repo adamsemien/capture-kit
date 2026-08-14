@@ -23,6 +23,7 @@ import {
 } from '../lib/bundle/markdown';
 import { captureBasename, slugify, timestampForFilename } from '../lib/bundle/filename';
 import { buildSessionIndex } from '../lib/session/manifest';
+import { splitConsoleErrors, splitFailures } from '../lib/net-classify';
 import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
 import { getSettings } from '../lib/settings';
@@ -314,8 +315,12 @@ interface ReportArtifacts {
   mirrorImageFilename: string | null;
   clipboardMarkdown: string;
   contents: string;
+  /** First-party (and unattributable) console errors — what the index counts. */
   errors: ConsoleEntry[];
+  thirdPartyErrors: ConsoleEntry[];
+  /** First-party network failures only. */
   networkFailures: NetworkFailure[];
+  thirdPartyFailures: NetworkFailure[];
   warningCount: number;
   recorderActive: boolean;
   imageMime: string;
@@ -382,7 +387,13 @@ async function captureReport(
     ? buildBundleMarkdown({ ...markdownInput, imageFilename: mirrorImageFilename })
     : null;
 
-  const errors = consoleEntries.filter((e) => e.level === 'error');
+  const allErrors = consoleEntries.filter((e) => e.level === 'error');
+  const pageUrl = meta.url || tab.url || '';
+  // The manifest counts and orders on first-party signal only: a page whose
+  // only failures are blocked analytics beacons is not a page with errors.
+  const errorSplit = splitConsoleErrors(allErrors, pageUrl);
+  const failureSplit = splitFailures(networkFailures, pageUrl);
+  const errors = errorSplit.firstParty;
   const warningCount = consoleEntries.filter((e) => e.level === 'warn').length;
   const logCount = consoleEntries.filter((e) => e.level === 'log').length;
   const imageMime = isJpeg ? 'image/jpeg' : 'image/png';
@@ -410,10 +421,14 @@ async function captureReport(
       errors: errors.length,
       warnings: warningCount,
       logs: settings.includeConsoleLogs ? Math.min(logCount, CONSOLE_LOGS_IN_BUNDLE) : 0,
-      networkFailures: networkFailures.length,
+      networkFailures: failureSplit.firstParty.length,
+      thirdPartyErrors: errorSplit.thirdParty.length,
+      thirdPartyFailures: failureSplit.thirdParty.length,
     }),
     errors,
-    networkFailures,
+    thirdPartyErrors: errorSplit.thirdParty,
+    networkFailures: failureSplit.firstParty,
+    thirdPartyFailures: failureSplit.thirdParty,
     warningCount,
     recorderActive,
     imageMime,
@@ -806,7 +821,9 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
           mirrorImageFilename: mirrorImage,
           mirrorMarkdownFilename: `${ordinal}.md`,
           errors: report.errors,
+          thirdPartyErrors: report.thirdPartyErrors,
           networkFailures: report.networkFailures,
+          thirdPartyFailures: report.thirdPartyFailures,
           warningCount: report.warningCount,
           recorderActive: report.recorderActive,
         });

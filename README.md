@@ -28,6 +28,8 @@ Every report capture also overwrites two stable-name files: `capture-kit/latest.
 
 `capture-kit/latest-session/` mirrors the newest session with numbered files (`01.jpg`, `01.md`, …) plus its own `index.md`, so an assistant can be pointed at one stable path. That folder is overwritten in place and never pruned — its `index.md` states the true page count and tells the reader to ignore higher-numbered leftovers from a longer previous session.
 
+Failures are classified before they reach the index. A request or script error whose host matches the page's registrable domain is **first-party** — the developer's problem — and stays under `Network failures:`. Everything else goes under `Third-party requests (blocked or failed)`, collapsed to one line per repeated request (`13×, 1–17ms`), because an ad blocker cutting the same analytics beacon thirteen times is not thirteen bugs. The header's "N pages with errors" and the page ordering count first-party signal only, so a working page with blocked beacons reads as neither broken nor clean. Each page report lists the hosts it treated as third-party, so a misclassification is visible rather than silent. A console error with no resolvable source stays first-party — an unattributable error should not be hidden.
+
 Two behaviours worth knowing before the first run:
 
 - **The browser visibly switches to each tab in turn.** Chrome does not render a backgrounded tab, so a tab must be in front to capture anything but blank pixels. Nothing is wrong when the window starts flipping.
