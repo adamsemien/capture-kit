@@ -303,6 +303,15 @@ interface ReportArtifacts {
   imageFilename: string;
   markdownFilename: string;
   markdown: string;
+  /**
+   * Same report with its Image: line pointing at the numbered sibling, for
+   * the latest-session mirror. Every path inside that folder has to resolve
+   * inside that folder — the mirror is the one directory an assistant is
+   * pointed at, and a reference out of it fails silently.
+   */
+  mirrorMarkdown: string | null;
+  /** Numbered image name the mirror markdown points at, e.g. "01.jpg". */
+  mirrorImageFilename: string | null;
   clipboardMarkdown: string;
   contents: string;
   errors: ConsoleEntry[];
@@ -321,6 +330,8 @@ async function captureReport(
   tab: chrome.tabs.Tab,
   settings: Settings,
   folder = '',
+  /** Ordinal for the mirror copy ("01"); the extension follows the real format. */
+  mirrorBasename?: string,
 ): Promise<ReportArtifacts> {
   const tabId = tab.id as number;
   const { snapshot, recorderActive } = await getSnapshot(tabId);
@@ -348,7 +359,7 @@ async function captureReport(
   const consoleEntries = snapshot?.console ?? [];
   const networkFailures = snapshot?.network ?? [];
 
-  const markdown = buildBundleMarkdown({
+  const markdownInput = {
     meta,
     contentSize: result.contentSize,
     fullSize: result.fullSize,
@@ -362,7 +373,14 @@ async function captureReport(
     captureMode: result.mode,
     revealForced: result.revealForced,
     segments: result.segments,
-  });
+  };
+  const markdown = buildBundleMarkdown(markdownInput);
+  const mirrorImageFilename = mirrorBasename
+    ? `${mirrorBasename}.${isJpeg ? 'jpg' : 'png'}`
+    : null;
+  const mirrorMarkdown = mirrorImageFilename
+    ? buildBundleMarkdown({ ...markdownInput, imageFilename: mirrorImageFilename })
+    : null;
 
   const errors = consoleEntries.filter((e) => e.level === 'error');
   const warningCount = consoleEntries.filter((e) => e.level === 'warn').length;
@@ -381,6 +399,8 @@ async function captureReport(
     imageFilename,
     markdownFilename,
     markdown,
+    mirrorMarkdown,
+    mirrorImageFilename,
     clipboardMarkdown: buildClipboardMarkdown(markdown, imageFilename),
     contents: buildContentsLine({
       truncated: result.truncated,
@@ -757,11 +777,15 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
         if (reload) await reloadAndSettle(tabId);
 
         const fresh = await chrome.tabs.get(tabId);
-        const report = await captureReport(fresh, settings, folder);
+        // The mirror name is known before the capture, so the report can be
+        // rendered twice — once naming the timestamped image for the session
+        // folder, once naming its numbered sibling for the mirror.
+        const ordinal = String(pages.length + 1).padStart(2, '0');
+        const report = await captureReport(fresh, settings, folder, ordinal);
+        const mirrorImage = report.mirrorImageFilename as string;
+
         // Mirror into the stable pointer folder immediately, while the bytes
         // are still in hand — numbered so overwrite is deterministic.
-        const ordinal = String(pages.length + 1).padStart(2, '0');
-        const mirrorImage = `${ordinal}.${report.imageMime === 'image/png' ? 'png' : 'jpg'}`;
         await downloadPointerFile(
           `${pointer}${mirrorImage}`,
           report.imageMime,
@@ -770,7 +794,7 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
         await downloadPointerFile(
           `${pointer}${ordinal}.md`,
           'text/markdown',
-          textToBase64(report.markdown),
+          textToBase64(report.mirrorMarkdown ?? report.markdown),
         );
 
         pages.push({

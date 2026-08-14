@@ -63,6 +63,12 @@ function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+/** Repo titles run to hundreds of characters and would swamp the timing line. */
+function shortTitle(title: string): string {
+  const clean = title.trim();
+  return clean.length > 60 ? `${clean.slice(0, 57).trimEnd()}…` : clean;
+}
+
 /** One line per error: message plus call site when the recorder resolved one. */
 function errorLine(entry: ConsoleEntry): string {
   const message = entry.message.replace(/\s*\n\s*/g, ' ').trim();
@@ -132,7 +138,9 @@ export function buildSessionIndex(input: SessionIndexInput): string {
     );
   }
 
-  const timingDetail = input.timings.map((t) => `${t.title}: ${seconds(t.ms)}`).join(' · ');
+  const timingDetail = input.timings
+    .map((t) => `${shortTitle(t.title)}: ${seconds(t.ms)}`)
+    .join(' · ');
   parts.push('---');
   parts.push(
     `Captured in ${seconds(input.totalMs)} total${timingDetail ? ` — ${timingDetail}` : ''}.`,
