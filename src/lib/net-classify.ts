@@ -51,13 +51,18 @@ function hostOf(url: string, base: string): string | null {
  *
  * Known false-negative risk, accepted: an app whose OWN endpoint is named
  * like these — /api/log for server-side logging, /metrics for an app-facing
- * dashboard fetch, /stats for a user-visible statistics endpoint — will be
- * demoted. It is still printed, in a labelled section, and the hosts line
- * names it as a same-domain demotion.
+ * dashboard fetch, /e/{id} for an events route — will be demoted. It is still
+ * printed, in a labelled section, and the hosts line names it as a
+ * same-domain demotion.
+ *
+ * 'stats' was deliberately removed: /api/stats is an ordinary endpoint behind
+ * ordinary dashboards, and demoting a real 500 there is exactly the error
+ * this split exists to prevent. The stats. HOST prefix stays — a host named
+ * for telemetry is far stronger evidence than a path segment.
  */
 const TELEMETRY_SEGMENTS = new Set([
   'log', 'logs', 'collect', 'beacon', 'track', 'tracking', 'telemetry',
-  'metrics', 'analytics', 'pixel', 'stats', 'gen_204', 'e',
+  'metrics', 'analytics', 'pixel', 'gen_204', 'e',
 ]);
 
 /** Subdomain prefixes that exist to carry telemetry. */
