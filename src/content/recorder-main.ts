@@ -12,6 +12,62 @@ import { RECORDER_EVENT } from '../lib/messages';
 (() => {
   const MAX_MESSAGE_LENGTH = 2000;
 
+  // Our own extension origin, e.g. "chrome-extension://pjchbjpiie…". The MAIN
+  // world has no chrome.runtime, so it is read off our own init stack — the
+  // top frame of an Error constructed here is this file.
+  const OWN_ORIGIN: string | null = (() => {
+    try {
+      const match = new Error().stack?.match(/chrome-extension:\/\/[^/\s)]+/);
+      return match ? match[0] : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  // Fallback when no stack was available: our injected filenames under any
+  // extension origin.
+  const OWN_FILE = /chrome-extension:\/\/[^/\s)]+\/content\/recorder-(?:main|isolated)\.js/;
+
+  const OWN_URL = OWN_ORIGIN
+    ? new RegExp(`${OWN_ORIGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^\\s)'"]*`, 'g')
+    : new RegExp(OWN_FILE.source + '(?::\\d+:\\d+)?', 'g');
+
+  function isOwnFrame(line: string): boolean {
+    return (OWN_ORIGIN !== null && line.includes(OWN_ORIGIN)) || OWN_FILE.test(line);
+  }
+
+  /**
+   * Removes the recorder's own frames from captured text.
+   *
+   * Our wrappers sit between the page and the platform, so an error the PAGE
+   * catches and logs carries `at wrappedFetch (chrome-extension://…)` in the
+   * middle of its stack. In a report handed to an AI assistant that frame
+   * reads as the cause — it sends the reader after our code instead of the
+   * page's bug, and it publishes our extension id. Only OUR frames are
+   * dropped: the page's trace is never truncated, reordered, or annotated.
+   *
+   * Accepted tradeoff: if the recorder ever does cause a page error, the
+   * evidence is stripped along with the noise. The wrappers are pass-through
+   * by construction, and a frame that misleads on every ordinary page costs
+   * more than the rare case it would have explained.
+   */
+  function stripOwnFrames(text: string): string {
+    if (!text || !isOwnFrame(text)) return text;
+    const kept: string[] = [];
+    for (const line of text.split('\n')) {
+      if (!isOwnFrame(line)) {
+        kept.push(line);
+        continue;
+      }
+      // A whole stack frame of ours goes. Our URL inside text the page itself
+      // wrote is redacted instead — dropping the line would delete the page's
+      // own words.
+      if (/^\s*at\s/.test(line)) continue;
+      kept.push(line.replace(OWN_URL, '[capture-kit]'));
+    }
+    return kept.join('\n');
+  }
+
   function emit(detail: RecorderEventDetail): void {
     try {
       // Serialized to JSON so the payload crosses the MAIN → isolated world
@@ -25,10 +81,14 @@ import { RECORDER_EVENT } from '../lib/messages';
   function emitConsole(level: ConsoleLevel, message: string, source?: string): void {
     const entry: ConsoleEntry = {
       level,
-      message: message.slice(0, MAX_MESSAGE_LENGTH),
+      // Stripped before the length cap, so removing our frame never pushes the
+      // page's own trace past the limit.
+      message: stripOwnFrames(message).slice(0, MAX_MESSAGE_LENGTH),
       timestamp: Date.now(),
     };
-    if (source) entry.source = source;
+    // A source that resolves to us would attribute the page's error to this
+    // extension; no source is better than a false one.
+    if (source && !isOwnFrame(source)) entry.source = source;
     emit({ kind: 'console', entry });
   }
 
@@ -40,7 +100,13 @@ import { RECORDER_EVENT } from '../lib/messages';
     try {
       if (typeof arg === 'string') return arg;
       if (arg instanceof Error) {
-        const stackTail = arg.stack ? '\n' + arg.stack.split('\n').slice(1, 3).join('\n') : '';
+        // Our frames are dropped BEFORE the two-frame window is taken, so the
+        // page keeps the same amount of its own trace it would have had if the
+        // recorder had never wrapped anything.
+        const frames = arg.stack
+          ? arg.stack.split('\n').slice(1).filter((line) => !isOwnFrame(line))
+          : [];
+        const stackTail = frames.length ? '\n' + frames.slice(0, 2).join('\n') : '';
         return `${arg.name}: ${arg.message}${stackTail}`;
       }
       if (typeof arg === 'function') return `[function ${arg.name || 'anonymous'}]`;

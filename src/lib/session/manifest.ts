@@ -1,5 +1,11 @@
 import type { ConsoleEntry, NetworkFailure } from '../messages';
-import { collapseFailures, formatFailureLine } from '../net-classify';
+import type { CollapsedConsoleError } from '../net-classify';
+import {
+  collapseConsoleErrors,
+  collapseFailures,
+  formatConsoleRepetition,
+  formatFailureLine,
+} from '../net-classify';
 
 /**
  * The session index is a TRIAGE document, not an archive. A real browser
@@ -80,10 +86,15 @@ function shortTitle(title: string): string {
   return clean.length > 60 ? `${clean.slice(0, 57).trimEnd()}…` : clean;
 }
 
-/** One line per error: message plus call site when the recorder resolved one. */
-function errorLine(entry: ConsoleEntry): string {
-  const message = entry.message.replace(/\s*\n\s*/g, ' ').trim();
-  return entry.source ? `- ${message} — ${entry.source}` : `- ${message}`;
+/**
+ * One line per error: message, call site when the recorder resolved one, and
+ * the repetition count when the same error fired more than once — the same
+ * shape network failures have always had in this index.
+ */
+function errorLine(group: CollapsedConsoleError): string {
+  const message = group.entry.message.replace(/\s*\n\s*/g, ' ').trim();
+  const repetition = formatConsoleRepetition(group);
+  return [`- ${message}`, group.entry.source, repetition].filter(Boolean).join(' — ');
 }
 
 export function buildSessionIndex(input: SessionIndexInput): string {
@@ -128,7 +139,9 @@ export function buildSessionIndex(input: SessionIndexInput): string {
     parts.push(head.join('\n'));
 
     if (page.errors.length) {
-      parts.push(['Errors:', ...page.errors.map(errorLine)].join('\n'));
+      parts.push(
+        ['Errors:', ...collapseConsoleErrors(page.errors).map(errorLine)].join('\n'),
+      );
     }
     if (page.networkFailures.length) {
       parts.push(
@@ -140,7 +153,10 @@ export function buildSessionIndex(input: SessionIndexInput): string {
     }
     if (page.thirdPartyErrors.length) {
       parts.push(
-        ['Third-party script errors:', ...page.thirdPartyErrors.map(errorLine)].join('\n'),
+        [
+          'Third-party script errors:',
+          ...collapseConsoleErrors(page.thirdPartyErrors).map(errorLine),
+        ].join('\n'),
       );
     }
     if (page.thirdPartyFailures.length) {

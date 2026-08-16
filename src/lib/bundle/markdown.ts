@@ -1,8 +1,11 @@
 import type { ConsoleEntry, NetworkFailure, PageMeta } from '../messages';
 import { CONSOLE_LOGS_IN_BUNDLE } from '../messages';
 import type { CaptureMode, PageDimensions } from '../capture-engine/types';
+import type { CollapsedConsoleError } from '../net-classify';
 import {
+  collapseConsoleErrors,
   collapseFailures,
+  formatConsoleRepetition,
   formatDemotedHost,
   formatFailureLine,
   mergeHosts,
@@ -45,10 +48,16 @@ function fence(text: string): string {
   return '~~~\n' + text.replace(/~~~/g, '~ ~ ~') + '\n~~~';
 }
 
-function consoleBlock(entry: ConsoleEntry): string {
+function consoleBlock(entry: ConsoleEntry, repetition = ''): string {
   const lines = [`[${timeOfDay(entry.timestamp)}] ${entry.message}`];
   if (entry.source) lines.push(`at ${entry.source}`);
+  if (repetition) lines.push(repetition);
   return fence(lines.join('\n'));
+}
+
+/** Errors print once with a count; warnings and logs print per entry. */
+function collapsedConsoleBlock(group: CollapsedConsoleError): string {
+  return consoleBlock(group.entry, formatConsoleRepetition(group));
 }
 
 function escapeCell(value: string): string {
@@ -251,7 +260,7 @@ function consoleAndNetworkSections(input: SectionsInput): string[] {
   parts.push(`### Errors (${errorSplit.firstParty.length})`);
   parts.push(
     errorSplit.firstParty.length
-      ? errorSplit.firstParty.map(consoleBlock).join('\n')
+      ? collapseConsoleErrors(errorSplit.firstParty).map(collapsedConsoleBlock).join('\n')
       : 'No console errors captured since page load.',
   );
 
@@ -260,13 +269,13 @@ function consoleAndNetworkSections(input: SectionsInput): string[] {
     parts.push(
       'Thrown by scripts served from another domain — usually a vendor widget, not this page\'s code.',
     );
-    parts.push(errorSplit.thirdParty.map(consoleBlock).join('\n'));
+    parts.push(collapseConsoleErrors(errorSplit.thirdParty).map(collapsedConsoleBlock).join('\n'));
   }
 
   parts.push(`### Warnings (${input.warnings.length})`);
   parts.push(
     input.warnings.length
-      ? input.warnings.map(consoleBlock).join('\n')
+      ? input.warnings.map((entry) => consoleBlock(entry)).join('\n')
       : 'No console warnings captured since page load.',
   );
 
@@ -274,7 +283,7 @@ function consoleAndNetworkSections(input: SectionsInput): string[] {
     parts.push(`### Logs (last ${CONSOLE_LOGS_IN_BUNDLE})`);
     parts.push(
       input.logs.length
-        ? input.logs.map(consoleBlock).join('\n')
+        ? input.logs.map((entry) => consoleBlock(entry)).join('\n')
         : 'No console logs captured since page load.',
     );
   } else {

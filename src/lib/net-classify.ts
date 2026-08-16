@@ -206,6 +206,113 @@ export function formatFailureLine(failure: CollapsedFailure): string {
   return `- ${failure.method} ${failure.url} — ${status} — ${repetition}${duration}${variants}`;
 }
 
+/** A run of near-identical console errors, collapsed. */
+export interface CollapsedConsoleError {
+  /** First occurrence — the one whose message and source are printed. */
+  entry: ConsoleEntry;
+  count: number;
+  firstAt: number;
+  lastAt: number;
+  /** True when members' raw messages differed and normalization merged them. */
+  variants: boolean;
+}
+
+/**
+ * Volatile substrings replaced before two messages are compared. The list is
+ * deliberately narrow — every entry is a value that changes on every call and
+ * identifies nothing. Over-collapsing hides distinct bugs, which is worse than
+ * printing a repeat, so anything that could plausibly distinguish two errors
+ * is left alone: HTTP statuses, short numeric codes, line and column numbers,
+ * short ids, and every word of the message text.
+ *
+ * Digit runs are only normalized at 10+ characters (epoch seconds are 10,
+ * milliseconds 13) and hex runs at 12+, which is why `Error 404` and
+ * `Error 500` stay two errors while `Request 1755209630123 failed` and
+ * `Request 1755209630130 failed` become one.
+ */
+const VOLATILE_TEXT: [RegExp, string][] = [
+  [/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g, '<time>'],
+  [/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '<uuid>'],
+  [/\b[0-9a-f]{12,}\b/gi, '<hex>'],
+  [/\b\d{10,}\b/g, '<num>'],
+  [/(:\/\/[^\s/:]+):\d{2,5}\b/g, '$1:<port>'],
+];
+
+/** Grouping form of a message. Never displayed — the raw first message is. */
+export function normalizeConsoleMessage(message: string): string {
+  let out = message;
+  for (const [pattern, replacement] of VOLATILE_TEXT) out = out.replace(pattern, replacement);
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Collapses console errors the way collapseFailures collapses network
+ * failures. THE rule, stated once: same level, same source location, and an
+ * identical message after normalizing the volatile substrings above. Nothing
+ * fuzzy — no edit distance, no prefix matching — because a page printing 15
+ * identical errors and a page printing 15 different ones must not read the
+ * same, in either direction.
+ *
+ * Entries with no source only group with other entries that also have none:
+ * an unattributable error is the case least safe to merge.
+ */
+export function collapseConsoleErrors(entries: ConsoleEntry[]): CollapsedConsoleError[] {
+  const groups = new Map<
+    string,
+    { entry: ConsoleEntry; raw: Set<string>; count: number; firstAt: number; lastAt: number }
+  >();
+  for (const entry of entries) {
+    const key = [entry.level, entry.source ?? '', normalizeConsoleMessage(entry.message)].join(' ');
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, {
+        entry,
+        raw: new Set([entry.message]),
+        count: 1,
+        firstAt: entry.timestamp,
+        lastAt: entry.timestamp,
+      });
+      continue;
+    }
+    existing.count += 1;
+    existing.raw.add(entry.message);
+    existing.firstAt = Math.min(existing.firstAt, entry.timestamp);
+    existing.lastAt = Math.max(existing.lastAt, entry.timestamp);
+  }
+
+  return [...groups.values()].map(({ entry, raw, count, firstAt, lastAt }) => ({
+    entry,
+    count,
+    firstAt,
+    lastAt,
+    variants: raw.size > 1,
+  }));
+}
+
+function pad(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+function timeOfDay(timestamp: number): string {
+  const d = new Date(timestamp);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/**
+ * `15×, 21:33:50–21:34:07` — the repetition half of formatFailureLine, in
+ * wall time instead of duration, since a console error has no duration.
+ * Empty for a single occurrence, so an un-repeated error prints exactly as
+ * it did before. `(variants)` marks a group whose raw messages differed,
+ * mirroring the network line's marker.
+ */
+export function formatConsoleRepetition(group: CollapsedConsoleError): string {
+  if (group.count < 2) return '';
+  const first = timeOfDay(group.firstAt);
+  const last = timeOfDay(group.lastAt);
+  const span = first === last ? first : `${first}–${last}`;
+  return `${group.count}×, ${span}${group.variants ? ' (variants)' : ''}`;
+}
+
 /** A host that was demoted, and why — the hosts line prints both. */
 export interface DemotedHost {
   host: string;
