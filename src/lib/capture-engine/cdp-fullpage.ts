@@ -143,36 +143,162 @@ async function revealScrollPass(target: chrome.debugger.Debuggee): Promise<void>
   }
 }
 
-// Sticky/fixed neutralization for the scroll-based segmented path. Without
-// this, every segment repeats the page's sticky headers — exactly the
-// GoFullPage artifact this extension exists to kill. Fixed elements are
-// re-anchored as absolute (stay out of flow, paint once near the top of the
-// page); sticky elements become static (already in flow, paint at their
-// natural position). Marker attributes + one injected stylesheet, both
-// removed after capture.
+// Sticky/fixed neutralization, applied to BOTH capture paths. A full-page
+// capture should look like the page would if it were infinitely tall and
+// never scrolled, so sticky and fixed chrome must paint once, where it sits
+// on an unscrolled page. On the segmented path, leaving it alone repeats the
+// header in every segment — the GoFullPage artifact this extension exists to
+// kill. On the single-shot path it is worse and quieter: captureBeyondViewport
+// resolves sticky/fixed once, at whatever scroll offset the reveal pass left
+// behind, and bakes the header two thirds of the way down the image.
+//
+// sticky -> static: already in flow, so it paints at its natural position.
+// fixed -> absolute: still out of flow, but where absolute lands depends on
+// the containing block, and the two paths disagree about that (single-shot
+// expands the viewport, segmented overrides it) — a bottom-pinned bar would
+// land in two different places. So when an element's box can be established
+// in its containing block's coordinates, its exact unscrolled box is pinned
+// instead. When it cannot — anything transformed, scaled, or zero-sized — it
+// gets a bare position:absolute with every offset left untouched. A displaced
+// element is worse than an unfixed one: it reads as intentional.
+//
+// Re-runnable: it only touches elements it has not already marked, so the
+// segmented path can run it again after the device-metrics override picks up
+// chrome that only becomes fixed under a media query. Marker attributes, one
+// injected stylesheet, and per-element original inline style + inner scroll
+// offsets recorded for restore — never a blanket rule.
 const UNSTICK_SCRIPT = `(() => {
-  if (document.getElementById('__capture_kit_unstick__')) return;
-  const style = document.createElement('style');
-  style.id = '__capture_kit_unstick__';
-  style.textContent =
-    '[data-capture-kit-position="fixed"]{position:absolute !important;}' +
-    '[data-capture-kit-position="sticky"]{position:static !important;}';
-  document.documentElement.appendChild(style);
-  for (const el of document.querySelectorAll('*')) {
-    try {
-      const position = getComputedStyle(el).position;
-      if (position === 'fixed' || position === 'sticky') {
-        el.setAttribute('data-capture-kit-position', position);
-      }
-    } catch {}
+  const STYLE_ID = '__capture_kit_unstick__';
+  const ATTR = 'data-capture-kit-position';
+  const PREV_STYLE = 'data-capture-kit-prev-style';
+  const SCROLL_ATTR = 'data-capture-kit-scroll';
+
+  if (!document.getElementById(STYLE_ID)) {
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent =
+      '[' + ATTR + '="sticky"]{position:static !important;}' +
+      '[' + ATTR + '="fixed"]{position:absolute !important;}' +
+      '[' + ATTR + '="pinned"]{position:absolute !important;right:auto !important;' +
+      'bottom:auto !important;box-sizing:border-box !important;}';
+    document.documentElement.appendChild(style);
   }
+
+  // Inner scrollers (a docs sidebar with its own overflow) go back to the top
+  // first, so their sticky children resolve where they belong and every rect
+  // measured below is the unscrolled one. Originals recorded for restore.
+  for (const el of document.querySelectorAll('*')) {
+    if (el.hasAttribute(SCROLL_ATTR)) continue;
+    const top = el.scrollTop;
+    const left = el.scrollLeft;
+    if (!top && !left) continue;
+    el.setAttribute(SCROLL_ATTR, top + ',' + left);
+    el.scrollTop = 0;
+    el.scrollLeft = 0;
+  }
+
+  // Distorts measured geometry: a rect read inside a scaled or rotated
+  // subtree cannot be turned back into a layout coordinate.
+  const distorts = (cs) =>
+    cs.transform !== 'none' ||
+    (cs.scale && cs.scale !== 'none') ||
+    (cs.rotate && cs.rotate !== 'none') ||
+    (cs.translate && cs.translate !== 'none') ||
+    (parseFloat(cs.zoom) || 1) !== 1;
+
+  // Becomes the containing block for an absolutely positioned descendant.
+  const formsContainingBlock = (cs) =>
+    cs.position !== 'static' ||
+    cs.transform !== 'none' ||
+    cs.perspective !== 'none' ||
+    cs.filter !== 'none' ||
+    (cs.backdropFilter && cs.backdropFilter !== 'none') ||
+    (cs.contain && /paint|layout|strict|content/.test(cs.contain)) ||
+    (cs.contentVisibility && cs.contentVisibility !== 'visible') ||
+    (cs.containerType && cs.containerType !== 'normal') ||
+    (cs.willChange && /transform|perspective|filter|contain/.test(cs.willChange));
+
+  // Measure everything before moving anything — the first reposition
+  // invalidates every rect read after it.
+  const targets = [];
+  for (const el of document.querySelectorAll('*')) {
+    if (el.hasAttribute(ATTR)) continue;
+    let cs;
+    try { cs = getComputedStyle(el); } catch { continue; }
+    if (cs.position === 'sticky') {
+      targets.push({ el: el, kind: 'sticky' });
+      continue;
+    }
+    if (cs.position !== 'fixed') continue;
+
+    const rect = el.getBoundingClientRect();
+    let placeable = rect.width > 0 && rect.height > 0 && !distorts(cs);
+    let block = null;
+    for (let node = el.parentElement; placeable && node; node = node.parentElement) {
+      let acs;
+      try { acs = getComputedStyle(node); } catch { placeable = false; break; }
+      if (distorts(acs)) { placeable = false; break; }
+      if (!block && formsContainingBlock(acs)) block = node;
+    }
+    if (!placeable) {
+      targets.push({ el: el, kind: 'fixed' });
+      continue;
+    }
+    // Origin of the box the element will be absolutely positioned against:
+    // the containing block's padding box, or the initial containing block,
+    // whose origin sits at the document origin.
+    let originTop = -window.scrollY;
+    let originLeft = -window.scrollX;
+    if (block) {
+      const blockRect = block.getBoundingClientRect();
+      const blockCs = getComputedStyle(block);
+      originTop = blockRect.top + (parseFloat(blockCs.borderTopWidth) || 0);
+      originLeft = blockRect.left + (parseFloat(blockCs.borderLeftWidth) || 0);
+    }
+    targets.push({
+      el: el,
+      kind: 'pinned',
+      top: rect.top - originTop,
+      left: rect.left - originLeft,
+      width: rect.width,
+      height: rect.height,
+    });
+  }
+
+  for (const t of targets) {
+    t.el.setAttribute(ATTR, t.kind);
+    if (t.kind !== 'pinned') continue;
+    t.el.setAttribute(PREV_STYLE, JSON.stringify(t.el.getAttribute('style')));
+    t.el.style.setProperty('top', t.top + 'px', 'important');
+    t.el.style.setProperty('left', t.left + 'px', 'important');
+    t.el.style.setProperty('width', t.width + 'px', 'important');
+    t.el.style.setProperty('height', t.height + 'px', 'important');
+  }
+  return targets.length;
 })()`;
 
 const RESTICK_SCRIPT = `(() => {
   const style = document.getElementById('__capture_kit_unstick__');
   if (style) style.remove();
+  // Inline style first: the recorded value is the whole original style
+  // attribute, so this drops the pinned offsets exactly, including their
+  // absence on elements that had no style attribute at all.
+  for (const el of document.querySelectorAll('[data-capture-kit-prev-style]')) {
+    let prev = null;
+    try { prev = JSON.parse(el.getAttribute('data-capture-kit-prev-style')); } catch {}
+    if (prev === null) el.removeAttribute('style');
+    else el.setAttribute('style', prev);
+    el.removeAttribute('data-capture-kit-prev-style');
+  }
   for (const el of document.querySelectorAll('[data-capture-kit-position]')) {
     el.removeAttribute('data-capture-kit-position');
+  }
+  // Scroll offsets last, once the layout they belong to is back.
+  for (const el of document.querySelectorAll('[data-capture-kit-scroll]')) {
+    const parts = (el.getAttribute('data-capture-kit-scroll') || '0,0').split(',');
+    el.removeAttribute('data-capture-kit-scroll');
+    el.scrollTop = parseFloat(parts[0]) || 0;
+    el.scrollLeft = parseFloat(parts[1]) || 0;
   }
 })()`;
 
@@ -192,15 +318,28 @@ export async function captureAttached(
     '({ x: window.scrollX, y: window.scrollY })',
   );
   let frozen = false;
+  let unstuck = false;
   let revealForced = 0;
   try {
     await evaluateInPage<void>(target, FREEZE_SCRIPT);
     frozen = true;
     await revealScrollPass(target);
+    // Force-reveal runs BEFORE unsticking on purpose: it skips elements that
+    // are still computed position:fixed so hidden fixed UI (menus, modals)
+    // is never forced visible. Unsticking first rewrites those to absolute
+    // and that guard stops matching.
     revealForced = await evaluateInPage<number>(target, FORCE_REVEAL_SCRIPT);
 
-    // Measure AFTER reveal handling — forcing transform:none on translated
-    // reveal elements can change the layout height.
+    // Settle at the top before neutralizing, so sticky elements resolve to
+    // their unstuck position and fixed chrome is measured where an unscrolled
+    // visitor would see it.
+    await evaluateInPage<ScrollPosition>(target, scrollAndSettleScript(0, 0, SEGMENT_SETTLE_MS));
+    await evaluateInPage<number>(target, UNSTICK_SCRIPT);
+    unstuck = true;
+
+    // Measure AFTER reveal handling and neutralization — forcing
+    // transform:none on translated reveal elements, and re-anchoring fixed
+    // elements into the document, can both change the layout height.
     const contentSize = await readContentSize(target);
     // The one-shot surface is allocated at devicePixelRatio, so the safe
     // ceiling is SINGLE_SHOT_SURFACE_LIMIT device px per axis — on Retina
@@ -216,6 +355,13 @@ export async function captureAttached(
       : await captureSegmented(target, contentSize, request);
     return { ...result, revealForced };
   } finally {
+    if (unstuck) {
+      try {
+        await evaluateInPage<void>(target, RESTICK_SCRIPT);
+      } catch {
+        /* page navigated away mid-capture */
+      }
+    }
     if (revealForced > 0) {
       try {
         await evaluateInPage<void>(target, UNFORCE_REVEAL_SCRIPT);
@@ -273,8 +419,9 @@ async function captureSingleShot(
 // deviceScaleFactor 1, scroll to each offset, capture the plain visible
 // viewport (no clip, no captureBeyondViewport), and place each shot at the
 // scroll offset the page actually reached (edge segments clamp, producing
-// harmless identical-content overlap). Metrics, scroll position, and
-// sticky neutralization are all restored in the finally block.
+// harmless identical-content overlap). Metrics and scroll position are
+// restored in the finally block; sticky neutralization is owned by
+// captureAttached, which restores it for both paths.
 async function captureSegmented(
   target: chrome.debugger.Debuggee,
   naturalSize: { width: number; height: number },
@@ -291,10 +438,14 @@ async function captureSegmented(
     deviceScaleFactor: 1,
     mobile: false,
   });
-  let unstuck = false;
   try {
-    await evaluateInPage<void>(target, UNSTICK_SCRIPT);
-    unstuck = true;
+    // Neutralization already ran in captureAttached, but the virtual viewport
+    // can make chrome fixed or sticky that was neither at the real viewport
+    // width (a media-query mobile nav), so run it again against the
+    // overridden layout. It skips everything it already marked, and the
+    // single restore stays in captureAttached's finally.
+    await evaluateInPage<ScrollPosition>(target, scrollAndSettleScript(0, 0, SEGMENT_SETTLE_MS));
+    await evaluateInPage<number>(target, UNSTICK_SCRIPT);
 
     // The virtual viewport can change layout (vh units, media queries), so
     // re-measure before planning the grid.
@@ -338,13 +489,6 @@ async function captureSegmented(
       revealForced: 0,
     };
   } finally {
-    if (unstuck) {
-      try {
-        await evaluateInPage<void>(target, RESTICK_SCRIPT);
-      } catch {
-        /* page navigated away mid-capture */
-      }
-    }
     try {
       await sendCommand(target, 'Emulation.clearDeviceMetricsOverride');
     } catch {
