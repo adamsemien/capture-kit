@@ -10,6 +10,9 @@ const markdownEl = document.getElementById('markdown') as HTMLPreElement;
 const showInFinderBtn = document.getElementById('show-in-finder') as HTMLButtonElement;
 const copyMarkdownBtn = document.getElementById('copy-markdown') as HTMLButtonElement;
 const copyForAiBtn = document.getElementById('copy-for-ai') as HTMLButtonElement;
+const copyImageBtn = document.getElementById('copy-image') as HTMLButtonElement;
+const copyImageKeyEl = document.getElementById('copy-image-key') as HTMLSpanElement;
+const copyForAiKeyEl = document.getElementById('copy-for-ai-key') as HTMLSpanElement;
 const statusEl = document.getElementById('status') as HTMLSpanElement;
 const zoomEl = document.getElementById('zoom') as HTMLDivElement;
 const viewFitBtn = document.getElementById('view-fit') as HTMLButtonElement;
@@ -69,6 +72,17 @@ function technicalLine(text: string): HTMLParagraphElement {
 
 const LARGE_PNG_BYTES = 10 * 1024 * 1024;
 
+const IS_MAC = navigator.userAgent.includes('Mac');
+
+/** The key the dual-format copy rides on, alongside the platform's copy modifier. */
+const DUAL_COPY_KEY = 'c';
+
+function shortcutLabel(dual: boolean): string {
+  const key = (dual ? DUAL_COPY_KEY : 'c').toUpperCase();
+  if (IS_MAC) return dual ? `⌘⇧${key}` : `⌘${key}`;
+  return dual ? `Ctrl+Shift+${key}` : `Ctrl+${key}`;
+}
+
 function renderWarnings(meta: CaptureResultMeta): void {
   // One band for the whole capture: a report renames four files at once, and
   // four identical warnings would read as noise rather than one problem.
@@ -120,6 +134,127 @@ function base64ToBlob(base64: string, mime: string): Blob {
   return new Blob([bytes], { type: mime });
 }
 
+function drawToPng(bitmap: ImageBitmap, scale: number): Promise<Blob> {
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('This browser would not give us a canvas to re-encode with.');
+  ctx.drawImage(bitmap, 0, 0, width, height);
+  return canvas.convertToBlob({ type: 'image/png' });
+}
+
+/**
+ * Encode at native size first, then look at what came out. PNG size tracks
+ * content rather than dimensions — flat UI compresses to almost nothing, a
+ * photo does not — so a pixel cap guesses at the wrong variable. Downscaling
+ * is also the expensive branch, not the cheap one: on a real 1863×4568
+ * capture, capping the long edge saved 14% of the bytes and cost 75% more
+ * time. So it earns its place only as a backstop against a pathological page,
+ * and the threshold is LARGE_PNG_BYTES — the size this product already calls
+ * a very large PNG in renderWarnings. One number for one idea. One retry,
+ * never a loop: a loop turns a slow path into a much slower one.
+ */
+async function toPngBlob(source: Blob): Promise<Blob> {
+  const bitmap = await createImageBitmap(source);
+  try {
+    const png = await drawToPng(bitmap, 1);
+    if (png.size <= LARGE_PNG_BYTES) return png;
+    return await drawToPng(bitmap, Math.sqrt(LARGE_PNG_BYTES / png.size));
+  } finally {
+    bitmap.close();
+  }
+}
+
+/**
+ * The clipboard accepts image/png only, and the default capture format is JPEG
+ * (see settings.ts), so every image copy re-encodes. Memoized because both
+ * shortcuts and both buttons want the same bytes, and copying twice must not
+ * pay for the encode twice.
+ */
+let clipboardPngPromise: Promise<Blob> | null = null;
+
+/** Set once the preview for the first image has decoded — see the render loop. */
+let firstImageBlob: Blob | null = null;
+
+function clipboardPng(captureId: string): Promise<Blob> {
+  clipboardPngPromise ??= (async () => {
+    let source = firstImageBlob;
+    if (!source) {
+      // Only before the preview has finished decoding; after that the page owns
+      // the bytes and never has to ask the service worker again.
+      const payload = await fetchImage(captureId, 0);
+      if (!payload) throw new Error('The image preview expired.');
+      source = base64ToBlob(payload.base64, payload.mime);
+    }
+    return toPngBlob(source);
+  })();
+  return clipboardPngPromise;
+}
+
+async function buildAiText(meta: CaptureResultMeta): Promise<string> {
+  const paths = await resolvePaths(meta);
+  const body = meta.markdown ? `${meta.markdown}\n` : '';
+  return `${body}Files on disk:\n${paths.map((p) => `- ${p}`).join('\n')}\n`;
+}
+
+/** A failed write is usually a dead preview, not a dead clipboard — say which. */
+async function copyFailure(png: Promise<Blob>): Promise<string> {
+  try {
+    await png;
+    return 'Could not reach the clipboard';
+  } catch {
+    return 'The image preview expired — use Show in Finder to open the file';
+  }
+}
+
+/*
+ * Both paths hand ClipboardItem its values as promises and call write()
+ * immediately. Resolving the PNG or the download paths first would spend the
+ * user gesture: Chrome's transient activation expires while we work, and the
+ * write then fails on a payload that was otherwise ready. One ClipboardItem
+ * per call — Chrome rejects an array of several, but several types inside one
+ * is exactly the supported shape.
+ */
+
+async function copyImage(captureId: string): Promise<void> {
+  const png = clipboardPng(captureId);
+  png.catch(() => {
+    /* reported through the write below */
+  });
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+    flashStatus('Image copied');
+  } catch {
+    setStatus(await copyFailure(png), true);
+  }
+}
+
+async function copyForAi(captureId: string, meta: CaptureResultMeta): Promise<void> {
+  const png = clipboardPng(captureId);
+  png.catch(() => {
+    /* falls back to the text half below */
+  });
+  const text = buildAiText(meta);
+  try {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        'image/png': png,
+        'text/plain': text.then((value) => new Blob([value], { type: 'text/plain' })),
+      }),
+    ]);
+    flashStatus('Copied — image and report');
+  } catch {
+    // A dead preview must not cost the report too: the text half is still good.
+    try {
+      await navigator.clipboard.writeText(await text);
+      flashStatus('Copied the report — the image preview had expired');
+    } catch {
+      setStatus('Could not reach the clipboard', true);
+    }
+  }
+}
+
 /**
  * Absolute paths for the Copy for AI block, read from the download records at
  * render time. A path that no longer resolves must say so — a broken path in
@@ -156,6 +291,7 @@ async function main(): Promise<void> {
     );
     showInFinderBtn.hidden = true;
     copyForAiBtn.hidden = true;
+    copyImageBtn.hidden = true;
     zoomEl.hidden = true;
     return;
   }
@@ -183,18 +319,34 @@ async function main(): Promise<void> {
     chrome.downloads.show(meta.images[0].downloadId);
   });
 
-  copyForAiBtn.addEventListener('click', () => {
-    void (async () => {
-      const paths = await resolvePaths(meta);
-      const body = meta.markdown ? `${meta.markdown}\n` : '';
-      const text = `${body}Files on disk:\n${paths.map((p) => `- ${p}`).join('\n')}\n`;
-      try {
-        await navigator.clipboard.writeText(text);
-        flashStatus('Copied — paste it to your assistant');
-      } catch {
-        setStatus('Could not reach the clipboard', true);
-      }
-    })();
+  copyImageKeyEl.textContent = shortcutLabel(false);
+  copyForAiKeyEl.textContent = shortcutLabel(true);
+
+  copyImageBtn.addEventListener('click', () => void copyImage(captureId));
+  copyForAiBtn.addEventListener('click', () => void copyForAi(captureId, meta));
+
+  /*
+   * Two paths, separated by a modifier rather than a setting. A designer wants
+   * the picture and a wall of markdown in Figma would be a defect; a developer
+   * wants the picture and the context. A toggle would make one key mean two
+   * things depending on state nobody can see, so the plain key stays the plain
+   * thing. A live text selection outranks both — highlighting inside the report
+   * pane must still copy what was highlighted.
+   */
+  document.addEventListener('keydown', (event) => {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) return;
+    const key = event.key.toLowerCase();
+    if (event.shiftKey) {
+      if (key !== DUAL_COPY_KEY) return;
+      event.preventDefault();
+      void copyForAi(captureId, meta);
+    } else {
+      if (key !== 'c') return;
+      event.preventDefault();
+      void copyImage(captureId);
+    }
   });
 
   if (meta.markdown) {
@@ -255,9 +407,15 @@ async function main(): Promise<void> {
       frame.appendChild(note);
       continue;
     }
+    const blob = base64ToBlob(payload.base64, payload.mime);
+    // Hold on to the bytes the preview already decoded. The service worker's
+    // copy lives in memory and dies with the worker, so a result tab left open
+    // for a minute can no longer answer GET_RESULT_IMAGE — and a copy button
+    // that stops working once the tab goes quiet is worse than no button.
+    if (index === 0) firstImageBlob = blob;
     const img = document.createElement('img');
     img.alt = image.filename;
-    img.src = URL.createObjectURL(base64ToBlob(payload.base64, payload.mime));
+    img.src = URL.createObjectURL(blob);
     img.addEventListener('click', () => setView(imagesEl.classList.contains('full')));
     frame.appendChild(img);
   }
