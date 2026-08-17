@@ -18,10 +18,15 @@ export interface Settings {
   imageOnlyPng: boolean;
   /**
    * Let page JavaScript fire a capture via the capture-kit:capture event.
-   * Default ON: this is a personal dev tool and the whole point is that an
-   * agent driving the browser can capture without a keystroke. If capture-kit
-   * ever ships to strangers this default flips OFF — any script on any page
-   * can fire it, and a stranger has no reason to expect that.
+   *
+   * Default OFF, and it has to be: this boolean has no origin restriction, so
+   * turning it on lets every site you visit fire a capture, pull its own tab
+   * to the front, focus the window, and write a file into your output folder.
+   * That is a fair trade to opt into deliberately and a bad one to inherit.
+   * A page-driven capture is still worth having, so the setting stays; PR-3
+   * replaces this boolean with a three-mode site-access control (Off /
+   * Allowed sites / Any page), matching Chrome's own vocabulary for exactly
+   * this decision.
    */
   allowInPageTrigger: boolean;
 }
@@ -33,7 +38,7 @@ export const DEFAULT_SETTINGS: Settings = {
   maintainLatest: true,
   openResult: true,
   imageOnlyPng: false,
-  allowInPageTrigger: true,
+  allowInPageTrigger: false,
 };
 
 export function normalizeBundleFormat(value: unknown): CaptureFormat {
@@ -57,7 +62,9 @@ export async function getSettings(): Promise<Settings> {
     maintainLatest: stored.maintainLatest !== false,
     openResult: stored.openResult !== false,
     imageOnlyPng: stored.imageOnlyPng === true,
-    allowInPageTrigger: stored.allowInPageTrigger !== false,
+    // `=== true`, not `!== false`: an unset key must read as off, including
+    // for anyone whose profile predates this setting existing.
+    allowInPageTrigger: stored.allowInPageTrigger === true,
   };
 }
 
@@ -69,7 +76,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     maintainLatest: settings.maintainLatest !== false,
     openResult: settings.openResult !== false,
     imageOnlyPng: settings.imageOnlyPng === true,
-    allowInPageTrigger: settings.allowInPageTrigger !== false,
+    allowInPageTrigger: settings.allowInPageTrigger === true,
   });
 }
 

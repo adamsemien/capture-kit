@@ -262,6 +262,19 @@ console.log(`downloads redirected to: ${DOWNLOADS}`);
 heading('CHECK 1 — chosen folder receives the capture, Downloads gains nothing');
 await openTab(optionsUrl);
 let options = await attach(optionsUrl);
+// The in-page trigger ships off, and every capture below is fired by a page,
+// so the harness turns it on explicitly rather than depending on a default.
+console.log(
+  'enable in-page trigger: ' +
+    JSON.stringify(
+      await options.eval(
+        `(async () => {
+           await chrome.storage.sync.set({ allowInPageTrigger: true });
+           return (await chrome.storage.sync.get('allowInPageTrigger')).allowInPageTrigger;
+         })()`,
+      ),
+    ),
+);
 // The options page's own button, so what ships is what gets tested.
 const clicking = options.eval(
   `(async () => {

@@ -52,6 +52,7 @@ Target behavior: page-level JavaScript can fire a capture and learn when it fini
 - Completion: service worker messages the content script, which dispatches `document` CustomEvent `capture-kit:capture-complete`, detail `{ ok, basename, output: 'chosen' | 'downloads', error? }`. Build detail from JSON-safe primitives only - it crosses the isolated/MAIN world boundary.
 - Concurrency: capture already in flight → immediately dispatch complete with `{ ok: false, error: 'busy' }`. No queue.
 - Guard: any script on any page can fire this. Acceptable for a personal dev tool; add an Options toggle "Allow in-page trigger," default ON. If this ships freemium later the default flips OFF - leave a comment saying so.
+  - **Superseded 2026-08-17, after the feature was built and reviewed.** The toggle ships **default OFF**. "Acceptable for a personal dev tool" understated what the trigger does: it activates a tab, focuses a window and writes a file into the output folder, on behalf of an origin the setting cannot name. Waiting for a freemium launch to flip it meant carrying an unrestricted default for no gain, since the person who wants it can tick a box. The three-mode Site access control (Off / Allowed sites / Any page) that makes "this one site may drive captures" expressible is PR-3; the boolean is the interim.
 - Trigger reference (not part of the PR): `document.dispatchEvent(new CustomEvent('capture-kit:capture'))`.
 
 ## Acceptance - run all five, paste raw outputs in the PR description

@@ -28,7 +28,7 @@ A lapse breaks nothing. The capture falls back to `Downloads/capture-kit/` and t
 
 ## AI agent bridge
 
-A page can also fire a capture itself, which is what lets an assistant driving the browser capture with zero keystrokes (extension keyboard shortcuts are browser chrome — no page script, CDP call or AppleScript can press them):
+A page can also fire a capture itself, which is what lets an assistant driving the browser capture with zero keystrokes (extension keyboard shortcuts are browser chrome — no page script, CDP call or AppleScript can press them). **This is off by default**; turn it on at **Settings → Automation**:
 
 ```js
 document.addEventListener('capture-kit:capture-complete', (e) => console.log(e.detail));
@@ -36,7 +36,9 @@ document.dispatchEvent(new CustomEvent('capture-kit:capture'));
 // → { ok: true, basename: "example-domain_2026-08-17_12-11", output: "chosen" }
 ```
 
-The completion event always fires — `{ ok: false, error: 'busy' }` if a capture is already running, and an error string if the page is one Chrome protects. Turn the trigger off in **Settings → Automation** if you would rather pages could not do this.
+The completion event always fires. With the setting off you get `{ ok: false, error: 'in-page trigger is turned off in Settings' }`, so a page can tell the difference between "refused" and "broken"; while a capture is already running, `{ ok: false, error: 'busy' }`; and an error string if the page is one Chrome protects.
+
+The setting is currently all-or-nothing: on means **any** site you visit can fire a capture, activate its own tab and write into your output folder. That is why it ships off. A three-mode site-access control (Off / Allowed sites / Any page), matching Chrome's own vocabulary, lands in the next release; leave this off until then unless you are the one driving the browser.
 
 Every report capture also overwrites two stable-name files: `capture-kit/latest.md` (the report markdown, whose `Image:` line names the archived timestamped screenshot) and `capture-kit/latest.jpg` or `latest.png`. Tell your coding agent once — for example: *"When I say 'check my capture', read `~/Downloads/capture-kit/latest.md` and the image file sitting next to it in that folder, then act on what you see."* — and it will always get the newest capture without you pasting anything.
 
@@ -55,7 +57,7 @@ Two behaviours worth knowing before the first run:
 
 ## Settings
 
-Open the extension options for: the output folder, whether a page may trigger a capture, segment size (max px per capture segment, 1024–16384), whether log-level console entries are included in reports, report image format (JPEG default, PNG optional), whether the result tab opens after a capture, and whether the `latest.*` pointers are maintained. "Image only" has its own PNG toggle in the popup.
+Open the extension options for: the output folder, whether a page may trigger a capture (off by default), segment size (max px per capture segment, 1024–16384), whether log-level console entries are included in reports, report image format (JPEG default, PNG optional), whether the result tab opens after a capture, and whether the `latest.*` pointers are maintained. "Image only" has its own PNG toggle in the popup.
 
 ## Known limitations
 

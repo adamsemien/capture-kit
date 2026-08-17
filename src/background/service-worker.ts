@@ -1006,6 +1006,12 @@ async function downloadPointerFile(
 // press Cmd+Shift+9, which is what kept an agent driving the browser from
 // capturing anything. A page event can reach the content script, and the
 // content script can reach this worker — so that is the path.
+//
+// The setting gating it defaults OFF. The trigger carries real authority: it
+// activates a tab, focuses a window, and writes a file, and this boolean has no
+// notion of which origin asked. PR-3 replaces it with a three-mode site-access
+// control (Off / Allowed sites / Any page), which is where "allow this one site
+// to drive captures" becomes expressible; until then the honest default is off.
 
 /** One capture at a time; a second trigger is refused, never queued. */
 let agentCaptureRunning = false;

@@ -40,7 +40,7 @@ so the extension can never silently regain access to a folder you revoked.
 
 - `storage.sync` holds the user settings (segment size cap, include-logs
   toggle, image format, result tab, `latest.*` pointers, and whether a page may
-  trigger a capture).
+  trigger a capture — **off by default**, see below).
 - IndexedDB (no permission required) holds the chosen output directory handle,
   which `chrome.storage` cannot store because it JSON-serializes its values.
 - `storage.session` holds the last captured bundle (for the "Copy Last
@@ -63,6 +63,17 @@ or reloaded, the declared content scripts aren't present. The worker injects
 the isolated-world half (`content/recorder-isolated.js`) on demand so page
 metadata and the clipboard path still work. The bundle explicitly flags such
 pages as having no recorder coverage since load.
+
+## The in-page capture trigger
+
+Not a Chrome permission, but the same kind of decision, so it belongs here.
+With **Settings → Automation** enabled, a page can dispatch
+`capture-kit:capture` and cause a capture: that activates the tab, focuses its
+window, and writes files to the output folder. The setting carries no origin
+restriction, so enabling it enables it for every site visited. **It therefore
+defaults to off**, and a page that fires the event while it is off gets an
+explicit refusal rather than silence. A three-mode site-access control (Off /
+Allowed sites / Any page) replaces the boolean in the next release.
 
 ## `host_permissions: <all_urls>`
 

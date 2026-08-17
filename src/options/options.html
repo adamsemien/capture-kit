@@ -94,10 +94,14 @@
           <span class="field-text">
             <span class="field-title">Let a page trigger a capture</span>
             <small>
-              An AI assistant driving this browser can run a capture without a keystroke by
-              dispatching <code>capture-kit:capture</code> on the page, and hears back on
-              <code>capture-kit:capture-complete</code>. Any script on any page you visit can do
-              this too — untick it if that bothers you.
+              Off by default. Turn this on and an AI assistant driving this browser can capture
+              without a keystroke, by dispatching <code>capture-kit:capture</code> on the page and
+              listening for <code>capture-kit:capture-complete</code>.
+              <b>It applies to every site you visit</b>, not just the one you had in mind: any
+              script on any page could fire a capture, bring its own tab to the front, and write a
+              file into your output folder. Per-site control is coming in the next release. Until
+              then this is all-or-nothing, so leave it off unless you are driving the browser
+              yourself.
             </small>
           </span>
         </label>
