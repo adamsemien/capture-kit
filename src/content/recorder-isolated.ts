@@ -3,13 +3,20 @@
 // keyboard-shortcut captures (the page, not the popup, has focus then).
 
 import type {
+  AgentCaptureDetail,
   BufferSnapshot,
   BufferStats,
   ConsoleEntry,
   NetworkFailure,
   TabMessage,
 } from '../lib/messages';
-import { CONSOLE_BUFFER_CAP, NETWORK_BUFFER_CAP, RECORDER_EVENT } from '../lib/messages';
+import {
+  AGENT_CAPTURE_EVENT,
+  AGENT_COMPLETE_EVENT,
+  CONSOLE_BUFFER_CAP,
+  NETWORK_BUFFER_CAP,
+  RECORDER_EVENT,
+} from '../lib/messages';
 
 (() => {
   // Guard against double-injection: the worker re-injects this file into
@@ -79,6 +86,33 @@ import { CONSOLE_BUFFER_CAP, NETWORK_BUFFER_CAP, RECORDER_EVENT } from '../lib/m
     }
   });
 
+  // The agent trigger. A keyboard command is browser chrome and no page script
+  // can press it; this event is the page-reachable equivalent, so an assistant
+  // driving the tab captures with zero keystrokes:
+  //
+  //   document.dispatchEvent(new CustomEvent('capture-kit:capture'))
+  //   document.addEventListener('capture-kit:capture-complete', e => ...)
+  //
+  // The worker decides whether the trigger is allowed (Settings) and answers
+  // on the same document either way, so a caller always gets one completion.
+  document.addEventListener(AGENT_CAPTURE_EVENT, () => {
+    try {
+      void chrome.runtime.sendMessage({ type: 'AGENT_CAPTURE' });
+    } catch {
+      dispatchComplete({ ok: false, error: 'extension unavailable' });
+    }
+  });
+
+  function dispatchComplete(detail: AgentCaptureDetail): void {
+    // Rebuilt from primitives on purpose: this object crosses into the page's
+    // world, where anything not structured-cloneable would throw.
+    const safe: AgentCaptureDetail = { ok: detail.ok === true };
+    if (typeof detail.basename === 'string') safe.basename = detail.basename;
+    if (detail.output === 'chosen' || detail.output === 'downloads') safe.output = detail.output;
+    if (typeof detail.error === 'string') safe.error = detail.error;
+    document.dispatchEvent(new CustomEvent(AGENT_COMPLETE_EVENT, { detail: safe }));
+  }
+
   async function copyText(text: string): Promise<boolean> {
     try {
       await navigator.clipboard.writeText(text);
@@ -123,6 +157,11 @@ import { CONSOLE_BUFFER_CAP, NETWORK_BUFFER_CAP, RECORDER_EVENT } from '../lib/m
         mainWorldActive,
       };
       sendResponse(stats);
+      return false;
+    }
+    if (message?.type === 'AGENT_CAPTURE_COMPLETE') {
+      dispatchComplete(message.detail);
+      sendResponse({ ok: true });
       return false;
     }
     if (message?.type === 'COPY_TEXT') {

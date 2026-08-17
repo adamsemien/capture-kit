@@ -15,6 +15,26 @@
       <h1>Settings</h1>
 
       <section class="card">
+        <h2 class="label">Where captures go</h2>
+
+        <div class="field">
+          <span class="field-text">
+            <span class="field-title">Output folder</span>
+            <small id="output-dir-help">
+              Chrome saves downloads inside its own Downloads folder and nowhere else. Pick a folder
+              here and capture-kit writes there directly instead.
+            </small>
+            <span class="output-dir">
+              <b id="output-dir-name">Chrome Downloads — default</b>
+              <button id="output-dir-choose" type="button">Choose…</button>
+              <button id="output-dir-clear" type="button" hidden>Use Downloads</button>
+            </span>
+            <small id="output-dir-note" class="note" hidden></small>
+          </span>
+        </div>
+      </section>
+
+      <section class="card">
         <h2 class="label">After a capture</h2>
 
         <label class="field">
@@ -64,6 +84,23 @@
             </span>
           </span>
         </div>
+      </section>
+
+      <section class="card">
+        <h2 class="label">Automation</h2>
+
+        <label class="field">
+          <input id="allow-in-page-trigger" type="checkbox" />
+          <span class="field-text">
+            <span class="field-title">Let a page trigger a capture</span>
+            <small>
+              An AI assistant driving this browser can run a capture without a keystroke by
+              dispatching <code>capture-kit:capture</code> on the page, and hears back on
+              <code>capture-kit:capture-complete</code>. Any script on any page you visit can do
+              this too — untick it if that bothers you.
+            </small>
+          </span>
+        </label>
       </section>
 
       <section class="card">

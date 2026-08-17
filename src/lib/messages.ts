@@ -54,9 +54,27 @@ export type RecorderEventDetail =
   | { kind: 'console'; entry: ConsoleEntry }
   | { kind: 'network'; entry: NetworkFailure };
 
-/** Popup / result page → service worker. */
+/** Page-level trigger for agents driving the browser. */
+export const AGENT_CAPTURE_EVENT = 'capture-kit:capture';
+export const AGENT_COMPLETE_EVENT = 'capture-kit:capture-complete';
+
+/**
+ * Detail of the completion event. JSON-safe primitives only: it crosses into
+ * the page's world, where a structured clone of anything richer would fail.
+ */
+export interface AgentCaptureDetail {
+  ok: boolean;
+  /** Timestamped basename shared by the image and the report. */
+  basename?: string;
+  /** Which output path the files took. */
+  output?: 'chosen' | 'downloads';
+  error?: string;
+}
+
+/** Popup / result page / content script → service worker. */
 export type RuntimeMessage =
   | { type: 'CAPTURE_BUNDLE' }
+  | { type: 'AGENT_CAPTURE' }
   | { type: 'CAPTURE_PAGE'; png?: boolean }
   | { type: 'CAPTURE_SWEEP' }
   | { type: 'GET_RESULT_IMAGE'; captureId: string; index: number }
@@ -111,7 +129,8 @@ export const SESSION_SUMMARY_KEY = 'sessionSummary';
 export type TabMessage =
   | { type: 'GET_SNAPSHOT' }
   | { type: 'GET_STATS' }
-  | { type: 'COPY_TEXT'; text: string };
+  | { type: 'COPY_TEXT'; text: string }
+  | { type: 'AGENT_CAPTURE_COMPLETE'; detail: AgentCaptureDetail };
 
 export type CaptureResponse =
   | { ok: true; imageFilename: string; markdown?: string }
@@ -121,16 +140,33 @@ export type SweepResponse =
   | { ok: true; saved: number[]; failed: { width: number; reason: string }[] }
   | { ok: false; reason: string };
 
+/**
+ * Where a capture's files actually landed. Stated on every capture, because
+ * "which folder was that" is exactly the question the 2026-08-17 symlink
+ * failure left a user unable to answer.
+ */
+export interface OutputInfo {
+  via: 'chosen' | 'downloads';
+  /** Chosen folder's name, or "Downloads/capture-kit" for the fallback. */
+  label: string;
+  /**
+   * True when a folder is chosen but its permission lapsed — a Chrome restart
+   * does this every time, and one click in the result tab fixes it.
+   */
+  lapsed: boolean;
+}
+
 /** One image of a capture result — metadata only; pixels stay in SW memory. */
 export interface ResultImage {
-  /** Basename inside Downloads/capture-kit, e.g. foo_2026-08-13_18-05.png */
+  /** Basename inside the output folder, e.g. foo_2026-08-13_18-05.png */
   filename: string;
   /** Sweep width label, e.g. "375 px". Absent for single captures. */
   label?: string;
   width: number;
   height: number;
   bytes: number;
-  downloadId: number;
+  /** Null on the File System Access path — those files have no download record. */
+  downloadId: number | null;
 }
 
 /** A download whose saved name differs from the one we asked Chrome for. */
@@ -144,6 +180,7 @@ export interface CaptureResultMeta {
   kind: 'page' | 'bundle' | 'sweep';
   captureModeLabel: string;
   images: ResultImage[];
+  output: OutputInfo;
   /** Non-empty when another extension claimed onDeterminingFilename. */
   filenameConflicts: FilenameConflict[];
   /** Bundle markdown (plain — the result page composes the clipboard variant). */

@@ -1,6 +1,6 @@
 # capture-kit
 
-Chrome extension for full-page captures plus console & network failure reports, built for AI-assisted coding. One click produces a screenshot and a markdown report of everything an agent needs to debug a page — and every output lands in `~/Downloads/capture-kit/`.
+Chrome extension for full-page captures plus console & network failure reports, built for AI-assisted coding. One click produces a screenshot and a markdown report of everything an agent needs to debug a page — landing in a folder you choose, or in `~/Downloads/capture-kit/` if you choose none.
 
 ## What it does
 
@@ -18,7 +18,23 @@ Chrome extension for full-page captures plus console & network failure reports, 
 | **Capture session (multiple tabs)** | Opens a tab picker, then captures the selected tabs one at a time into `capture-kit/session_{date}_{time}/` with an `index.md` triage manifest. Mirrored to `capture-kit/latest-session/`. |
 | **Responsive sweep (3 widths)** | The current page at 375 / 768 / 1440 px widths — three JPEGs plus one `_sweep.md` report listing each width. No clipboard. |
 
+## Output folder
+
+Chrome's downloads API writes inside the Downloads directory and nowhere else — relative paths only, absolute paths rejected, and a symlinked subfolder makes Chrome silently drop the folder and write loose at the Downloads root (measured, 2026-08-17). So the escape is the File System Access API: **Settings → Output folder → Choose…** picks any directory, and captures are written there directly. Pick nothing and behaviour is exactly as before.
+
+One thing to know, because Chrome gives no way around it: **a Chrome restart drops write permission for that folder.** Chrome's "allow on every visit" persistent grant does not cover extension origins (tested directly against the pref on Chrome 151). Nothing breaks — the capture falls back to `Downloads/capture-kit/` and the result tab says so with a **Reconnect the folder** button. One click restores it for the rest of the browser session; you never re-pick the folder. Every capture's result tab states which path it took.
+
 ## AI agent bridge
+
+A page can also fire a capture itself, which is what lets an assistant driving the browser capture with zero keystrokes (extension keyboard shortcuts are browser chrome — no page script, CDP call or AppleScript can press them):
+
+```js
+document.addEventListener('capture-kit:capture-complete', (e) => console.log(e.detail));
+document.dispatchEvent(new CustomEvent('capture-kit:capture'));
+// → { ok: true, basename: "example-domain_2026-08-17_12-11", output: "chosen" }
+```
+
+The completion event always fires — `{ ok: false, error: 'busy' }` if a capture is already running, and an error string if the page is one Chrome protects. Turn the trigger off in **Settings → Automation** if you would rather pages could not do this.
 
 Every report capture also overwrites two stable-name files: `capture-kit/latest.md` (the report markdown, whose `Image:` line names the archived timestamped screenshot) and `capture-kit/latest.jpg` or `latest.png`. Tell your coding agent once — for example: *"When I say 'check my capture', read `~/Downloads/capture-kit/latest.md` and the image file sitting next to it in that folder, then act on what you see."* — and it will always get the newest capture without you pasting anything.
 
@@ -37,7 +53,7 @@ Two behaviours worth knowing before the first run:
 
 ## Settings
 
-Open the extension options for: segment size (max px per capture segment, 1024–16384), whether log-level console entries are included in reports, report image format (JPEG default, PNG optional), whether the result tab opens after a capture, and whether the `latest.*` pointers are maintained. "Image only" has its own PNG toggle in the popup.
+Open the extension options for: the output folder, whether a page may trigger a capture, segment size (max px per capture segment, 1024–16384), whether log-level console entries are included in reports, report image format (JPEG default, PNG optional), whether the result tab opens after a capture, and whether the `latest.*` pointers are maintained. "Image only" has its own PNG toggle in the popup.
 
 ## Known limitations
 

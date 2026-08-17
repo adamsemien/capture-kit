@@ -16,6 +16,14 @@ export interface Settings {
    * PNG user is being deliberate — set from the popup checkbox, not options.
    */
   imageOnlyPng: boolean;
+  /**
+   * Let page JavaScript fire a capture via the capture-kit:capture event.
+   * Default ON: this is a personal dev tool and the whole point is that an
+   * agent driving the browser can capture without a keystroke. If capture-kit
+   * ever ships to strangers this default flips OFF — any script on any page
+   * can fire it, and a stranger has no reason to expect that.
+   */
+  allowInPageTrigger: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -25,6 +33,7 @@ export const DEFAULT_SETTINGS: Settings = {
   maintainLatest: true,
   openResult: true,
   imageOnlyPng: false,
+  allowInPageTrigger: true,
 };
 
 export function normalizeBundleFormat(value: unknown): CaptureFormat {
@@ -48,6 +57,7 @@ export async function getSettings(): Promise<Settings> {
     maintainLatest: stored.maintainLatest !== false,
     openResult: stored.openResult !== false,
     imageOnlyPng: stored.imageOnlyPng === true,
+    allowInPageTrigger: stored.allowInPageTrigger !== false,
   };
 }
 
@@ -59,6 +69,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     maintainLatest: settings.maintainLatest !== false,
     openResult: settings.openResult !== false,
     imageOnlyPng: settings.imageOnlyPng === true,
+    allowInPageTrigger: settings.allowInPageTrigger !== false,
   });
 }
 

@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>capture-kit FSA spike</title>
+    <style>
+      body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
+      button { font: inherit; padding: 0.5rem 0.9rem; margin-right: 0.5rem; }
+      pre { background: #111; color: #d7ffd7; padding: 1rem; overflow: auto; white-space: pre-wrap; }
+      h1 { font-size: 1.1rem; }
+      ol { color: #444; }
+    </style>
+  </head>
+  <body>
+    <h1>capture-kit FSA spike — NOBC-82</h1>
+    <ol>
+      <li><b>Choose folder</b> — pick <code>~/NoBad/_work/capture-kit-spike</code>, then "Allow on every visit" if Chrome offers it.</li>
+      <li><b>Write from the service worker</b> — this is finding 1.</li>
+      <li>Quit Chrome fully (Cmd+Q), relaunch, reopen this page, press <b>Write from the service worker</b> again without pressing Choose folder — this is finding 2.</li>
+    </ol>
+    <p>
+      <button id="choose">Choose folder</button>
+      <button id="write">Write from the service worker</button>
+      <button id="probe">Probe service worker only</button>
+    </p>
+    <pre id="out">ready</pre>
+    <script type="module" src="spike.js"></script>
+  </body>
+</html>

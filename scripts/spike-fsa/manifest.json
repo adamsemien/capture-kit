@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "capture-kit FSA spike",
+  "version": "0.0.1",
+  "description": "Throwaway harness for NOBC-82: does createWritable work in an MV3 service worker, and does the directory permission survive a Chrome restart?",
+  "background": { "service_worker": "sw.js", "type": "module" },
+  "action": { "default_title": "capture-kit FSA spike" },
+  "options_page": "spike.html"
+}
