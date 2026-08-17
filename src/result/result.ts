@@ -115,8 +115,9 @@ function renderWarnings(meta: CaptureResultMeta): void {
   if (meta.output.lapsed) {
     addWarning(
       'Your chosen folder lost its write permission, so this went to Downloads.',
-      'Chrome drops that permission every time it restarts and only gives it back when you ask — ' +
-        'one click here is enough, and the folder stays the one you already picked.',
+      'Chrome only gives that permission back when you ask — one click here is enough, and the ' +
+        'folder stays the one you already picked. If Chrome offers "allow on every visit", take ' +
+        'it and this stops happening after restarts.',
       reconnectButton(),
     );
   }

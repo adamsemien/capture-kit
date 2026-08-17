@@ -62,13 +62,13 @@ async function renderOutputDir(): Promise<void> {
   dirNameEl.textContent = status.name ?? 'chosen folder';
   dirChooseBtn.textContent = 'Change…';
   if (status.state === 'lapsed') {
-    // Every Chrome restart lands here: Chrome keeps the folder but drops the
-    // permission, and only a click can give it back — a service worker has no
-    // user gesture to ask with. Captures keep working in Downloads meanwhile.
+    // Chrome keeps the folder but drops the permission, and only a click can
+    // give it back — a service worker has no user gesture to ask with.
+    // Captures keep working in Downloads meanwhile.
     dirNoteEl.hidden = false;
     dirNoteEl.textContent =
-      'Chrome dropped write permission for this folder when it restarted. Captures are going to ' +
-      'Downloads until you reconnect it.';
+      'Chrome dropped write permission for this folder. Captures are going to Downloads until you ' +
+      'reconnect it — choose "allow on every visit" and it will survive restarts.';
     dirChooseBtn.textContent = 'Reconnect';
   }
 }

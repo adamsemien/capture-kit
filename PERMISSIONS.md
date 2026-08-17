@@ -30,10 +30,11 @@ output folder has been chosen or its permission has lapsed.
 Writing to a user-chosen directory adds **no manifest permission**. The File
 System Access API is gated on the user picking a folder in the options page and
 Chrome's own permission grant, not on a manifest key, so the extension's
-declared permissions are unchanged by that feature. Chrome drops the grant on
-every browser restart (extension origins are excluded from its persistent
-"allow on every visit" grants, verified on Chrome 151); re-arming it requires a
-click in an extension page, which a service worker can never fake.
+declared permissions are unchanged by that feature. The grant is Chrome's to
+give: taken as "allow on every visit" it survives restarts, taken for one visit
+it lapses with the browser session. Re-arming it always requires a click in an
+extension page — a service worker has no user activation and cannot fake one,
+so the extension can never silently regain access to a folder you revoked.
 
 ## `storage`
 

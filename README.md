@@ -22,7 +22,9 @@ Chrome extension for full-page captures plus console & network failure reports, 
 
 Chrome's downloads API writes inside the Downloads directory and nowhere else — relative paths only, absolute paths rejected, and a symlinked subfolder makes Chrome silently drop the folder and write loose at the Downloads root (measured, 2026-08-17). So the escape is the File System Access API: **Settings → Output folder → Choose…** picks any directory, and captures are written there directly. Pick nothing and behaviour is exactly as before.
 
-One thing to know, because Chrome gives no way around it: **a Chrome restart drops write permission for that folder.** Chrome's "allow on every visit" persistent grant does not cover extension origins (tested directly against the pref on Chrome 151). Nothing breaks — the capture falls back to `Downloads/capture-kit/` and the result tab says so with a **Reconnect the folder** button. One click restores it for the rest of the browser session; you never re-pick the folder. Every capture's result tab states which path it took.
+One thing to know about permissions: Chrome grants folder access to the page you clicked in, not to the extension forever. **Take "allow on every visit" when Chrome offers it** and the folder keeps working across restarts (verified on Chrome 151: quit, relaunch, capture — straight into the chosen folder). Grant it for one visit instead and the next restart lapses it.
+
+A lapse breaks nothing. The capture falls back to `Downloads/capture-kit/` and the result tab says so with a **Reconnect the folder** button; one click restores it — you never re-pick the folder, and the grant then covers the whole browser session, not just that tab. Every capture's result tab states which path it took.
 
 ## AI agent bridge
 

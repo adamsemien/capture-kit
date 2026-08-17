@@ -3,18 +3,23 @@
 // through it. chrome.storage cannot hold a handle (it JSON-serializes);
 // IndexedDB structured-clones it, which is what keeps the handle alive.
 //
-// What the 2026-08-17 spike proved about this, since the code below only makes
-// sense in light of it:
+// What the 2026-08-17 spike and the acceptance run proved, since the code below
+// only makes sense in light of it:
 //   - A handle stored from the options page works in an MV3 service worker:
 //     queryPermission → getFileHandle({create:true}) → createWritable → write.
-//   - The permission does NOT survive a full Chrome restart on a
-//     chrome-extension:// origin. Chrome's "allow on every visit" extended
-//     permission does not apply here — tested directly against the pref.
+//   - The permission is NOT automatically alive after a browser restart: the
+//     handle survives in IndexedDB, but queryPermission comes back 'prompt'.
 //   - Getting it back costs one user-activated click in any extension page;
 //     Chrome remembers the folder, so nobody re-picks anything. That grant is
 //     origin-wide for the browser session and outlives the page that asked.
-// Hence: the worker never requests permission (it cannot), it only checks. The
-// asking lives in the options page and the result tab.
+//   - When Chrome offers "allow on every visit" on that re-grant and the user
+//     takes it, the permission DOES survive restarts — verified on branded
+//     Chrome 151, where a capture after a full quit landed in the chosen
+//     folder untouched. (Chrome for Testing never offered that option, which
+//     is why the spike alone read as "persistence is impossible". It isn't.)
+// Hence: the worker never requests permission (it cannot — no user activation
+// exists there), it only checks. The asking lives in the options page and the
+// result tab, and the fallback covers every state before the user grants.
 
 const DB_NAME = 'capture-kit';
 const DB_VERSION = 1;

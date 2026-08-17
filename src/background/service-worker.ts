@@ -171,10 +171,11 @@ const DOWNLOADS_LABEL = `Downloads/${DOWNLOAD_SUBFOLDER}`;
  *
  * Route: a chosen directory whose permission is granted right now, else
  * Chrome's Downloads folder. A capture must never fail because of the output
- * folder — a lapsed permission (which a Chrome restart causes every time, per
- * the 2026-08-17 spike) degrades to Downloads and says so in the result tab,
- * where one click re-arms it. The worker cannot re-arm it itself: requesting
- * the permission needs user activation, which a service worker never has.
+ * folder — a lapsed permission degrades to Downloads and says so in the result
+ * tab, where one click re-arms it. A restart lapses the permission unless the
+ * user told Chrome to allow the folder on every visit. The worker cannot
+ * re-arm it itself: requesting the permission needs user activation, which a
+ * service worker never has.
  */
 async function writeBundleFile(
   path: string,
@@ -456,7 +457,6 @@ async function captureReport(
     revealForced: result.revealForced,
     segments: result.segments,
   };
-  const markdown = buildBundleMarkdown(markdownInput);
   const mirrorImageFilename = mirrorBasename
     ? `${mirrorBasename}.${isJpeg ? 'jpg' : 'png'}`
     : null;
@@ -482,17 +482,29 @@ async function captureReport(
     imageMime,
     result.imageBase64,
   );
-  await writeBundleFile(`${folder}${markdownFilename}`, 'text/markdown', textToBase64(markdown));
+  // The report is written after the image and names the file that actually
+  // landed. A collision renames the new image to "… (1).jpg", and a report
+  // still pointing at "….jpg" would send its reader to the PREVIOUS capture's
+  // picture — a wrong screenshot is worse than a missing one.
+  const markdown = buildBundleMarkdown({ ...markdownInput, imageFilename: imageWrite.filename });
+  const markdownWrite = await writeBundleFile(
+    `${folder}${markdownFilename}`,
+    'text/markdown',
+    textToBase64(markdown),
+  );
 
   return {
     capturedAt,
     basename,
-    imageFilename,
-    markdownFilename,
+    // The names as written, suffixes and all — everything downstream (result
+    // tab, clipboard block, the agent's completion event) has to point at the
+    // files that exist rather than the ones that were requested.
+    imageFilename: imageWrite.filename,
+    markdownFilename: markdownWrite.filename,
     markdown,
     mirrorMarkdown,
     mirrorImageFilename,
-    clipboardMarkdown: buildClipboardMarkdown(markdown, imageFilename),
+    clipboardMarkdown: buildClipboardMarkdown(markdown, imageWrite.filename),
     contents: buildContentsLine({
       truncated: result.truncated,
       fullSize: result.fullSize,
@@ -633,7 +645,7 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
           output: collectOutput(),
           images: [
             {
-              filename: imageFilename,
+              filename: written.filename,
               width: result.fullSize.width,
               height: result.fullSize.height,
               bytes: base64Bytes(result.imageBase64),
@@ -645,7 +657,7 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
         [{ mime, base64: result.imageBase64 }],
       );
     }
-    return { ok: true, imageFilename };
+    return { ok: true, imageFilename: written.filename };
   } catch (error) {
     const reason = describeError(error);
     console.error('[capture-kit] page capture failed:', error);
