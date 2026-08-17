@@ -1,5 +1,6 @@
 import type { CaptureResultMeta, ResultImagePayload } from '../lib/messages';
 import { buildClipboardMarkdown } from '../lib/bundle/markdown';
+import { requestOutputDirPermission } from '../lib/output-dir';
 
 const headlineEl = document.getElementById('headline') as HTMLHeadingElement;
 const metaEl = document.getElementById('meta') as HTMLDivElement;
@@ -83,7 +84,44 @@ function shortcutLabel(dual: boolean): string {
   return dual ? `Ctrl+Shift+${key}` : `Ctrl+${key}`;
 }
 
+/**
+ * Every capture states where its files went. The 2026-08-17 failure was files
+ * landing somewhere nobody expected with nothing on screen to say so.
+ */
+function outputChip(output: CaptureResultMeta['output']): HTMLElement {
+  return output.via === 'chosen'
+    ? chip('Output', `${output.label} (your folder)`)
+    : chip('Output', `${output.label}${output.lapsed ? ' (fallback)' : ''}`);
+}
+
+/** The one-click re-arm. This page is an extension page, so the click counts. */
+function reconnectButton(): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.textContent = 'Reconnect the folder';
+  button.addEventListener('click', () => {
+    void (async () => {
+      const status = await requestOutputDirPermission();
+      button.disabled = status.state === 'granted';
+      button.textContent =
+        status.state === 'granted'
+          ? `Reconnected — the next capture goes to ${status.name}`
+          : 'Chrome refused. Open Settings and choose the folder again.';
+    })();
+  });
+  return button;
+}
+
 function renderWarnings(meta: CaptureResultMeta): void {
+  if (meta.output.lapsed) {
+    addWarning(
+      'Your chosen folder lost its write permission, so this went to Downloads.',
+      'Chrome only gives that permission back when you ask — one click here is enough, and the ' +
+        'folder stays the one you already picked. If Chrome offers "allow on every visit", take ' +
+        'it and this stops happening after restarts.',
+      reconnectButton(),
+    );
+  }
+
   // One band for the whole capture: a report renames four files at once, and
   // four identical warnings would read as noise rather than one problem.
   if (meta.filenameConflicts.length) {
@@ -263,6 +301,12 @@ async function copyForAi(captureId: string, meta: CaptureResultMeta): Promise<vo
 async function resolvePaths(meta: CaptureResultMeta): Promise<string[]> {
   const lines: string[] = [];
   for (const image of meta.images) {
+    if (image.downloadId === null) {
+      // The File System Access API deliberately withholds real paths, so the
+      // best available answer is the folder the user picked plus the name.
+      lines.push(`${meta.output.label}/${image.filename}`);
+      continue;
+    }
     try {
       const [item] = await chrome.downloads.search({ id: image.downloadId });
       if (!item) {
@@ -312,12 +356,21 @@ async function main(): Promise<void> {
     metaEl.appendChild(chip('File', formatBytes(first.bytes)));
   }
   metaEl.appendChild(chip('Mode', meta.captureModeLabel));
+  metaEl.appendChild(outputChip(meta.output));
 
   renderWarnings(meta);
 
-  showInFinderBtn.addEventListener('click', () => {
-    chrome.downloads.show(meta.images[0].downloadId);
-  });
+  // Files written through the File System Access API have no download record,
+  // and chrome.downloads.show is the only reveal API an extension has — so the
+  // button hides rather than lying about what it can do.
+  const revealId = meta.images[0]?.downloadId ?? null;
+  if (revealId === null) {
+    showInFinderBtn.hidden = true;
+  } else {
+    showInFinderBtn.addEventListener('click', () => {
+      chrome.downloads.show(revealId);
+    });
+  }
 
   copyImageKeyEl.textContent = shortcutLabel(false);
   copyForAiKeyEl.textContent = shortcutLabel(true);

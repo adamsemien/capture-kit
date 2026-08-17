@@ -140,3 +140,46 @@ input[type='number'] {
   min-height: 1.4em;
   color: var(--ok);
 }
+
+/* Output folder row: the folder's name reads as the value, the buttons sit
+   beside it, and the lapsed-permission note lands underneath. */
+.output-dir {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.output-dir b {
+  font-weight: 500;
+}
+
+.output-dir button {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.output-dir button:hover {
+  border-color: var(--accent);
+}
+
+.output-dir button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.note {
+  color: var(--warn, var(--text));
+  margin-top: var(--space-2);
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}

@@ -1,6 +1,6 @@
 # capture-kit
 
-Chrome extension for full-page captures plus console & network failure reports, built for AI-assisted coding. One click produces a screenshot and a markdown report of everything an agent needs to debug a page — and every output lands in `~/Downloads/capture-kit/`.
+Chrome extension for full-page captures plus console & network failure reports, built for AI-assisted coding. One click produces a screenshot and a markdown report of everything an agent needs to debug a page — landing in a folder you choose, or in `~/Downloads/capture-kit/` if you choose none.
 
 ## What it does
 
@@ -18,7 +18,27 @@ Chrome extension for full-page captures plus console & network failure reports, 
 | **Capture session (multiple tabs)** | Opens a tab picker, then captures the selected tabs one at a time into `capture-kit/session_{date}_{time}/` with an `index.md` triage manifest. Mirrored to `capture-kit/latest-session/`. |
 | **Responsive sweep (3 widths)** | The current page at 375 / 768 / 1440 px widths — three JPEGs plus one `_sweep.md` report listing each width. No clipboard. |
 
+## Output folder
+
+Chrome's downloads API writes inside the Downloads directory and nowhere else — relative paths only, absolute paths rejected, and a symlinked subfolder makes Chrome silently drop the folder and write loose at the Downloads root (measured, 2026-08-17). So the escape is the File System Access API: **Settings → Output folder → Choose…** picks any directory, and captures are written there directly. Pick nothing and behaviour is exactly as before.
+
+One thing to know about permissions: Chrome grants folder access to the page you clicked in, not to the extension forever. **Take "allow on every visit" when Chrome offers it** and the folder keeps working across restarts (verified on Chrome 151: quit, relaunch, capture — straight into the chosen folder). Grant it for one visit instead and the next restart lapses it.
+
+A lapse breaks nothing. The capture falls back to `Downloads/capture-kit/` and the result tab says so with a **Reconnect the folder** button; one click restores it — you never re-pick the folder, and the grant then covers the whole browser session, not just that tab. Every capture's result tab states which path it took.
+
 ## AI agent bridge
+
+A page can also fire a capture itself, which is what lets an assistant driving the browser capture with zero keystrokes (extension keyboard shortcuts are browser chrome — no page script, CDP call or AppleScript can press them). **This is off by default**; turn it on at **Settings → Automation**:
+
+```js
+document.addEventListener('capture-kit:capture-complete', (e) => console.log(e.detail));
+document.dispatchEvent(new CustomEvent('capture-kit:capture'));
+// → { ok: true, basename: "example-domain_2026-08-17_12-11", output: "chosen" }
+```
+
+The completion event always fires. With the setting off you get `{ ok: false, error: 'in-page trigger is turned off in Settings' }`, so a page can tell the difference between "refused" and "broken"; while a capture is already running, `{ ok: false, error: 'busy' }`; and an error string if the page is one Chrome protects.
+
+The setting is currently all-or-nothing: on means **any** site you visit can fire a capture, activate its own tab and write into your output folder. That is why it ships off. A three-mode site-access control (Off / Allowed sites / Any page), matching Chrome's own vocabulary, lands in the next release; leave this off until then unless you are the one driving the browser.
 
 Every report capture also overwrites two stable-name files: `capture-kit/latest.md` (the report markdown, whose `Image:` line names the archived timestamped screenshot) and `capture-kit/latest.jpg` or `latest.png`. Tell your coding agent once — for example: *"When I say 'check my capture', read `~/Downloads/capture-kit/latest.md` and the image file sitting next to it in that folder, then act on what you see."* — and it will always get the newest capture without you pasting anything.
 
@@ -37,7 +57,7 @@ Two behaviours worth knowing before the first run:
 
 ## Settings
 
-Open the extension options for: segment size (max px per capture segment, 1024–16384), whether log-level console entries are included in reports, report image format (JPEG default, PNG optional), whether the result tab opens after a capture, and whether the `latest.*` pointers are maintained. "Image only" has its own PNG toggle in the popup.
+Open the extension options for: the output folder, whether a page may trigger a capture (off by default), segment size (max px per capture segment, 1024–16384), whether log-level console entries are included in reports, report image format (JPEG default, PNG optional), whether the result tab opens after a capture, and whether the `latest.*` pointers are maintained. "Image only" has its own PNG toggle in the popup.
 
 ## Known limitations
 

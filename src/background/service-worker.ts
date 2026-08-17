@@ -28,8 +28,10 @@ import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
 import { getSettings } from '../lib/settings';
 import type { Settings } from '../lib/settings';
+import { outputDirStatus, writeToOutputDir } from '../lib/output-dir';
 import { CONSOLE_LOGS_IN_BUNDLE, SESSION_PROGRESS_KEY, SESSION_SUMMARY_KEY } from '../lib/messages';
 import type {
+  AgentCaptureDetail,
   BufferSnapshot,
   CaptureResponse,
   CaptureResultMeta,
@@ -38,6 +40,7 @@ import type {
   LastBundle,
   LastError,
   NetworkFailure,
+  OutputInfo,
   ResultImagePayload,
   RuntimeMessage,
   SessionProgress,
@@ -147,12 +150,78 @@ async function downloadBase64(
   return id;
 }
 
+/** What one write actually did. `downloadId` is null on the chosen-folder path. */
+interface WriteResult {
+  filename: string;
+  downloadId: number | null;
+  via: 'chosen' | 'downloads';
+}
+
+/**
+ * Where the capture in flight put its files. Last write wins, which is right
+ * because a capture's files all take the same path — and every capture writes
+ * at least once, so this is never stale by the time the result tab reads it.
+ */
+let currentOutput: OutputInfo | null = null;
+
+const DOWNLOADS_LABEL = `Downloads/${DOWNLOAD_SUBFOLDER}`;
+
+/**
+ * The one write seam. Every file the extension produces goes through here.
+ *
+ * Route: a chosen directory whose permission is granted right now, else
+ * Chrome's Downloads folder. A capture must never fail because of the output
+ * folder — a lapsed permission degrades to Downloads and says so in the result
+ * tab, where one click re-arms it. A restart lapses the permission unless the
+ * user told Chrome to allow the folder on every visit. The worker cannot
+ * re-arm it itself: requesting the permission needs user activation, which a
+ * service worker never has.
+ */
+async function writeBundleFile(
+  path: string,
+  mime: string,
+  base64: string,
+  overwrite = false,
+): Promise<WriteResult> {
+  const status = await outputDirStatus();
+  if (status.state === 'granted') {
+    try {
+      const written = await writeToOutputDir(path, mime, base64, overwrite);
+      currentOutput = { via: 'chosen', label: written.root, lapsed: false };
+      return { filename: written.filename, downloadId: null, via: 'chosen' };
+    } catch (error) {
+      // The permission can lapse between the check and the write, and a folder
+      // can be deleted underneath us. Both are Downloads' problem now.
+      console.error('[capture-kit] chosen folder write failed, falling back to Downloads:', error);
+    }
+  }
+  const id = await downloadBase64(path, mime, base64, overwrite);
+  currentOutput = {
+    via: 'downloads',
+    label: DOWNLOADS_LABEL,
+    lapsed: status.state === 'lapsed',
+  };
+  return { filename: path.split('/').pop() as string, downloadId: id, via: 'downloads' };
+}
+
+function collectOutput(): OutputInfo {
+  return currentOutput ?? { via: 'downloads', label: DOWNLOADS_LABEL, lapsed: false };
+}
+
 // Tripwire results for the capture in flight. Captures are user-driven and
 // sequential, so a single drain point is enough; the result tab renders
 // whatever this collects, because a console warning is invisible to a user.
 const pendingNameChecks: Promise<FilenameConflict | null>[] = [];
 
-/** Tripwire: report if what landed on disk isn't what we asked for. */
+/**
+ * Tripwire: report if what landed on disk isn't what we asked for.
+ *
+ * Compares the whole relative path, not just the basename. The basename-only
+ * version was blind to the failure of 2026-08-17: Chrome silently dropped the
+ * "capture-kit/" prefix and wrote loose at the Downloads root, and because the
+ * basename still matched, nothing reported it. Losing the folder is exactly as
+ * bad as losing the name — the file is somewhere the user didn't ask for.
+ */
 async function verifyDownloadedName(
   id: number,
   requested: string,
@@ -161,12 +230,17 @@ async function verifyDownloadedName(
     await waitForDownloadComplete(id);
     const [item] = await chrome.downloads.search({ id });
     if (!item?.filename) return null;
-    const saved = item.filename.split(/[\\/]/).pop() ?? '';
-    const expected = requested.split('/').pop() ?? '';
+    // item.filename is absolute; compare its tail against the path we asked
+    // for, which is relative to the downloads directory.
+    const savedParts = item.filename.split(/[\\/]/).filter(Boolean);
+    const expectedParts = requested.split('/').filter(Boolean);
+    const saved = savedParts.slice(-expectedParts.length).join('/');
+    const expected = expectedParts.join('/');
     if (saved === expected) return null;
     console.warn(
-      `[capture-kit] filename was overridden: requested "${expected}", saved as "${saved}". ` +
-        'Another extension is claiming chrome.downloads.onDeterminingFilename.',
+      `[capture-kit] download path was overridden: requested "${expected}", saved as "${saved}". ` +
+        'Either another extension is claiming chrome.downloads.onDeterminingFilename, ' +
+        'or Chrome refused the subfolder.',
     );
     return { requested: expected, saved };
   } catch {
@@ -215,10 +289,13 @@ async function downloadLatestPointer(
   mime: string,
   base64: string,
 ): Promise<void> {
-  const id = await downloadBase64(filename, mime, base64, true);
-  await waitForDownloadComplete(id);
+  const written = await writeBundleFile(filename, mime, base64, true);
+  // On the chosen-folder path there is no shelf entry and no download record,
+  // so there is nothing to hide — the erase dance is downloads-only.
+  if (written.downloadId === null) return;
+  await waitForDownloadComplete(written.downloadId);
   try {
-    await chrome.downloads.erase({ id });
+    await chrome.downloads.erase({ id: written.downloadId });
   } catch {
     /* record cleanup is best-effort; the file is already written */
   }
@@ -324,7 +401,8 @@ interface ReportArtifacts {
   warningCount: number;
   recorderActive: boolean;
   imageMime: string;
-  imageDownloadId: number;
+  /** Null when the image went to the chosen folder — no download record exists. */
+  imageDownloadId: number | null;
   result: Awaited<ReturnType<typeof captureFullPage>>;
   title: string;
   url: string;
@@ -379,7 +457,6 @@ async function captureReport(
     revealForced: result.revealForced,
     segments: result.segments,
   };
-  const markdown = buildBundleMarkdown(markdownInput);
   const mirrorImageFilename = mirrorBasename
     ? `${mirrorBasename}.${isJpeg ? 'jpg' : 'png'}`
     : null;
@@ -397,22 +474,37 @@ async function captureReport(
   const warningCount = consoleEntries.filter((e) => e.level === 'warn').length;
   const logCount = consoleEntries.filter((e) => e.level === 'log').length;
   const imageMime = isJpeg ? 'image/jpeg' : 'image/png';
-  const imageDownloadId = await downloadBase64(
+  // Both files go through the same seam in the same order, so they always land
+  // in the same directory — the mirror markdown's relative "Image:" line
+  // depends on that on either path.
+  const imageWrite = await writeBundleFile(
     `${folder}${imageFilename}`,
     imageMime,
     result.imageBase64,
   );
-  await downloadBase64(`${folder}${markdownFilename}`, 'text/markdown', textToBase64(markdown));
+  // The report is written after the image and names the file that actually
+  // landed. A collision renames the new image to "… (1).jpg", and a report
+  // still pointing at "….jpg" would send its reader to the PREVIOUS capture's
+  // picture — a wrong screenshot is worse than a missing one.
+  const markdown = buildBundleMarkdown({ ...markdownInput, imageFilename: imageWrite.filename });
+  const markdownWrite = await writeBundleFile(
+    `${folder}${markdownFilename}`,
+    'text/markdown',
+    textToBase64(markdown),
+  );
 
   return {
     capturedAt,
     basename,
-    imageFilename,
-    markdownFilename,
+    // The names as written, suffixes and all — everything downstream (result
+    // tab, clipboard block, the agent's completion event) has to point at the
+    // files that exist rather than the ones that were requested.
+    imageFilename: imageWrite.filename,
+    markdownFilename: markdownWrite.filename,
     markdown,
     mirrorMarkdown,
     mirrorImageFilename,
-    clipboardMarkdown: buildClipboardMarkdown(markdown, imageFilename),
+    clipboardMarkdown: buildClipboardMarkdown(markdown, imageWrite.filename),
     contents: buildContentsLine({
       truncated: result.truncated,
       fullSize: result.fullSize,
@@ -432,7 +524,7 @@ async function captureReport(
     warningCount,
     recorderActive,
     imageMime,
-    imageDownloadId,
+    imageDownloadId: imageWrite.downloadId,
     result,
     title: meta.title || tab.title || '',
     url: meta.url || tab.url || '',
@@ -495,6 +587,7 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
           kind: 'bundle',
           captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments),
           filenameConflicts: await collectFilenameConflicts(),
+          output: collectOutput(),
           images: [
             {
               filename: imageFilename,
@@ -542,20 +635,21 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
     const imageFilename = `${captureBasename(tab.title || '', tab.url, new Date())}.${
       format === 'png' ? 'png' : 'jpg'
     }`;
-    const downloadId = await downloadBase64(imageFilename, mime, result.imageBase64);
+    const written = await writeBundleFile(imageFilename, mime, result.imageBase64);
     if (settings.openResult) {
       await openResultTab(
         {
           kind: 'page',
           captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments),
           filenameConflicts: await collectFilenameConflicts(),
+          output: collectOutput(),
           images: [
             {
-              filename: imageFilename,
+              filename: written.filename,
               width: result.fullSize.width,
               height: result.fullSize.height,
               bytes: base64Bytes(result.imageBase64),
-              downloadId,
+              downloadId: written.downloadId,
             },
           ],
           createdAt: Date.now(),
@@ -563,7 +657,7 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
         [{ mime, base64: result.imageBase64 }],
       );
     }
-    return { ok: true, imageFilename };
+    return { ok: true, imageFilename: written.filename };
   } catch (error) {
     const reason = describeError(error);
     console.error('[capture-kit] page capture failed:', error);
@@ -598,15 +692,14 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
     }
 
     const basename = captureBasename(tab.title || '', tab.url, new Date());
-    const downloadIds: number[] = [];
+    const downloadIds: (number | null)[] = [];
     for (const capture of outcome.captures) {
-      downloadIds.push(
-        await downloadBase64(
-          `${basename}_w${capture.width}.jpg`,
-          'image/jpeg',
-          capture.result.imageBase64,
-        ),
+      const written = await writeBundleFile(
+        `${basename}_w${capture.width}.jpg`,
+        'image/jpeg',
+        capture.result.imageBase64,
       );
+      downloadIds.push(written.downloadId);
     }
 
     if (outcome.captures.length === 0) {
@@ -640,7 +733,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
       recorderActive,
       includeLogs: settings.includeConsoleLogs,
     });
-    await downloadBase64(`${basename}_sweep.md`, 'text/markdown', textToBase64(sweepMarkdown));
+    await writeBundleFile(`${basename}_sweep.md`, 'text/markdown', textToBase64(sweepMarkdown));
 
     if (settings.openResult) {
       const first = outcome.captures[0].result;
@@ -649,6 +742,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
           kind: 'sweep',
           captureModeLabel: captureModeLabel(first.mode, first.revealForced, first.segments),
           filenameConflicts: await collectFilenameConflicts(),
+          output: collectOutput(),
           images: outcome.captures.map((capture, index) => ({
             filename: `${basename}_w${capture.width}.jpg`,
             label: `${capture.width} px`,
@@ -845,7 +939,7 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
       cancelled: sessionCancelled,
     };
     const indexMarkdown = buildSessionIndex(indexInput);
-    const indexDownloadId = await downloadBase64(
+    const indexWrite = await writeBundleFile(
       `${folder}index.md`,
       'text/markdown',
       textToBase64(indexMarkdown),
@@ -864,16 +958,20 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
       }
     }
 
+    // Name the real destination: with a chosen folder these are not in
+    // Downloads at all, and a summary that says otherwise sends the user
+    // looking in the wrong place.
+    const outputLabel = collectOutput().label;
     const summary: SessionSummary = {
-      folder: `capture-kit/${folderName}`,
-      pointerFolder: `capture-kit/${SESSION_POINTER_FOLDER}`,
+      folder: `${outputLabel}/${folderName}`,
+      pointerFolder: `${outputLabel}/${SESSION_POINTER_FOLDER}`,
       pages: pages.length,
       withIssues: pages.filter((p) => p.errors.length || p.networkFailures.length).length,
       failures: failures.map((f) => ({ title: f.title || f.url, reason: f.reason })),
       timings,
       totalMs,
       cancelled: sessionCancelled,
-      indexDownloadId,
+      indexDownloadId: indexWrite.downloadId,
     };
     try {
       await chrome.storage.session.set({ [SESSION_SUMMARY_KEY]: summary });
@@ -899,16 +997,90 @@ async function downloadPointerFile(
   mime: string,
   base64: string,
 ): Promise<void> {
-  const id = await downloadBase64(filename, mime, base64, true);
-  await waitForDownloadComplete(id);
+  await downloadLatestPointer(filename, mime, base64);
+}
+
+// ---------------------------------------------------------- agent trigger --
+//
+// Extension keyboard commands are browser chrome: no page-level automation can
+// press Cmd+Shift+9, which is what kept an agent driving the browser from
+// capturing anything. A page event can reach the content script, and the
+// content script can reach this worker — so that is the path.
+//
+// The setting gating it defaults OFF. The trigger carries real authority: it
+// activates a tab, focuses a window, and writes a file, and this boolean has no
+// notion of which origin asked. PR-3 replaces it with a three-mode site-access
+// control (Off / Allowed sites / Any page), which is where "allow this one site
+// to drive captures" becomes expressible; until then the honest default is off.
+
+/** One capture at a time; a second trigger is refused, never queued. */
+let agentCaptureRunning = false;
+
+async function tellPage(tabId: number, detail: AgentCaptureDetail): Promise<void> {
   try {
-    await chrome.downloads.erase({ id });
+    await chrome.tabs.sendMessage(tabId, { type: 'AGENT_CAPTURE_COMPLETE', detail });
   } catch {
-    /* record cleanup is best-effort; the file is already written */
+    // The tab may be gone or navigated; the capture still happened.
   }
 }
 
-chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
+async function agentCapture(tabId: number): Promise<void> {
+  if (agentCaptureRunning) {
+    await tellPage(tabId, { ok: false, error: 'busy' });
+    return;
+  }
+  agentCaptureRunning = true;
+  try {
+    // The capture is scoped to the tab that fired the event, and Chrome does
+    // not paint a backgrounded tab — so that tab is focused first, exactly as
+    // the session runner does it.
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab.active) {
+      await chrome.tabs.update(tabId, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    // Same path as the keyboard command, so an agent gets exactly what a
+    // keystroke gets — including the badge flash.
+    const response = await captureBundle(true);
+    await tellPage(
+      tabId,
+      response.ok
+        ? {
+            ok: true,
+            // The basename is the shared stem of both files; the page asked
+            // for a capture, so it is told what to look for.
+            basename: response.imageFilename.replace(/\.[^.]+$/, ''),
+            output: collectOutput().via,
+          }
+        : { ok: false, error: response.reason },
+    );
+  } catch (error) {
+    await tellPage(tabId, { ok: false, error: describeError(error) });
+  } finally {
+    agentCaptureRunning = false;
+  }
+}
+
+chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
+  if (message?.type === 'AGENT_CAPTURE') {
+    const tabId = sender.tab?.id;
+    // Scoped to the sender's tab: an agent captures the page it is driving,
+    // not whatever happens to be focused.
+    if (tabId === undefined) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    void getSettings().then((settings) => {
+      if (!settings.allowInPageTrigger) {
+        void tellPage(tabId, { ok: false, error: 'in-page trigger is turned off in Settings' });
+        return;
+      }
+      void agentCapture(tabId);
+    });
+    sendResponse({ ok: true });
+    return false;
+  }
   if (message?.type === 'CAPTURE_BUNDLE') {
     void captureBundle(false).then(sendResponse);
     return true;
