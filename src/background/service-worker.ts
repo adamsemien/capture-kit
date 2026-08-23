@@ -20,6 +20,8 @@ import {
   buildContentsLine,
   buildSweepMarkdown,
   captureModeLabel,
+  OUTPUT_README,
+  withLatestNotice,
 } from '../lib/bundle/markdown';
 import { captureBasename, slugify, timestampForFilename } from '../lib/bundle/filename';
 import { buildSessionIndex } from '../lib/session/manifest';
@@ -28,7 +30,7 @@ import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
 import { ICON_MODE_KEY, getSettings } from '../lib/settings';
 import type { Settings } from '../lib/settings';
-import { outputDirStatus, writeToOutputDir } from '../lib/output-dir';
+import { outputDirHasFile, outputDirStatus, writeToOutputDir } from '../lib/output-dir';
 import {
   CAPTURE_PROGRESS_KEY,
   CONSOLE_LOGS_IN_BUNDLE,
@@ -214,6 +216,73 @@ async function writeBundleFile(
 
 function collectOutput(): OutputInfo {
   return currentOutput ?? { via: 'downloads', label: DOWNLOADS_LABEL, lapsed: false };
+}
+
+/**
+ * Drops a plain-text README into the output folder the first time a bundle
+ * lands there, so someone opening the folder in Finder six weeks later can
+ * tell latest.jpg from a timestamped original without opening either.
+ *
+ * Written exactly once, and never over an existing file. Two guards, because
+ * the two output paths can be asked different questions:
+ *
+ *   - Chosen folder: the directory handle can be read, so absence is checked
+ *     for real. A README the user wrote themselves is seen and left alone.
+ *   - Downloads: an extension cannot look inside the Downloads directory at
+ *     all, so a storage.local flag stands in. It is honest about its limit —
+ *     a hand-written README.txt there is invisible to us, and the write seam's
+ *     uniquify is what still guarantees it is never clobbered (we would create
+ *     "README (1).txt" once and then never try again).
+ *
+ * The tripwire is deliberately left alone: this write's name check is drained
+ * and discarded right here, before the capture's own writes queue theirs, so a
+ * uniquified README can never surface as a filename-conflict warning about the
+ * user's screenshot.
+ */
+const README_FILENAME = 'README.txt';
+
+async function ensureOutputReadme(): Promise<void> {
+  try {
+    const status = await outputDirStatus();
+    const scope = status.state === 'granted' ? `chosen:${status.name ?? ''}` : 'downloads';
+    const flagKey = `readmeWritten:${scope}`;
+
+    const present = await outputDirHasFile(README_FILENAME);
+    if (present === true) return;
+    if (present === null) {
+      const stored = await chrome.storage.local.get(flagKey);
+      if (stored[flagKey] === true) return;
+    }
+
+    const written = await writeBundleFile(
+      README_FILENAME,
+      'text/plain',
+      textToBase64(OUTPUT_README),
+    );
+    // Drain this write's tripwire entry so it cannot be reported against the
+    // capture that is about to run. This also awaits the download reaching a
+    // terminal state, which the landed check below relies on.
+    await collectFilenameConflicts();
+
+    // The flag means "verified on disk", not "asked for". Setting it on the
+    // request alone was wrong: a download that never completes would burn the
+    // one attempt and the folder would stay unexplained forever. Measured
+    // 2026-08-23 — a download issued while a native file dialog was open was
+    // dropped by Chrome, the flag was set anyway, and no README ever appeared.
+    let landed = true;
+    if (written.downloadId !== null) {
+      const [item] = await chrome.downloads.search({ id: written.downloadId });
+      // `exists: false` is Chrome saying the record completed but the file is
+      // not on disk — measured in the harness, where a download issued while a
+      // native folder dialog was open recorded complete and wrote nothing.
+      // Treating that as success would burn the single attempt.
+      landed = item?.state === 'complete' && item.exists !== false;
+    }
+    if (landed) await chrome.storage.local.set({ [flagKey]: true });
+  } catch (error) {
+    // A folder note is never worth failing a capture over.
+    console.error('[capture-kit] could not write the output README:', error);
+  }
 }
 
 // Tripwire results for the capture in flight. Captures are user-driven and
@@ -542,6 +611,7 @@ async function captureReport(
     imageSize: result.imageSize,
     trigger,
     stamp: result.stamp,
+    naturalSize: result.naturalSize,
   };
   const mirrorImageFilename = mirrorBasename
     ? `${mirrorBasename}.${isJpeg ? 'jpg' : 'png'}`
@@ -634,6 +704,10 @@ async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> 
     const tabId = tab.id as number;
     const settings = await getSettings();
 
+    // Before the capture's own writes, so its tripwire entry can be drained
+    // without touching theirs.
+    await ensureOutputReadme();
+
     await beginIndicator();
     const report = await captureReport(tab, settings, trigger);
     const {
@@ -650,7 +724,14 @@ async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> 
         imageMime,
         result.imageBase64,
       );
-      await downloadLatestPointer('latest.md', 'text/markdown', textToBase64(markdown));
+      // The rolling copy says so in the file itself. An assistant handed
+      // latest.md otherwise cannot tell it from the timestamped original, nor
+      // that what it read a minute ago has since been replaced.
+      await downloadLatestPointer(
+        'latest.md',
+        'text/markdown',
+        textToBase64(withLatestNotice(markdown)),
+      );
     }
 
     const lastBundle: LastBundle = {

@@ -22,7 +22,8 @@ const dir = mkdtempSync(join(tmpdir(), 'ck-unit-'));
 const ENTRY = `
 export { classifyEnvironment } from '${ROOT}/src/lib/env-marker.ts';
 export { bandHeight, stampLabel } from '${ROOT}/src/lib/capture-engine/stamp.ts';
-export { contextBlock, buildBundleMarkdown } from '${ROOT}/src/lib/bundle/markdown.ts';
+export { contextBlock, buildBundleMarkdown, withLatestNotice, LATEST_NOTICE, OUTPUT_README } from '${ROOT}/src/lib/bundle/markdown.ts';
+export { planScrollOffsets } from '${ROOT}/src/lib/capture-engine/segments.ts';
 export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 `;
 
@@ -183,6 +184,24 @@ test('every field appears exactly once', () => {
     assert.equal(count, 1, `${field} appears ${count} times`);
   }
 });
+test('no Relayout line when the captured layout is the on-screen one', () => {
+  const text = mod.contextBlock(BLOCK_INPUT).join('\n');
+  assert.ok(!text.includes('Relayout'));
+});
+test('Relayout line appears, and names both layouts, when they differ', () => {
+  const text = mod
+    .contextBlock({ ...BLOCK_INPUT, naturalSize: { width: 1608, height: 5578 } })
+    .join('\n');
+  assert.match(text, /- \*\*Relayout:\*\*/);
+  assert.ok(text.includes('1608×5578'), 'on-screen layout not named');
+  assert.ok(text.includes('1512×4210'), 'captured layout not named');
+});
+test('identical naturalSize does not trigger the Relayout line', () => {
+  const text = mod
+    .contextBlock({ ...BLOCK_INPUT, naturalSize: { width: 1512, height: 4210 } })
+    .join('\n');
+  assert.ok(!text.includes('Relayout'));
+});
 test('recorder-inactive wording is unmistakable', () => {
   const text = mod.contextBlock({ ...BLOCK_INPUT, recorderActive: false }).join('\n');
   assert.match(text, /NOT ACTIVE for this page/);
@@ -229,6 +248,86 @@ test('the context block precedes every console section', () => {
 });
 test('URL stamp reads off when nothing was stamped', () => {
   assert.ok(mod.buildBundleMarkdown(BUNDLE_INPUT).includes('- **URL stamp:** off'));
+});
+
+// ------------------------------------------------ segmented grid coverage --
+//
+// The black-right-column defect was a planning bug: the grid was laid out
+// against a viewport that did not exist. These lock the invariant that matters
+// — whatever viewport is passed, the offsets must cover the whole extent.
+
+heading('planScrollOffsets — full coverage, no gaps');
+function coversFully(total, viewport) {
+  const offsets = mod.planScrollOffsets(total, viewport);
+  let reach = 0;
+  for (const o of offsets) {
+    if (o > reach) return { ok: false, gapAt: reach, offsets };
+    reach = Math.max(reach, o + viewport);
+  }
+  return { ok: reach >= total, reach, offsets };
+}
+test('viewport narrower than content tiles without gaps', () => {
+  for (const [total, viewport] of [
+    [2016, 1608], // the reproduced case: canvas 2016, real viewport 1608
+    [2293, 1871], // Adam's numbers
+    [5544, 2048],
+    [1000, 300],
+    [1001, 1000],
+  ]) {
+    const r = coversFully(total, viewport);
+    assert.ok(r.ok, `total ${total} viewport ${viewport} → ${JSON.stringify(r)}`);
+  }
+});
+test('the old buggy planning width leaves the right edge uncovered', () => {
+  // What the code used to do: plan against min(remeasured, segmentSize) rather
+  // than the override actually in force. One offset, 1608px of real viewport,
+  // 2016px of canvas — 408px never reached. This is the regression guard.
+  assert.deepEqual(mod.planScrollOffsets(2016, 2016), [0]);
+  const covered = coversFully(2016, 1608);
+  assert.deepEqual(covered.offsets, [0, 408]);
+  assert.ok(covered.ok);
+});
+test('viewport at least the content is a single offset', () => {
+  assert.deepEqual(mod.planScrollOffsets(800, 800), [0]);
+  assert.deepEqual(mod.planScrollOffsets(800, 1200), [0]);
+});
+
+// --------------------------------------------------------- latest.* notice --
+
+heading('withLatestNotice');
+test('sits immediately under the H1', () => {
+  const out = mod.withLatestNotice('# Capture — Thing\n\nImage: a.jpg\nContents: x\n');
+  const lines = out.split('\n');
+  assert.equal(lines[0], '# Capture — Thing');
+  assert.equal(lines[1], '');
+  assert.equal(lines[2], mod.LATEST_NOTICE);
+  assert.equal(lines[3], '');
+  assert.equal(lines[4], 'Image: a.jpg');
+});
+test('the rest of the report is untouched', () => {
+  const body = '# H\n\nrest\n\n## Console\n\nnone\n';
+  assert.ok(mod.withLatestNotice(body).endsWith('rest\n\n## Console\n\nnone\n'));
+});
+test('a report with no heading still gets the notice', () => {
+  assert.ok(mod.withLatestNotice('no heading here').startsWith(mod.LATEST_NOTICE));
+});
+test('applied to a real report, the H1 stays line 1', () => {
+  const lines = mod.withLatestNotice(mod.buildBundleMarkdown(BUNDLE_INPUT)).split('\n');
+  assert.match(lines[0], /^# Capture — Dashboard$/);
+  assert.equal(lines[2], mod.LATEST_NOTICE);
+});
+
+heading('OUTPUT_README');
+test('names every artefact kind the folder can hold', () => {
+  for (const needle of ['latest.jpg', 'latest.md', 'session_', '_sweep.md', '.jpg', '.md']) {
+    assert.ok(mod.OUTPUT_README.includes(needle), `missing ${needle}`);
+  }
+});
+test('says latest.* is the stable path for an assistant', () => {
+  assert.match(mod.OUTPUT_README, /stable path to point an AI assistant at/);
+});
+test('is plain text, not markdown', () => {
+  assert.ok(!/^#|\*\*/m.test(mod.OUTPUT_README));
 });
 
 rmSync(dir, { recursive: true, force: true });

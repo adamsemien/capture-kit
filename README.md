@@ -93,7 +93,7 @@ npm run typecheck   # tsc --noEmit
 npm test            # pure-function checks (environment marker, footer geometry, report block)
 npm run build       # esbuild → dist/, load unpacked via chrome://extensions
 node scripts/gen-icons.mjs   # regenerate icons/ after changing the glyph geometry
-node scripts/acceptance.mjs  # end-to-end, drives Chrome for Testing
+node scripts/acceptance.mjs  # end-to-end, drives Chrome for Testing (headless; --headed to watch, --fresh to wipe scratch dirs)
 ```
 
 No runtime dependencies. See `PERMISSIONS.md` for why each Chrome permission is requested.

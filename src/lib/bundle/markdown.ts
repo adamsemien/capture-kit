@@ -36,6 +36,8 @@ export interface BundleInput {
   trigger: CaptureTrigger;
   /** Present only when the URL footer was composited onto the image. */
   stamp?: StampInfo;
+  /** Size at the real viewport, when the page re-laid out for a segmented capture. */
+  naturalSize?: PageDimensions;
 }
 
 function pad(value: number): string {
@@ -189,6 +191,14 @@ export interface ContextBlockInput {
   recorderActive: boolean;
   stamp?: StampInfo;
   userAgent: string;
+  /** Size at the real viewport, when the page re-laid out for a segmented capture. */
+  naturalSize?: PageDimensions;
+}
+
+/** True when the captured layout is not the layout the user was looking at. */
+function relaidOut(input: ContextBlockInput): boolean {
+  const n = input.naturalSize;
+  return Boolean(n && (n.width !== input.contentSize.width || n.height !== input.contentSize.height));
 }
 
 /**
@@ -207,6 +217,15 @@ export function contextBlock(input: ContextBlockInput): string[] {
     `- **Environment:** ${environment.label}`,
     `- **Viewport:** ${input.viewport.width}×${input.viewport.height}`,
     `- **Full page:** ${input.contentSize.width}×${input.contentSize.height}`,
+    ...(relaidOut(input)
+      ? [
+          '- **Relayout:** this capture used a virtual viewport and the page re-laid out. At your ' +
+            `${input.viewport.width}px viewport it measures ` +
+            `${input.naturalSize?.width}×${input.naturalSize?.height}; the image is of the ` +
+            `${input.contentSize.width}×${input.contentSize.height} layout above. Expect ` +
+            'viewport-relative sizing and media queries to differ from what you saw on screen.',
+        ]
+      : []),
     `- **Image file:** ${input.imageSize.width}×${input.imageSize.height}`,
     `- **Captured at:** ${input.capturedAt.toISOString()}`,
     `- **Capture mode:** ${input.captureMode}`,
@@ -251,6 +270,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
         trigger: input.trigger,
         recorderActive: input.recorderActive,
         stamp: input.stamp,
+        naturalSize: input.naturalSize,
         userAgent: meta.userAgent,
       }),
     ].join('\n'),
@@ -479,3 +499,44 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
 export function buildClipboardMarkdown(markdown: string, imageFilename: string): string {
   return `> Screenshot saved as \`${imageFilename}\` — attach it alongside this report.\n\n${markdown}`;
 }
+
+/**
+ * The rolling-copy notice, inserted immediately under the H1 of latest.md.
+ *
+ * latest.md and its timestamped original are byte-identical apart from this
+ * line, and an assistant handed the rolling copy has no way to tell which one
+ * it is holding — or that the file it read a minute ago has since been
+ * replaced. One line fixes that.
+ */
+export const LATEST_NOTICE =
+  '_This is the rolling copy — always the most recent capture. Timestamped originals sit alongside it._';
+
+/**
+ * Inserts the notice after the first line (the H1). Falls back to prepending
+ * if the report somehow has no heading, so the notice is never lost.
+ */
+export function withLatestNotice(markdown: string): string {
+  const newline = markdown.indexOf('\n');
+  if (newline === -1 || !markdown.startsWith('# ')) {
+    return `${LATEST_NOTICE}\n\n${markdown}`;
+  }
+  return `${markdown.slice(0, newline)}\n\n${LATEST_NOTICE}${markdown.slice(newline)}`;
+}
+
+/**
+ * Written once into the output folder, the first time a bundle lands there and
+ * finds no README.txt. Plain text, not markdown: it is for a human opening the
+ * folder in Finder, and it should not render as anything.
+ *
+ * Never overwrites — someone may have put their own notes here.
+ */
+export const OUTPUT_README = `capture-kit — what is in this folder
+
+{page-title}_{date}_{time}.jpg   one capture's screenshot
+{page-title}_{date}_{time}.md    that capture's report: URL, environment, console errors, network failures
+latest.jpg / latest.md           the most recent capture, overwritten every time — the stable path to point an AI assistant at
+session_{date}_{time}/           a multi-tab session capture, with an index.md triaging every page
+{page-title}_{date}_{time}_sweep.md   a responsive sweep: the same page at 375, 768 and 1440 px wide
+
+Tell your assistant once: "when I say check my capture, read latest.md and the image next to it."
+`;

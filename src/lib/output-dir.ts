@@ -149,6 +149,27 @@ async function uniqueName(dir: FileSystemDirectoryHandle, filename: string): Pro
 }
 
 /**
+ * Does a file already sit at the top of the chosen folder?
+ *
+ * Only the chosen-folder path can answer this: Chrome's downloads API gives an
+ * extension no way to look inside the Downloads directory. Returns null when
+ * there is no usable handle, so a caller can tell "no" apart from "cannot
+ * know" and fall back to its own bookkeeping instead of assuming.
+ */
+export async function outputDirHasFile(filename: string): Promise<boolean | null> {
+  try {
+    const handle = await loadOutputDir();
+    if (!handle) return null;
+    if ((await handle.queryPermission({ mode: 'readwrite' })) !== 'granted') return null;
+    await handle.getFileHandle(filename);
+    return true;
+  } catch (error) {
+    if ((error as DOMException)?.name === 'NotFoundError') return false;
+    return null;
+  }
+}
+
+/**
  * Resolve nested paths like "session_2026-08-17_10-35/index.md" the way
  * downloads.download() does: every segment before the last is a subdirectory,
  * created on demand.

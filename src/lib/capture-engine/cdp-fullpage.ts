@@ -435,9 +435,15 @@ async function captureSegmented(
     '({ x: window.scrollX, y: window.scrollY })',
   );
 
+  // The virtual viewport actually in force. Held in variables because the grid
+  // below MUST be planned against these numbers and not against a second
+  // min() of the re-measured size — see the comment at viewportWidth.
+  const overrideWidth = Math.min(naturalSize.width, request.segmentSize);
+  const overrideHeight = Math.min(naturalSize.height, request.segmentSize);
+
   await sendCommand(target, 'Emulation.setDeviceMetricsOverride', {
-    width: Math.min(naturalSize.width, request.segmentSize),
-    height: Math.min(naturalSize.height, request.segmentSize),
+    width: overrideWidth,
+    height: overrideHeight,
     deviceScaleFactor: 1,
     mobile: false,
   });
@@ -457,8 +463,21 @@ async function captureSegmented(
       overriddenSize.width,
       overriddenSize.height,
     );
-    const viewportWidth = Math.min(width, request.segmentSize);
-    const viewportHeight = Math.min(height, request.segmentSize);
+    // Plan against the viewport that EXISTS, not a fresh min() of the size we
+    // just re-measured. Those two disagree whenever the page's content grows
+    // under the override — a page with horizontal overflow that tracks the
+    // viewport (`width: calc(100% + Npx)`, a table with a fixed-width gutter)
+    // reports a wider scrollWidth every time the viewport widens. When
+    // segmentSize exceeds the page width, the override is naturalSize.width
+    // while the re-measured width is larger, and the old
+    // `Math.min(width, segmentSize)` believed the viewport covered the whole
+    // canvas: one column was planned, one viewport-wide shot was taken, and
+    // everything to the right of it stayed at the canvas's initial
+    // transparent-black — a solid black stripe once encoded to JPEG.
+    // Measured 2026-08-23: a 1608px page under a 2048px segment size produced
+    // a 2016px canvas with only 1608px painted.
+    const viewportWidth = overrideWidth;
+    const viewportHeight = overrideHeight;
     const xOffsets = planScrollOffsets(width, viewportWidth);
     const yOffsets = planScrollOffsets(height, viewportHeight);
 
@@ -492,7 +511,15 @@ async function captureSegmented(
       format: request.format,
       mode: 'standard',
       fullSize: { width, height },
-      contentSize: naturalSize,
+      // The layout the IMAGE depicts, which on this path is the one measured
+      // under the virtual viewport — not the one measured at the tab's real
+      // viewport. Reporting naturalSize here described a layout the file is
+      // not of, and made the truncation line compare a clamped overridden
+      // size against an unrelated natural one.
+      contentSize: overriddenSize,
+      // Kept so the report can say the page re-laid out rather than leaving a
+      // reader to wonder why "Full page" does not match their browser.
+      naturalSize,
       imageSize: { width, height },
       truncated,
       segments,

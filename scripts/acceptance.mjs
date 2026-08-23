@@ -1,9 +1,17 @@
 // Runs the acceptance checks end to end and prints raw output.
 //
-//   npm run build && node scripts/acceptance.mjs
+//   npm run build && node scripts/acceptance.mjs            # headless
+//   npm run build && node scripts/acceptance.mjs --headed    # watch it run
+//   node scripts/acceptance.mjs --fresh                      # wipe scratch dirs first
 //
-// CHECK 1–5 cover the output-folder round; CHECK A1–A5 cover this round
-// (one-click capture, report context block, image URL stamp, copy naming).
+// CHECK 1–5 cover the output-folder round; CHECK A1–A8 cover the one-click /
+// context-block / URL-stamp / copy-naming round.
+//
+// Headless by default (--headless=new): a full run drives two browser sessions
+// and dozens of tabs, and headed that takes over the screen for minutes. The
+// only step that cannot run headless is CHECK 1's native folder picker; it is
+// skipped with a message rather than faked. Everything else behaves identically
+// — verified 2026-08-23, identical results headless and headed.
 //
 // Constraints this harness works around, all of them real:
 //   - Branded Chrome 137+ ignores --load-extension, so this drives Chrome for
@@ -27,6 +35,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
   statSync,
@@ -37,19 +46,51 @@ const CHROME =
   `${process.env.HOME}/.cache/puppeteer/chrome/mac_arm-151.0.7922.77/chrome-mac-arm64/` +
     'Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
-const DIST = `${ROOT}/dist`;
+// CK_DIST points the harness at a build other than this worktree's — used to
+// run the same wide-page check against an older commit's dist and settle
+// "pre-existing or introduced by this branch" with evidence instead of
+// argument.
+const DIST = process.env.CK_DIST ?? `${ROOT}/dist`;
 const PROFILE = '/tmp/ck-accept-profile';
 const DOWNLOADS = '/tmp/ck-accept-downloads';
 const OUTPUT_DIR = `${process.env.HOME}/NoBad/_work/capture-kit-accept`;
 const PORT = 9334;
 const HTTP_PORT = 8765;
+const README_NAME = 'README.txt';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const osa = (s) => execFileSync('/usr/bin/osascript', ['-e', s], { encoding: 'utf8' }).trim();
 
+// Chrome derives an unpacked extension's id from the RESOLVED directory path.
+// On macOS /tmp is a symlink to /private/tmp, so hashing the path as given
+// produces an id that does not exist — the options page then 404s and every
+// chrome.* eval comes back "undefined", which reads like a product failure
+// rather than a harness one. realpath first.
 function extensionId() {
-  const hex = createHash('sha256').update(DIST).digest('hex').slice(0, 32);
+  const resolved = existsSync(DIST) ? realpathSync(DIST) : DIST;
+  const hex = createHash('sha256').update(resolved).digest('hex').slice(0, 32);
   return [...hex].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join('');
+}
+
+/**
+ * The id Chrome actually assigned, read off the extension's own service-worker
+ * target. The path-hash above is only a fallback: it has to match Chrome's
+ * canonicalization of the dist path exactly, and when it does not, every
+ * chrome.* eval returns undefined and the checks report nonsense instead of
+ * failing. Asking the browser removes the guess.
+ */
+async function discoverExtensionId(fallback) {
+  for (let i = 0; i < 20; i++) {
+    const targets = await cdp('/json/list');
+    const sw = Array.isArray(targets)
+      ? targets.find(
+          (t) => t.type === 'service_worker' && t.url.includes('/background/service-worker.js'),
+        )
+      : null;
+    if (sw) return new URL(sw.url).host;
+    await sleep(500);
+  }
+  return fallback;
 }
 
 async function cdp(path, method = 'GET') {
@@ -123,12 +164,33 @@ function tallBlock(rows = 40) {
   return html;
 }
 
+/**
+ * `?wide=N` reproduces the shape behind the black-right-column report: an
+ * element that is always N px wider than whatever the viewport is, so the
+ * page's scrollWidth grows every time the viewport grows. `width: calc(100% +
+ * Npx)` is the whole trick — a fixed-width overflow would stop overflowing
+ * once the virtual viewport got wide enough, and the bug needs overflow that
+ * survives the resize.
+ *
+ * The strip is a saturated colour, not a shade of grey, so an undrawn canvas
+ * column is unmistakable next to it.
+ */
+function wideBlock(overflowPx) {
+  return (
+    `<div style="width:calc(100% + ${overflowPx}px);height:100%;` +
+    `background:repeating-linear-gradient(90deg,#c2410c 0 60px,#ea580c 60px 120px);` +
+    `color:#fff;font:14px sans-serif;padding:4px">` +
+    `overflow strip — always ${overflowPx}px wider than the viewport</div>`
+  );
+}
+
 // The page under capture reports through its title, so nothing has to attach a
 // second debugger to it.
 const TRIGGER_PAGE = `<!doctype html>
 <html><head><meta charset="utf-8"><title>ready</title></head>
-<body><h1>capture-kit acceptance page</h1>
+<body style="margin:0"><h1>capture-kit acceptance page</h1>
 <p>Some text so the capture has pixels in it.</p>
+__WIDE__
 __TALL__
 <script>
   document.addEventListener('capture-kit:capture-complete', (e) => {
@@ -175,10 +237,36 @@ const INSPECT_PAGE = `<!doctype html>
     if (start >= 0) runs.push([start, c.height - 1]);
     // Only runs tall enough to be a band; a dark UI stripe in the page is not one.
     const bands = runs.filter(([a, b]) => b - a + 1 >= 20);
+
+    // Undrawn-canvas detector. A column the segment loop never painted stays
+    // at the OffscreenCanvas initial value (transparent black), which encodes
+    // as solid black in JPEG and as transparent in PNG. Both are caught by
+    // sampling a column top-to-bottom and asking whether every sample is
+    // either fully transparent or near-black. Rows inside the URL footer are
+    // skipped, since the footer legitimately paints the full width dark.
+    const footerTop = bands.length ? Math.min(...bands.map(([a]) => a)) : c.height;
+    const ys = [];
+    for (let i = 1; i <= 12; i++) {
+      const y = Math.floor((footerTop * i) / 13);
+      if (y < footerTop) ys.push(y);
+    }
+    const columnBlank = (x) => ys.every((y) => {
+      const d = ctx.getImageData(x, y, 1, 1).data;
+      return d[3] === 0 || (d[0] < 24 && d[1] < 24 && d[2] < 24);
+    });
+    // Walk in from the right edge to find where painted content stops.
+    let blankFromRight = 0;
+    for (let x = c.width - 1; x >= 0; x--) {
+      if (!columnBlank(x)) break;
+      blankFromRight += 1;
+    }
+
     document.title = 'RESULT ' + JSON.stringify({
       width: c.width, height: c.height,
       bands: bands.map(([a, b]) => ({ top: a, bottom: b, height: b - a + 1 })),
       touchesBottom: bands.some(([, b]) => b === c.height - 1),
+      blankColumnFromRight: blankFromRight,
+      paintedWidth: c.width - blankFromRight,
     });
   };
   img.src = '/image?file=' + encodeURIComponent(name);
@@ -205,8 +293,14 @@ function startHttp() {
       res.end(INSPECT_PAGE);
       return;
     }
+    const wide = Number(url.searchParams.get('wide') ?? 0);
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    res.end(TRIGGER_PAGE.replace('__TALL__', url.searchParams.has('tall') ? tallBlock() : ''));
+    res.end(
+      TRIGGER_PAGE.replace('__TALL__', url.searchParams.has('tall') ? tallBlock() : '').replace(
+        '__WIDE__',
+        wide > 0 ? wideBlock(wide) : '',
+      ),
+    );
   });
   server.listen(HTTP_PORT, '127.0.0.1');
   return server;
@@ -274,7 +368,42 @@ function seedProfile() {
   }
 }
 
+/**
+ * Headless by default. A full run opens dozens of tabs across two browser
+ * sessions, and headed that means dozens of windows stealing the screen for
+ * several minutes. `--headless=new` is the real browser — it loads unpacked
+ * extensions, runs service workers, and speaks full CDP — so nothing about the
+ * checks changes. Pass --headed to watch a run, or to exercise the one check
+ * that needs a native dialog (see CHECK 1).
+ */
+const HEADED = process.argv.includes('--headed');
+
+/**
+ * Kill every Chrome still holding this harness's scratch profile.
+ *
+ * child.kill('SIGTERM') on the spawned launcher does NOT take the browser with
+ * it: Chrome's browser process and its helpers survive, keep the debugging
+ * port, and keep the profile open. Measured 2026-08-23 — 186 orphaned browsers
+ * had accumulated across runs, all sharing /tmp/ck-accept-profile and one
+ * downloads directory. They fought over both: files written by one instance
+ * were cleaned up by another (this is what made README.txt appear and then
+ * vanish), a stale instance answered on the debugging port and served a dead
+ * options page, and every one of them had a visible window.
+ *
+ * Matched on the profile path, so it can only ever hit this harness's own
+ * browsers and never a real Chrome.
+ */
+function killStrays() {
+  try {
+    execFileSync('/usr/bin/pkill', ['-f', PROFILE], { stdio: 'ignore' });
+  } catch {
+    // pkill exits 1 when nothing matched, which is the normal case.
+  }
+}
+
 function launch() {
+  // Never share the profile with a survivor of an earlier run.
+  killStrays();
   seedProfile();
   mkdirSync(DOWNLOADS, { recursive: true });
   const child = spawn(
@@ -284,6 +413,7 @@ function launch() {
       `--load-extension=${DIST}`,
       `--disable-extensions-except=${DIST}`,
       '--disable-features=DisableLoadExtensionCommandLineSwitch',
+      ...(HEADED ? [] : ['--headless=new']),
       `--remote-debugging-port=${PORT}`,
       '--no-first-run',
       '--no-default-browser-check',
@@ -292,6 +422,37 @@ function launch() {
     { stdio: 'ignore' },
   );
   return child;
+}
+
+// Whatever ends this script — success, a thrown check, Ctrl-C — the browser
+// goes with it. Without this, a failed run silently leaves a browser behind
+// and poisons the next one.
+process.on('exit', killStrays);
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    killStrays();
+    process.exit(1);
+  });
+}
+
+/**
+ * Headless Chrome defaults to denying downloads, and the profile's
+ * download.default_directory is not enough on its own. Browser.setDownloadBehavior
+ * on the browser-level target arms them for the whole session, which is what
+ * makes the write-seam checks meaningful headless rather than vacuous.
+ */
+async function armDownloads() {
+  if (HEADED) return 'headed — profile preference is enough';
+  const version = await cdp('/json/version');
+  const browser = new Session(version.webSocketDebuggerUrl);
+  await browser.open();
+  await browser.send('Browser.setDownloadBehavior', {
+    behavior: 'allow',
+    downloadPath: DOWNLOADS,
+    eventsEnabled: true,
+  });
+  browser.close();
+  return `allowed → ${DOWNLOADS}`;
 }
 
 async function waitForPort() {
@@ -392,14 +553,18 @@ if (process.argv.includes('--fresh')) {
 }
 mkdirSync(OUTPUT_DIR, { recursive: true });
 
-const id = extensionId();
-const optionsUrl = `chrome-extension://${id}/options/options.html`;
 const http = startHttp();
 
 heading('SETUP');
 let chrome = launch();
 console.log(`chrome: ${await waitForPort()}`);
-console.log(`extension id: ${id}`);
+console.log(`mode: ${HEADED ? 'headed (--headed)' : 'headless (--headless=new)'}`);
+console.log(`downloads: ${await armDownloads()}`);
+const computedId = extensionId();
+const id = await discoverExtensionId(computedId);
+const optionsUrl = `chrome-extension://${id}/options/options.html`;
+console.log(`extension id: ${id}${id === computedId ? '' : ` (path hash predicted ${computedId})`}`);
+console.log(`dist: ${DIST}`);
 console.log(`output folder: ${OUTPUT_DIR}`);
 console.log(`downloads redirected to: ${DOWNLOADS}`);
 
@@ -420,23 +585,38 @@ console.log(
       ),
     ),
 );
-// The options page's own button, so what ships is what gets tested.
-const clicking = options.eval(
-  `(async () => {
-     document.getElementById('output-dir-choose').click();
-     await new Promise(r => setTimeout(r, 6000));
-     return {
-       name: document.getElementById('output-dir-name').textContent,
-       note: document.getElementById('output-dir-note').textContent,
-       status: document.getElementById('status').textContent,
-     };
-   })()`,
-  true,
-);
-await sleep(1500);
-answerFolderDialog(chrome.pid, OUTPUT_DIR);
-await sleep(3000);
-console.log('options row after Choose: ' + JSON.stringify(await clicking));
+// The only step in the whole suite that cannot run headless: showDirectoryPicker
+// opens a macOS native folder dialog, and the answer is typed into it with
+// System Events. Headless Chrome has no window for System Events to address
+// and never renders the dialog, so there is nothing to answer — the picker
+// would hang until the eval timed out. It is skipped rather than faked, and
+// the chosen-folder path is then exercised only under --headed.
+if (HEADED) {
+  // The options page's own button, so what ships is what gets tested.
+  const clicking = options.eval(
+    `(async () => {
+       document.getElementById('output-dir-choose').click();
+       await new Promise(r => setTimeout(r, 6000));
+       return {
+         name: document.getElementById('output-dir-name').textContent,
+         note: document.getElementById('output-dir-note').textContent,
+         status: document.getElementById('status').textContent,
+       };
+     })()`,
+    true,
+  );
+  await sleep(1500);
+  answerFolderDialog(chrome.pid, OUTPUT_DIR);
+  await sleep(3000);
+  console.log('options row after Choose: ' + JSON.stringify(await clicking));
+} else {
+  console.log(
+    'SKIPPED (headless): choosing an output folder needs a native macOS dialog. ' +
+      'Re-run with --headed to exercise the chosen-folder path. Every capture below ' +
+      'therefore takes the Downloads fallback, which is the path the write seam is ' +
+      'meant to fall back to — the checks that follow do not depend on which one won.',
+  );
+}
 options.close();
 
 let page = await openTab(`http://127.0.0.1:${HTTP_PORT}/?n=1`);
@@ -446,6 +626,8 @@ console.log(`\n${OUTPUT_DIR}:`);
 console.log(listDir(OUTPUT_DIR).join('\n'));
 console.log(`\n${DOWNLOADS} (must stay empty):`);
 console.log(listDir(DOWNLOADS).join('\n') || '(empty)');
+console.log(`\n${DOWNLOADS}/capture-kit after the first capture:`);
+console.log(listDir(`${DOWNLOADS}/capture-kit`).join('\n') || '(empty)');
 
 // --- check 5: second capture uniquifies ---------------------------------
 heading('CHECK 5 — a second capture of the same page gets a " (1)" suffix');
@@ -468,9 +650,12 @@ console.log('last completion detail: ' + JSON.stringify(detail));
 // --- check 2: full restart ----------------------------------------------
 heading('CHECK 2 — quit Chrome fully, relaunch, capture without opening Settings');
 chrome.kill('SIGTERM');
+killStrays();
 await sleep(4000);
 chrome = launch();
 console.log(`chrome restarted: ${await waitForPort()}`);
+// A new browser session needs downloads armed again.
+console.log(`downloads: ${await armDownloads()}`);
 page = await openTab(`http://127.0.0.1:${HTTP_PORT}/?n=3`);
 detail = await waitForResult(page.id);
 console.log('capture-kit:capture-complete → ' + JSON.stringify(detail));
@@ -533,6 +718,20 @@ console.log(listDir(OUTPUT_DIR).join('\n'));
 
 await openTab(optionsUrl);
 options = await attach(optionsUrl);
+
+// If the options page did not really load, every chrome.* eval below returns
+// "undefined" and the checks quietly report nonsense. Fail loudly instead.
+{
+  const alive = await options.eval(`typeof chrome !== 'undefined' && !!chrome.storage`);
+  console.log(`options page has extension APIs: ${JSON.stringify(alive)}`);
+  if (alive !== true) {
+    console.log(`ABORT — ${optionsUrl} did not load. Extension id derivation or dist path is wrong.`);
+    chrome.kill('SIGTERM');
+killStrays();
+    http.close();
+    process.exit(1);
+  }
+}
 
 // --- A1: the toolbar icon's popup follows the setting -------------------
 heading('CHECK A1 — one-click mode swaps the action popup, and OFF restores it exactly');
@@ -677,6 +876,47 @@ console.log('restore segment size: ' + JSON.stringify(
   await setSetting(options, { segmentSize: 8192, stampUrlOnImage: false }),
 ));
 
+// --- A6: horizontally overflowing page ----------------------------------
+heading('CHECK A6 — page wider than the viewport, segmented (the black-column case)');
+// A page whose content is always 400px wider than the viewport, tall enough to
+// force segmentation. The failure this catches: the segment grid is planned
+// against the RE-MEASURED content width while the browser viewport is still
+// the width set from the PRE-measurement, so the rightmost columns are never
+// painted and the canvas's initial transparent-black shows through.
+//
+// The segment size matters and 1024 will NOT reproduce it. The override width
+// is min(naturalWidth, segmentSize) and the planning width is
+// min(remeasuredWidth, segmentSize); when segmentSize is below both they
+// collapse to the same number and the bug hides. It only bites when
+// segmentSize exceeds the page width — which is the default 8192 on nearly
+// every real page. 2048 here is above this page's ~1600 and below its height,
+// reproducing Adam's 8192-with-an-1871px-page shape at test scale.
+console.log('segment size 2048, stamp off: ' + JSON.stringify(
+  await setSetting(options, { segmentSize: 2048, stampUrlOnImage: false }),
+));
+page = await openTab(`http://127.0.0.1:${HTTP_PORT}/?n=8&tall=1&wide=400`);
+detail = await waitForResult(page.id);
+console.log('capture-kit:capture-complete → ' + JSON.stringify(detail));
+const wideImage = newestFile('.jpg');
+const wideReport = newestFile('.md');
+console.log(`wide image: ${wideImage}`);
+const widePixels = await inspect(wideImage);
+console.log('wide pixels: ' + JSON.stringify(widePixels));
+console.log('wide report geometry: ' + JSON.stringify(
+  readCapture(wideReport)
+    .split('\n').filter((l) => /Viewport:|Full page:|Image file:|Capture mode:/.test(l)),
+));
+console.log(
+  'VERDICT undrawn right column: ' +
+    (widePixels.blankColumnFromRight > 2
+      ? `FAIL — ${widePixels.blankColumnFromRight}px never painted ` +
+        `(painted ${widePixels.paintedWidth} of ${widePixels.width})`
+      : 'PASS — full canvas width painted'),
+);
+console.log('restore segment size: ' + JSON.stringify(
+  await setSetting(options, { segmentSize: 8192 }),
+));
+
 // --- A4: the result tab's copy controls ---------------------------------
 heading('CHECK A4 — result-tab button labels, tooltip, and Copy report visibility');
 {
@@ -801,8 +1041,94 @@ console.log(listDir(OUTPUT_DIR).join('\n'));
 console.log(`\n${DOWNLOADS} (must hold nothing from this round):`);
 console.log(listDir(DOWNLOADS).join('\n') || '(empty)');
 
+// --- A7: secondary popup controls look clickable ------------------------
+heading('CHECK A7 — popup secondary controls render as real buttons');
+{
+  const popupUrl = `chrome-extension://${id}/popup/popup.html`;
+  await openTab(popupUrl);
+  const popup = await attach(popupUrl);
+  console.log('button affordances: ' + JSON.stringify(
+    await popup.eval(
+      `[...document.querySelectorAll('.buttons button')].map(b => {
+         const cs = getComputedStyle(b);
+         return {
+           id: b.id,
+           classes: b.className || '(none)',
+           borderWidth: cs.borderTopWidth,
+           borderStyle: cs.borderTopStyle,
+           borderColorTransparent: cs.borderTopColor === 'rgba(0, 0, 0, 0)',
+           backgroundTransparent: cs.backgroundColor === 'rgba(0, 0, 0, 0)',
+         };
+       })`,
+    ),
+  ));
+  console.log('VERDICT no bare-text buttons left: ' + JSON.stringify(
+    await popup.eval(
+      `[...document.querySelectorAll('.buttons button')]
+         .filter(b => { const cs = getComputedStyle(b);
+           return cs.borderTopColor === 'rgba(0, 0, 0, 0)' && cs.backgroundColor === 'rgba(0, 0, 0, 0)'; })
+         .map(b => b.id)`,
+    ),
+  ));
+  console.log('no .quiet left in the popup: ' + JSON.stringify(
+    await popup.eval(`document.querySelectorAll('.buttons button.quiet').length === 0`),
+  ));
+  popup.close();
+}
+
+// --- A8: latest.* self-explanation --------------------------------------
+heading('CHECK A8 — latest.md notice and the one-time README.txt');
+{
+  const dir = captureDir();
+  const readmePath = `${dir}/${README_NAME}`;
+  console.log(`output folder in use: ${dir}`);
+  // The write-once flag, so a missing README says which half failed: no flag
+  // means the write never ran, flag set means it ran and the file went
+  // somewhere this check is not looking.
+  console.log('write-once flag: ' + JSON.stringify(
+    await options.eval(`chrome.storage.local.get(null)`),
+  ));
+  console.log('README download records: ' + JSON.stringify(
+    await options.eval(
+      `chrome.downloads.search({}).then(items =>
+         items.filter(i => /README/i.test(i.filename) || /README/i.test(i.url.slice(0, 40)))
+              .map(i => ({ filename: i.filename, state: i.state, error: i.error, exists: i.exists })))`,
+    ),
+  ));
+  console.log('chosen-folder state: ' + JSON.stringify(
+    await options.eval(
+      `(async () => {
+         const el = document.getElementById('output-dir-name');
+         return el ? el.textContent.trim() : '(no options DOM)';
+       })()`,
+    ),
+  ));
+  console.log(`README.txt exists: ${existsSync(readmePath)}`);
+  if (existsSync(readmePath)) {
+    console.log(`--- ${README_NAME} ---`);
+    console.log(readFileSync(readmePath, 'utf8'));
+  }
+  const duplicates = readdirSync(dir).filter((n) => /^README( \(\d+\))?\.txt$/.test(n));
+  console.log('README files present (must be exactly one): ' + JSON.stringify(duplicates));
+
+  const latest = `${dir}/latest.md`;
+  if (existsSync(latest)) {
+    console.log('--- latest.md, first 6 lines ---');
+    console.log(readFileSync(latest, 'utf8').split('\n').slice(0, 6).join('\n'));
+  } else {
+    console.log('no latest.md written — reporting as a failure');
+  }
+  // The timestamped original must NOT carry the rolling-copy line.
+  const original = newestFile('.md');
+  console.log(
+    `timestamped original (${original}) carries the rolling-copy line: ` +
+      (original ? readCapture(original).includes('rolling copy') : 'n/a'),
+  );
+}
+
 options.close();
 chrome.kill('SIGTERM');
+killStrays();
 await sleep(2000);
 http.close();
 process.exit(0);

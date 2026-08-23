@@ -62,8 +62,19 @@ export interface CaptureResult {
   mode: CaptureMode;
   /** Actual captured PAGE size after canvas-limit clamping. Excludes any footer. */
   fullSize: PageDimensions;
-  /** Content size the page reported (may exceed fullSize when truncated). */
+  /**
+   * Content size of the layout the image depicts (may exceed fullSize when
+   * truncated). On the segmented path this is measured under the virtual
+   * viewport, so it can differ from what the page measures in the real one.
+   */
   contentSize: PageDimensions;
+  /**
+   * Size measured at the tab's real viewport, before any virtual-viewport
+   * override. Set only when it differs from contentSize — i.e. when the page
+   * re-laid out for the capture, which a reader comparing the image against
+   * their own browser needs told.
+   */
+  naturalSize?: PageDimensions;
   /**
    * Dimensions of the encoded file as written to disk — `fullSize` plus the
    * footer when one was appended. Everything that reports "the image is N×M"
