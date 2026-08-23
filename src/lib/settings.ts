@@ -29,6 +29,23 @@ export interface Settings {
    * this decision.
    */
   allowInPageTrigger: boolean;
+  /**
+   * Clicking the toolbar icon fires a capture instead of opening the popup.
+   *
+   * Default OFF: turning it on removes the popup from the icon, and a user who
+   * inherited that without asking for it would click expecting a menu and get
+   * a debugger attach and a file on disk. The popup stays reachable through
+   * the icon's right-click menu whenever this is on.
+   */
+  iconCapturesImmediately: boolean;
+  /**
+   * Composite a URL + timestamp footer onto the finished image.
+   *
+   * Default OFF because it changes the pixels of every capture, and a
+   * screenshot that quietly grew a black bar is a surprise. Off means the
+   * stamping code is never entered at all, not that it draws nothing.
+   */
+  stampUrlOnImage: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -39,6 +56,8 @@ export const DEFAULT_SETTINGS: Settings = {
   openResult: true,
   imageOnlyPng: false,
   allowInPageTrigger: false,
+  iconCapturesImmediately: false,
+  stampUrlOnImage: false,
 };
 
 export function normalizeBundleFormat(value: unknown): CaptureFormat {
@@ -65,6 +84,8 @@ export async function getSettings(): Promise<Settings> {
     // `=== true`, not `!== false`: an unset key must read as off, including
     // for anyone whose profile predates this setting existing.
     allowInPageTrigger: stored.allowInPageTrigger === true,
+    iconCapturesImmediately: stored.iconCapturesImmediately === true,
+    stampUrlOnImage: stored.stampUrlOnImage === true,
   };
 }
 
@@ -77,8 +98,13 @@ export async function saveSettings(settings: Settings): Promise<void> {
     openResult: settings.openResult !== false,
     imageOnlyPng: settings.imageOnlyPng === true,
     allowInPageTrigger: settings.allowInPageTrigger === true,
+    iconCapturesImmediately: settings.iconCapturesImmediately === true,
+    stampUrlOnImage: settings.stampUrlOnImage === true,
   });
 }
+
+/** Storage keys the worker watches to re-arm the toolbar icon on change. */
+export const ICON_MODE_KEY = 'iconCapturesImmediately';
 
 /** Popup-owned toggle; written without disturbing the options-page settings. */
 export async function setImageOnlyPng(value: boolean): Promise<void> {

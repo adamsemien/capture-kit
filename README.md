@@ -7,6 +7,21 @@ Chrome extension for full-page captures plus console & network failure reports, 
 - **True full-page capture** over the Chrome DevTools Protocol — a real one-shot screenshot for normal pages, an automatic scroll-and-stitch segmented capture for oversized ones (sticky headers neutralized, no repeated-banner artifacts).
 - **Failure reports** — console errors/warnings/logs and failed network requests recorded since page load, formatted as markdown alongside the screenshot and copied to the clipboard.
 - **Inner-scroll expansion** — pages that keep their content inside an `overflow: auto` container (Notion, Linear, Airtable) are detected automatically and expanded before capture, so you get the whole document instead of a cut-off window. The report markdown logs which mode ran and the path taken (e.g. `Capture mode: standard, segmented, 6 segments`).
+- **A context block at the top of every report** — URL, whether the page was local or deployed, viewport, page and file dimensions, timestamp, capture path, what triggered the capture, and recorder state, before any console output. An assistant reading the report never has to ask "is this localhost or production?"
+
+## One-click capture
+
+By default, clicking the toolbar icon opens the popup. Turn on **Settings → The toolbar icon → Toolbar icon captures immediately** and one click fires Capture + Report straight away with your current settings — the same path the popup's button takes, result tab and all.
+
+The popup does not go away: **right-click the icon → Open capture-kit panel** and you get it, with Image only, session capture, the responsive sweep and Copy last report. (Chrome's own right-click menu still carries Options, so settings are reachable either way.) Turn the setting back off and the left-click popup returns immediately, in the same browser session.
+
+While a capture runs, the toolbar badge shows an amber `•••`, then live segment counts (`3/7`) on long stitched pages, then green `OK` or red `!`. That signal lives in browser chrome, never on the page, so it can never end up inside the screenshot.
+
+## URL stamp on images
+
+**Settings → What goes in the report → Stamp URL on image** (off by default) composites a thin dark footer across the bottom of the finished image carrying the full URL and the capture time. It runs after the capture completes and after the debugger detaches, operating on the encoded image inside the service worker — it never touches the page, so it cannot appear part-way down a stitched capture. Reported image dimensions everywhere (report, result tab) describe the file including the footer; `Full page:` keeps meaning the page's own geometry. Adding it re-encodes the image once, which costs a JPEG one generation of quality.
+
+If a page is already at Chrome's canvas ceiling, the footer is drawn over the bottom of the image instead of extending it, and the report says `overlaid` rather than `appended` — growing the canvas there would fail the allocation and hand back blank output.
 
 ## The buttons
 
@@ -17,6 +32,8 @@ Chrome extension for full-page captures plus console & network failure reports, 
 | **Copy last report** | Re-copies the most recent report markdown to the clipboard. |
 | **Capture session (multiple tabs)** | Opens a tab picker, then captures the selected tabs one at a time into `capture-kit/session_{date}_{time}/` with an `index.md` triage manifest. Mirrored to `capture-kit/latest-session/`. |
 | **Responsive sweep (3 widths)** | The current page at 375 / 768 / 1440 px widths — three JPEGs plus one `_sweep.md` report listing each width. No clipboard. |
+
+The result tab that opens after a capture carries three copy buttons: **Copy image** (the picture alone), **Copy report** (the markdown alone), and **Copy image + report** (both on the clipboard at once, `Cmd/Ctrl+Shift+C`). The last one is the AI-chat path, and its tooltip is honest about the catch: some chats keep only the image, and when that happens you paste the report separately with Copy report.
 
 ## Output folder
 
@@ -57,7 +74,7 @@ Two behaviours worth knowing before the first run:
 
 ## Settings
 
-Open the extension options for: the output folder, whether a page may trigger a capture (off by default), segment size (max px per capture segment, 1024–16384), whether log-level console entries are included in reports, report image format (JPEG default, PNG optional), whether the result tab opens after a capture, and whether the `latest.*` pointers are maintained. "Image only" has its own PNG toggle in the popup.
+Open the extension options for: the output folder, whether the toolbar icon captures immediately (off by default), whether the URL is stamped onto images (off by default), whether a page may trigger a capture (off by default), segment size (max px per capture segment, 1024–16384), whether log-level console entries are included in reports, report image format (JPEG default, PNG optional), whether the result tab opens after a capture, and whether the `latest.*` pointers are maintained. "Image only" has its own PNG toggle in the popup.
 
 ## Known limitations
 
@@ -73,8 +90,10 @@ Open the extension options for: the output folder, whether a page may trigger a 
 ```
 npm install
 npm run typecheck   # tsc --noEmit
+npm test            # pure-function checks (environment marker, footer geometry, report block)
 npm run build       # esbuild → dist/, load unpacked via chrome://extensions
 node scripts/gen-icons.mjs   # regenerate icons/ after changing the glyph geometry
+node scripts/acceptance.mjs  # end-to-end, drives Chrome for Testing
 ```
 
 No runtime dependencies. See `PERMISSIONS.md` for why each Chrome permission is requested.

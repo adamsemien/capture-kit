@@ -26,15 +26,22 @@ import { buildSessionIndex } from '../lib/session/manifest';
 import { splitConsoleErrors, splitFailures } from '../lib/net-classify';
 import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
-import { getSettings } from '../lib/settings';
+import { ICON_MODE_KEY, getSettings } from '../lib/settings';
 import type { Settings } from '../lib/settings';
 import { outputDirStatus, writeToOutputDir } from '../lib/output-dir';
-import { CONSOLE_LOGS_IN_BUNDLE, SESSION_PROGRESS_KEY, SESSION_SUMMARY_KEY } from '../lib/messages';
+import {
+  CAPTURE_PROGRESS_KEY,
+  CONSOLE_LOGS_IN_BUNDLE,
+  SESSION_PROGRESS_KEY,
+  SESSION_SUMMARY_KEY,
+} from '../lib/messages';
 import type {
   AgentCaptureDetail,
   BufferSnapshot,
+  CaptureProgressState,
   CaptureResponse,
   CaptureResultMeta,
+  CaptureTrigger,
   ConsoleEntry,
   FilenameConflict,
   LastBundle,
@@ -48,6 +55,7 @@ import type {
   SessionTab,
   SweepResponse,
 } from '../lib/messages';
+import type { StampRequest } from '../lib/capture-engine/types';
 
 const PROTECTED_PREFIXES = [
   'chrome://',
@@ -337,26 +345,82 @@ async function openResultTab(meta: CaptureResultMeta, images: ResultImageData[])
   }
 }
 
-async function flashBadge(text: string, color: string): Promise<void> {
+// -------------------------------------------------------------- indicator --
+//
+// The capture-started indicator lives entirely in browser chrome: the toolbar
+// badge and the action title. That is not a stylistic choice — captureAttached
+// runs UNSTICK_SCRIPT, which re-anchors fixed and sticky elements into the
+// document so they are photographed where an unscrolled visitor would see
+// them. Any in-page overlay would be un-stuck by that same pass and composited
+// into the image, once per segment. Browser chrome cannot be photographed by
+// the page it sits above, so the "never appears in the captured image"
+// constraint holds by construction rather than by timing.
+//
+// It matters more than it used to: with one-click capture on there is no popup
+// open, so the badge is the only sign anything is happening during the ten-odd
+// seconds a segmented capture takes.
+
+const BADGE_RUNNING = '#b7791f';
+const BADGE_OK = '#1e8449';
+const BADGE_ERROR = '#b03a2e';
+
+async function setBadge(text: string, color: string, title?: string): Promise<void> {
   try {
     await chrome.action.setBadgeBackgroundColor({ color });
     await chrome.action.setBadgeText({ text });
-    setTimeout(() => {
-      void chrome.action.setBadgeText({ text: '' });
-    }, 5000);
+    if (title !== undefined) await chrome.action.setTitle({ title });
   } catch {
     /* badge is best-effort */
   }
 }
 
-async function recordError(reason: string, viaCommand: boolean): Promise<void> {
+async function setCaptureProgress(state: CaptureProgressState): Promise<void> {
+  try {
+    await chrome.storage.session.set({ [CAPTURE_PROGRESS_KEY]: state });
+  } catch {
+    /* the popup simply shows its own static "Capturing…" */
+  }
+}
+
+/** Amber dot the moment a capture starts, before the grid size is known. */
+async function beginIndicator(): Promise<void> {
+  await setBadge('•••', BADGE_RUNNING, 'capture-kit — capturing…');
+  await setCaptureProgress({ state: 'running', done: 0, total: 0, startedAt: Date.now() });
+}
+
+/** Called per segment. `total` of 1 means a single-shot; nothing to count. */
+async function reportProgress(done: number, total: number): Promise<void> {
+  if (total > 1) {
+    await setBadge(`${done}/${total}`, BADGE_RUNNING, `capture-kit — segment ${done} of ${total}`);
+  }
+  await setCaptureProgress({ state: 'running', done, total, startedAt: Date.now() });
+}
+
+/**
+ * Always runs, success or failure, so a capture that dies mid-segment can
+ * never leave a stuck counter on the icon. `announce` is false for the popup
+ * path, which has its own status line and had no badge before this change.
+ */
+async function endIndicator(ok: boolean, announce: boolean): Promise<void> {
+  await setCaptureProgress({ state: 'idle', done: 0, total: 0, startedAt: Date.now() });
+  if (!announce) {
+    await setBadge('', BADGE_OK, 'capture-kit');
+    return;
+  }
+  await setBadge(ok ? 'OK' : '!', ok ? BADGE_OK : BADGE_ERROR, 'capture-kit');
+  setTimeout(() => {
+    void chrome.action.setBadgeText({ text: '' });
+  }, 5000);
+}
+
+async function recordError(reason: string, announce: boolean): Promise<void> {
   const lastError: LastError = { reason, at: Date.now() };
   try {
     await chrome.storage.session.set({ lastError });
   } catch {
     /* best-effort */
   }
-  if (viaCommand) await flashBadge('!', '#b03a2e');
+  await endIndicator(false, announce);
 }
 
 function describeError(error: unknown): string {
@@ -408,23 +472,42 @@ interface ReportArtifacts {
   url: string;
 }
 
+/**
+ * The footer's inputs, or undefined when the setting is off. Built here rather
+ * than inside the engine so the URL stamped on the image is exactly the URL
+ * the report prints — one source, no chance of the two disagreeing.
+ */
+function stampRequest(
+  settings: Settings,
+  url: string,
+  capturedAt: Date,
+): StampRequest | undefined {
+  return settings.stampUrlOnImage ? { url, capturedAt } : undefined;
+}
+
 /** `folder` is a path inside capture-kit/, e.g. "session_2026-08-14_10-35/". */
 async function captureReport(
   tab: chrome.tabs.Tab,
   settings: Settings,
+  trigger: CaptureTrigger,
   folder = '',
   /** Ordinal for the mirror copy ("01"); the extension follows the real format. */
   mirrorBasename?: string,
 ): Promise<ReportArtifacts> {
   const tabId = tab.id as number;
   const { snapshot, recorderActive } = await getSnapshot(tabId);
+  // The timestamp is taken before the capture so the footer and the report's
+  // "Captured at" are the same instant — a segmented capture takes seconds,
+  // and two clocks a few seconds apart in one bundle reads as a bug.
+  const capturedAt = new Date();
   const result = await captureFullPage({
     tabId,
     segmentSize: settings.segmentSize,
     format: settings.bundleFormat,
+    stamp: stampRequest(settings, snapshot?.meta.url ?? tab.url ?? '', capturedAt),
+    onProgress: (done, total) => void reportProgress(done, total),
   });
 
-  const capturedAt = new Date();
   const basename = captureBasename(
     snapshot?.meta.title || tab.title || '',
     snapshot?.meta.url || tab.url,
@@ -456,6 +539,9 @@ async function captureReport(
     captureMode: result.mode,
     revealForced: result.revealForced,
     segments: result.segments,
+    imageSize: result.imageSize,
+    trigger,
+    stamp: result.stamp,
   };
   const mirrorImageFilename = mirrorBasename
     ? `${mirrorBasename}.${isJpeg ? 'jpg' : 'png'}`
@@ -531,18 +617,25 @@ async function captureReport(
   };
 }
 
-async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
+/**
+ * `trigger` replaced a bare `viaCommand: boolean`. The badge announcement it
+ * used to gate is now `trigger !== 'popup'` — identical behaviour, since the
+ * popup shows its own status and is the only path that never flashed a badge.
+ */
+async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> {
+  const announce = trigger !== 'popup';
   try {
     const tab = await activeTab();
     const blocked = protectedPageReason(tab.url);
     if (blocked) {
-      await recordError(blocked, viaCommand);
+      await recordError(blocked, announce);
       return { ok: false, reason: blocked };
     }
     const tabId = tab.id as number;
     const settings = await getSettings();
 
-    const report = await captureReport(tab, settings);
+    await beginIndicator();
+    const report = await captureReport(tab, settings, trigger);
     const {
       capturedAt, imageFilename, markdown, clipboardMarkdown,
       imageMime, imageDownloadId, result,
@@ -591,8 +684,10 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
           images: [
             {
               filename: imageFilename,
-              width: result.fullSize.width,
-              height: result.fullSize.height,
+              // The file's dimensions, footer included — what the result tab
+              // shows has to match what a reader measures in an image viewer.
+              width: result.imageSize.width,
+              height: result.imageSize.height,
               bytes: base64Bytes(result.imageBase64),
               downloadId: imageDownloadId,
             },
@@ -604,12 +699,12 @@ async function captureBundle(viaCommand: boolean): Promise<CaptureResponse> {
       );
     }
 
-    if (viaCommand) await flashBadge('OK', '#1e8449');
+    await endIndicator(true, announce);
     return { ok: true, imageFilename, markdown: clipboardMarkdown };
   } catch (error) {
     const reason = describeError(error);
     console.error('[capture-kit] bundle capture failed:', error);
-    await recordError(reason, viaCommand);
+    await recordError(reason, announce);
     return { ok: false, reason };
   }
 }
@@ -626,13 +721,17 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
     // JPEG by default: a tall page as PNG runs to tens of MB for no benefit
     // on a screenshot. PNG is an explicit, sticky opt-in from the popup.
     const format = asPng ? 'png' : 'jpeg';
+    const capturedAt = new Date();
+    await beginIndicator();
     const result = await captureFullPage({
       tabId: tab.id as number,
       segmentSize: settings.segmentSize,
       format,
+      stamp: stampRequest(settings, tab.url ?? '', capturedAt),
+      onProgress: (done, total) => void reportProgress(done, total),
     });
     const mime = format === 'png' ? 'image/png' : 'image/jpeg';
-    const imageFilename = `${captureBasename(tab.title || '', tab.url, new Date())}.${
+    const imageFilename = `${captureBasename(tab.title || '', tab.url, capturedAt)}.${
       format === 'png' ? 'png' : 'jpg'
     }`;
     const written = await writeBundleFile(imageFilename, mime, result.imageBase64);
@@ -646,17 +745,18 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
           images: [
             {
               filename: written.filename,
-              width: result.fullSize.width,
-              height: result.fullSize.height,
+              width: result.imageSize.width,
+              height: result.imageSize.height,
               bytes: base64Bytes(result.imageBase64),
               downloadId: written.downloadId,
             },
           ],
-          createdAt: Date.now(),
+          createdAt: capturedAt.getTime(),
         },
         [{ mime, base64: result.imageBase64 }],
       );
     }
+    await endIndicator(true, false);
     return { ok: true, imageFilename: written.filename };
   } catch (error) {
     const reason = describeError(error);
@@ -684,14 +784,21 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
     // the end — same detection the single captures run.
     const expanded = await detectInnerScroll(tabId);
     if (expanded) await applyInnerScrollExpansion(tabId);
+    const capturedAt = new Date();
+    const sweepUrl = snapshot?.meta.url ?? tab.url ?? '';
+    await beginIndicator();
     let outcome;
     try {
-      outcome = await captureSweep(tabId, settings.segmentSize);
+      outcome = await captureSweep(
+        tabId,
+        settings.segmentSize,
+        stampRequest(settings, sweepUrl, capturedAt),
+      );
     } finally {
       if (expanded) await restoreInnerScrollExpansion(tabId);
     }
 
-    const basename = captureBasename(tab.title || '', tab.url, new Date());
+    const basename = captureBasename(tab.title || '', tab.url, capturedAt);
     const downloadIds: (number | null)[] = [];
     for (const capture of outcome.captures) {
       const written = await writeBundleFile(
@@ -709,19 +816,23 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
     }
 
     // A sweep is a one-page session: it writes a report alongside the images.
+    const sweepMeta = snapshot?.meta ?? {
+      url: tab.url ?? '',
+      title: tab.title ?? '',
+      viewport: { width: tab.width ?? 0, height: tab.height ?? 0 },
+      userAgent: navigator.userAgent,
+    };
     const sweepMarkdown = buildSweepMarkdown({
-      meta: snapshot?.meta ?? {
-        url: tab.url ?? '',
-        title: tab.title ?? '',
-        viewport: { width: tab.width ?? 0, height: tab.height ?? 0 },
-        userAgent: navigator.userAgent,
-      },
-      capturedAt: new Date(),
+      meta: sweepMeta,
+      capturedAt,
+      viewport: sweepMeta.viewport,
+      stamp: outcome.captures[0]?.result.stamp,
       widths: outcome.captures.map((capture) => ({
         width: capture.width,
         filename: `${basename}_w${capture.width}.jpg`,
         fullSize: capture.result.fullSize,
         contentSize: capture.result.contentSize,
+        imageSize: capture.result.imageSize,
         truncated: capture.result.truncated,
         captureMode: capture.result.mode,
         revealForced: capture.result.revealForced,
@@ -746,13 +857,13 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
           images: outcome.captures.map((capture, index) => ({
             filename: `${basename}_w${capture.width}.jpg`,
             label: `${capture.width} px`,
-            width: capture.result.fullSize.width,
-            height: capture.result.fullSize.height,
+            width: capture.result.imageSize.width,
+            height: capture.result.imageSize.height,
             bytes: base64Bytes(capture.result.imageBase64),
             downloadId: downloadIds[index],
           })),
           markdown: sweepMarkdown,
-          createdAt: Date.now(),
+          createdAt: capturedAt.getTime(),
         },
         outcome.captures.map((capture) => ({
           mime: 'image/jpeg',
@@ -760,6 +871,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
         })),
       );
     }
+    await endIndicator(true, false);
     return {
       ok: true,
       saved: outcome.captures.map((c) => c.width),
@@ -890,7 +1002,7 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
         // rendered twice — once naming the timestamped image for the session
         // folder, once naming its numbered sibling for the mirror.
         const ordinal = String(pages.length + 1).padStart(2, '0');
-        const report = await captureReport(fresh, settings, folder, ordinal);
+        const report = await captureReport(fresh, settings, 'session', folder, ordinal);
         const mirrorImage = report.mirrorImageFilename as string;
 
         // Mirror into the stable pointer folder immediately, while the bytes
@@ -1042,7 +1154,7 @@ async function agentCapture(tabId: number): Promise<void> {
     }
     // Same path as the keyboard command, so an agent gets exactly what a
     // keystroke gets — including the badge flash.
-    const response = await captureBundle(true);
+    const response = await captureBundle('agent');
     await tellPage(
       tabId,
       response.ok
@@ -1082,7 +1194,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
     return false;
   }
   if (message?.type === 'CAPTURE_BUNDLE') {
-    void captureBundle(false).then(sendResponse);
+    void captureBundle('popup').then(sendResponse);
     return true;
   }
   if (message?.type === 'CAPTURE_PAGE') {
@@ -1122,5 +1234,115 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
 });
 
 chrome.commands.onCommand.addListener((command) => {
-  if (command === 'capture-bundle') void captureBundle(true);
+  if (command === 'capture-bundle') void captureBundle('shortcut');
 });
+
+// ------------------------------------------------------- one-click capture --
+//
+// With "Toolbar icon captures immediately" on, the icon loses its popup and
+// becomes the capture button. chrome.action.onClicked only fires when the
+// popup is the empty string, so the OFF state needs no guard in the handler —
+// the listener is simply unreachable, which is what makes ON → OFF → ON in a
+// single session exact rather than approximately restored.
+//
+// The popup override is per-browser-session, not persisted, so it is asserted
+// from three places: install (new/updated/reloaded extension), startup (a new
+// browser session), and worker top-level evaluation (every wake in between).
+// Cheap, idempotent, and there is no state where the icon disagrees with the
+// setting.
+
+const POPUP_PAGE = 'popup/popup.html';
+const PANEL_MENU_ID = 'capture-kit-open-panel';
+
+async function applyActionPopup(oneClick: boolean): Promise<void> {
+  try {
+    await chrome.action.setPopup({ popup: oneClick ? '' : POPUP_PAGE });
+    await chrome.action.setTitle({
+      title: oneClick ? 'capture-kit — click to capture' : 'capture-kit',
+    });
+  } catch (error) {
+    console.error('[capture-kit] could not set the action popup:', error);
+  }
+  try {
+    // The menu item only earns its place in the icon's right-click menu while
+    // the popup is unreachable by clicking. Chrome already puts "Options"
+    // there, so settings are never stranded either way.
+    await chrome.contextMenus.update(PANEL_MENU_ID, { visible: oneClick });
+  } catch {
+    /* the item may not exist yet on the very first run; onInstalled creates it */
+  }
+}
+
+async function syncActionMode(): Promise<void> {
+  const settings = await getSettings();
+  await applyActionPopup(settings.iconCapturesImmediately);
+}
+
+/**
+ * The popup surface, reached from the icon's right-click menu.
+ *
+ * chrome.action.openPopup() is the real answer but it is Chrome 127+, and
+ * minimum_chrome_version here is 116. Rather than raise the floor for one menu
+ * item, it is feature-detected and falls back to opening the same document as
+ * a small window — the pattern the session picker already uses for the same
+ * reason (a popup cannot outlive the click that opened it).
+ */
+async function openPanel(): Promise<void> {
+  try {
+    if (typeof chrome.action.openPopup === 'function') {
+      await chrome.action.openPopup();
+      return;
+    }
+  } catch {
+    /* no user activation, or the icon is not visible — fall through */
+  }
+  try {
+    await chrome.windows.create({
+      url: chrome.runtime.getURL(POPUP_PAGE),
+      type: 'popup',
+      width: 380,
+      height: 560,
+    });
+  } catch (error) {
+    console.error('[capture-kit] could not open the panel:', error);
+  }
+}
+
+chrome.action.onClicked.addListener(() => {
+  void captureBundle('icon');
+});
+
+chrome.contextMenus.onClicked.addListener((info) => {
+  if (info.menuItemId === PANEL_MENU_ID) void openPanel();
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  void (async () => {
+    try {
+      // removeAll first: onInstalled fires on every reload of an unpacked
+      // extension, and create() on a duplicate id throws.
+      await chrome.contextMenus.removeAll();
+      chrome.contextMenus.create({
+        id: PANEL_MENU_ID,
+        title: 'Open capture-kit panel',
+        contexts: ['action'],
+        visible: false,
+      });
+    } catch (error) {
+      console.error('[capture-kit] could not create the icon menu:', error);
+    }
+    await syncActionMode();
+  })();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  void syncActionMode();
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'sync' && ICON_MODE_KEY in changes) void syncActionMode();
+});
+
+// Every worker wake. Covers the gap between onInstalled and onStartup — an
+// idle worker torn down and revived mid-session.
+void syncActionMode();

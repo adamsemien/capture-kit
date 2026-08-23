@@ -1,6 +1,8 @@
-import type { ConsoleEntry, NetworkFailure, PageMeta } from '../messages';
-import { CONSOLE_LOGS_IN_BUNDLE } from '../messages';
-import type { CaptureMode, PageDimensions } from '../capture-engine/types';
+import type { CaptureTrigger, ConsoleEntry, NetworkFailure, PageMeta } from '../messages';
+import { CAPTURE_TRIGGER_LABEL, CONSOLE_LOGS_IN_BUNDLE } from '../messages';
+import type { CaptureMode, PageDimensions, StampInfo } from '../capture-engine/types';
+import { classifyEnvironment } from '../env-marker';
+import { stampLabel } from '../capture-engine/stamp';
 import {
   collapseFailures,
   formatDemotedHost,
@@ -28,6 +30,12 @@ export interface BundleInput {
   revealForced: number;
   /** Segments stitched for the image (1 = true single-shot). */
   segments: number;
+  /** Dimensions of the file on disk, footer included. */
+  imageSize: PageDimensions;
+  /** What set this capture going. */
+  trigger: CaptureTrigger;
+  /** Present only when the URL footer was composited onto the image. */
+  stamp?: StampInfo;
 }
 
 function pad(value: number): string {
@@ -167,6 +175,54 @@ function contentsLine(
   });
 }
 
+export interface ContextBlockInput {
+  url: string;
+  title: string;
+  capturedAt: Date;
+  viewport: PageDimensions;
+  contentSize: PageDimensions;
+  /** Dimensions of the file on disk. Differs from contentSize when a footer was added. */
+  imageSize: PageDimensions;
+  /** Already-formatted captureModeLabel output. */
+  captureMode: string;
+  trigger: CaptureTrigger;
+  recorderActive: boolean;
+  stamp?: StampInfo;
+  userAgent: string;
+}
+
+/**
+ * THE context block, and the reason this feature exists: an assistant reading
+ * a report should never have to ask "is this localhost or production?" It is
+ * the first content block of every report, before any console output, because
+ * the answer changes what every line under it means.
+ *
+ * Ordering is deliberate — URL and Environment first, then the geometry, then
+ * provenance. Nothing here is duplicated further down the file.
+ */
+export function contextBlock(input: ContextBlockInput): string[] {
+  const environment = classifyEnvironment(input.url);
+  const lines = [
+    `- **URL:** ${input.url}`,
+    `- **Environment:** ${environment.label}`,
+    `- **Viewport:** ${input.viewport.width}×${input.viewport.height}`,
+    `- **Full page:** ${input.contentSize.width}×${input.contentSize.height}`,
+    `- **Image file:** ${input.imageSize.width}×${input.imageSize.height}`,
+    `- **Captured at:** ${input.capturedAt.toISOString()}`,
+    `- **Capture mode:** ${input.captureMode}`,
+    `- **Triggered by:** ${CAPTURE_TRIGGER_LABEL[input.trigger]}`,
+    `- **URL stamp:** ${stampLabel(input.stamp)}`,
+    `- **Recorder:** ${
+      input.recorderActive
+        ? 'active since page load — console and network data below are complete'
+        : 'NOT ACTIVE for this page — console and network data are unavailable, not empty'
+    }`,
+    `- **Title:** ${input.title || '(untitled)'}`,
+    `- **User agent:** ${input.userAgent}`,
+  ];
+  return lines;
+}
+
 export function buildBundleMarkdown(input: BundleInput): string {
   const { meta } = input;
   const errors = input.consoleEntries.filter((e) => e.level === 'error');
@@ -184,18 +240,19 @@ export function buildBundleMarkdown(input: BundleInput): string {
         warnings: warnings.length,
         logs: input.includeLogs ? logs.length : 0,
       }),
-      `- **URL:** ${meta.url}`,
-      `- **Title:** ${meta.title || '(untitled)'}`,
-      `- **Captured at:** ${input.capturedAt.toISOString()}`,
-      `- **Viewport:** ${meta.viewport.width}×${meta.viewport.height}`,
-      `- **Full page:** ${input.contentSize.width}×${input.contentSize.height}`,
-      `- **Capture mode:** ${captureModeLabel(input.captureMode, input.revealForced, input.segments)}`,
-      `- **Recorder:** ${
-        input.recorderActive
-          ? 'active since page load — console and network data below are complete'
-          : 'NOT ACTIVE for this page — console and network data are unavailable, not empty'
-      }`,
-      `- **User agent:** ${meta.userAgent}`,
+      ...contextBlock({
+        url: meta.url,
+        title: meta.title,
+        capturedAt: input.capturedAt,
+        viewport: meta.viewport,
+        contentSize: input.contentSize,
+        imageSize: input.imageSize,
+        captureMode: captureModeLabel(input.captureMode, input.revealForced, input.segments),
+        trigger: input.trigger,
+        recorderActive: input.recorderActive,
+        stamp: input.stamp,
+        userAgent: meta.userAgent,
+      }),
     ].join('\n'),
   );
 
@@ -317,6 +374,8 @@ export interface SweepWidthInput {
   filename: string;
   fullSize: PageDimensions;
   contentSize: PageDimensions;
+  /** Dimensions of the file on disk, footer included. */
+  imageSize: PageDimensions;
   truncated: boolean;
   captureMode: CaptureMode;
   revealForced: number;
@@ -332,6 +391,9 @@ export interface SweepMarkdownInput {
   networkFailures: NetworkFailure[];
   recorderActive: boolean;
   includeLogs: boolean;
+  viewport: PageDimensions;
+  /** Present only when the URL footer was composited onto the widths. */
+  stamp?: StampInfo;
 }
 
 /**
@@ -347,12 +409,24 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
 
   const parts: string[] = [];
   parts.push(`# Responsive sweep — ${meta.title || meta.url}`);
+  // The same context grammar as a page report, minus the per-width geometry
+  // that each width states for itself below.
+  const environment = classifyEnvironment(meta.url);
   parts.push(
     [
       `- **URL:** ${meta.url}`,
-      `- **Title:** ${meta.title || '(untitled)'}`,
+      `- **Environment:** ${environment.label}`,
+      `- **Viewport:** ${input.viewport.width}×${input.viewport.height}`,
       `- **Captured at:** ${input.capturedAt.toISOString()}`,
       `- **Widths:** ${input.widths.map((w) => `${w.width} px`).join(', ') || '(none)'}`,
+      `- **Triggered by:** ${CAPTURE_TRIGGER_LABEL.sweep}`,
+      `- **URL stamp:** ${stampLabel(input.stamp)}`,
+      `- **Recorder:** ${
+        input.recorderActive
+          ? 'active since page load — console and network data below are complete'
+          : 'NOT ACTIVE for this page — console and network data are unavailable, not empty'
+      }`,
+      `- **Title:** ${meta.title || '(untitled)'}`,
       `- **User agent:** ${meta.userAgent}`,
     ].join('\n'),
   );
@@ -377,6 +451,7 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
           thirdPartyFailures: 0,
         }),
         `- **Size:** ${width.fullSize.width}×${width.fullSize.height}`,
+        `- **Image file:** ${width.imageSize.width}×${width.imageSize.height}`,
         `- **Capture mode:** ${captureModeLabel(width.captureMode, width.revealForced, width.segments)}`,
       ].join('\n'),
     );

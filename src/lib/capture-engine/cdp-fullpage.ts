@@ -409,6 +409,9 @@ async function captureSingleShot(
     mode: 'standard',
     fullSize: contentSize,
     contentSize,
+    // No footer yet — the stamp seam runs after the debugger detaches and
+    // rewrites this if the setting is on.
+    imageSize: contentSize,
     truncated: false,
     segments: 1,
     revealForced: 0,
@@ -460,7 +463,12 @@ async function captureSegmented(
     const yOffsets = planScrollOffsets(height, viewportHeight);
 
     const canvas = new SegmentCanvas(width, height);
+    // The grid is known before the loop runs, so progress can be reported as
+    // "3/7" rather than a spinner. A segmented capture of a long page is the
+    // case where the user has no other sign anything is happening.
+    const totalSegments = xOffsets.length * yOffsets.length;
     let segments = 0;
+    request.onProgress?.(0, totalSegments);
     for (const y of yOffsets) {
       for (const x of xOffsets) {
         const reached = await evaluateInPage<ScrollPosition>(
@@ -473,6 +481,7 @@ async function captureSegmented(
         // Sequential on purpose: bounded memory, one decoded segment at a time.
         await canvas.add(Math.round(reached.x), Math.round(reached.y), shot.data);
         segments += 1;
+        request.onProgress?.(segments, totalSegments);
       }
     }
 
@@ -484,6 +493,7 @@ async function captureSegmented(
       mode: 'standard',
       fullSize: { width, height },
       contentSize: naturalSize,
+      imageSize: { width, height },
       truncated,
       segments,
       revealForced: 0,

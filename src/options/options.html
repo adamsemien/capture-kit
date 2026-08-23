@@ -35,6 +35,24 @@
       </section>
 
       <section class="card">
+        <h2 class="label">The toolbar icon</h2>
+
+        <label class="field">
+          <input id="icon-captures" type="checkbox" />
+          <span class="field-text">
+            <span class="field-title">Toolbar icon captures immediately</span>
+            <small>
+              Off by default: clicking the icon opens the popup. Turn this on and one click fires
+              Capture + Report straight away with your current settings — no popup, no second
+              click. The popup is still there: right-click the icon and choose
+              <b>Open capture-kit panel</b> for "Image only", session capture, the responsive
+              sweep, and "Copy last report".
+            </small>
+          </span>
+        </label>
+      </section>
+
+      <section class="card">
         <h2 class="label">After a capture</h2>
 
         <label class="field">
@@ -84,6 +102,21 @@
             </span>
           </span>
         </div>
+
+        <label class="field">
+          <input id="stamp-url" type="checkbox" />
+          <span class="field-text">
+            <span class="field-title">Stamp URL on image</span>
+            <small>
+              Off by default. On, every capture gets a thin dark footer across the bottom of the
+              finished image carrying the full URL and the capture time, so a screenshot pasted
+              somewhere on its own still says where it came from. It is composited after the
+              capture finishes, so it can never show up part-way down a stitched page — and the
+              image dimensions reported everywhere include it. JPEG captures are re-encoded once
+              to add it.
+            </small>
+          </span>
+        </label>
       </section>
 
       <section class="card">

@@ -14,6 +14,8 @@ const formatInputs = Array.from(
   document.querySelectorAll<HTMLInputElement>('input[name="bundle-format"]'),
 );
 const triggerInput = document.getElementById('allow-in-page-trigger') as HTMLInputElement;
+const iconCapturesInput = document.getElementById('icon-captures') as HTMLInputElement;
+const stampUrlInput = document.getElementById('stamp-url') as HTMLInputElement;
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
 const dirNameEl = document.getElementById('output-dir-name') as HTMLElement;
 const dirChooseBtn = document.getElementById('output-dir-choose') as HTMLButtonElement;
@@ -29,6 +31,8 @@ async function load(): Promise<void> {
   maintainLatestInput.checked = settings.maintainLatest;
   openResultInput.checked = settings.openResult;
   triggerInput.checked = settings.allowInPageTrigger;
+  iconCapturesInput.checked = settings.iconCapturesImmediately;
+  stampUrlInput.checked = settings.stampUrlOnImage;
   for (const input of formatInputs) {
     input.checked = input.value === settings.bundleFormat;
   }
@@ -119,6 +123,8 @@ async function save(): Promise<void> {
     openResult: openResultInput.checked,
     imageOnlyPng,
     allowInPageTrigger: triggerInput.checked,
+    iconCapturesImmediately: iconCapturesInput.checked,
+    stampUrlOnImage: stampUrlInput.checked,
   });
   segmentInput.value = String(segmentSize);
   flashStatus('Saved');
@@ -137,6 +143,8 @@ includeLogsInput.addEventListener('change', () => void save());
 maintainLatestInput.addEventListener('change', () => void save());
 openResultInput.addEventListener('change', () => void save());
 triggerInput.addEventListener('change', () => void save());
+iconCapturesInput.addEventListener('change', () => void save());
+stampUrlInput.addEventListener('change', () => void save());
 for (const input of formatInputs) {
   input.addEventListener('change', () => void save());
 }

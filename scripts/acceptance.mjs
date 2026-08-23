@@ -1,6 +1,9 @@
-// Runs the NOBC-82 acceptance checks end to end and prints raw output.
+// Runs the acceptance checks end to end and prints raw output.
 //
 //   npm run build && node scripts/acceptance.mjs
+//
+// CHECK 1–5 cover the output-folder round; CHECK A1–A5 cover this round
+// (one-click capture, report context block, image URL stamp, copy naming).
 //
 // Constraints this harness works around, all of them real:
 //   - Branded Chrome 137+ ignores --load-extension, so this drives Chrome for
@@ -19,7 +22,15 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  statSync,
+} from 'node:fs';
 
 const CHROME =
   process.env.CHROME_BIN ??
@@ -95,12 +106,30 @@ class Session {
   }
 }
 
+/**
+ * `?tall=1` renders a few thousand pixels of content so the capture engine
+ * takes the segmented path for real. Without it the acceptance page is one
+ * viewport tall and "segmented" captures come back as a single segment, which
+ * would let the URL-stamp check pass without ever testing the case it exists
+ * for. The rows are alternating light shades on purpose — nothing near-black,
+ * so the footer detector cannot mistake page content for the band.
+ */
+function tallBlock(rows = 40) {
+  let html = '';
+  for (let i = 0; i < rows; i++) {
+    const shade = i % 2 === 0 ? '#f2f2f4' : '#e4e4e8';
+    html += `<div style="height:120px;background:${shade};padding:8px;font:16px sans-serif">row ${i}</div>`;
+  }
+  return html;
+}
+
 // The page under capture reports through its title, so nothing has to attach a
 // second debugger to it.
 const TRIGGER_PAGE = `<!doctype html>
 <html><head><meta charset="utf-8"><title>ready</title></head>
 <body><h1>capture-kit acceptance page</h1>
 <p>Some text so the capture has pixels in it.</p>
+__TALL__
 <script>
   document.addEventListener('capture-kit:capture-complete', (e) => {
     document.title = 'RESULT ' + JSON.stringify(e.detail);
@@ -111,13 +140,129 @@ const TRIGGER_PAGE = `<!doctype html>
 </script>
 </body></html>`;
 
+// Pixel inspector for the URL-stamp checks. Node has no image decoder and this
+// repo has no runtime dependencies, so the decoding happens where a decoder
+// already exists: a Chrome tab. It draws the capture to a canvas, samples it,
+// and reports through document.title — the same no-second-debugger trick the
+// trigger page uses.
+const INSPECT_PAGE = `<!doctype html>
+<html><head><meta charset="utf-8"><title>inspecting</title></head>
+<body><script>
+  const name = new URLSearchParams(location.search).get('file');
+  const img = new Image();
+  img.onerror = () => { document.title = 'RESULT ' + JSON.stringify({ error: 'decode failed' }); };
+  img.onload = () => {
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    c.getContext('2d').drawImage(img, 0, 0);
+    const ctx = c.getContext('2d');
+    // A "band row" is a full-width row of near-black pixels, sampled at five
+    // x positions. Counting runs of them tells us the band appears exactly
+    // once and where — a band stitched into the middle of a segmented capture
+    // is the failure this check exists to catch.
+    const xs = [2, Math.floor(c.width * 0.25), Math.floor(c.width / 2),
+                Math.floor(c.width * 0.75), c.width - 3];
+    const dark = (y) => xs.every((x) => {
+      const d = ctx.getImageData(x, y, 1, 1).data;
+      return d[0] < 40 && d[1] < 40 && d[2] < 40;
+    });
+    const runs = [];
+    let start = -1;
+    for (let y = 0; y < c.height; y++) {
+      if (dark(y)) { if (start < 0) start = y; }
+      else if (start >= 0) { runs.push([start, y - 1]); start = -1; }
+    }
+    if (start >= 0) runs.push([start, c.height - 1]);
+    // Only runs tall enough to be a band; a dark UI stripe in the page is not one.
+    const bands = runs.filter(([a, b]) => b - a + 1 >= 20);
+    document.title = 'RESULT ' + JSON.stringify({
+      width: c.width, height: c.height,
+      bands: bands.map(([a, b]) => ({ top: a, bottom: b, height: b - a + 1 })),
+      touchesBottom: bands.some(([, b]) => b === c.height - 1),
+    });
+  };
+  img.src = '/image?file=' + encodeURIComponent(name);
+</script></body></html>`;
+
 function startHttp() {
-  const server = createServer((_req, res) => {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    if (url.pathname === '/image') {
+      // Served straight out of the folder the capture landed in, so the
+      // inspector decodes the very bytes that were written to disk.
+      const file = `${captureDir()}/${url.searchParams.get('file')}`;
+      if (!existsSync(file)) {
+        res.writeHead(404).end('no such capture');
+        return;
+      }
+      const type = file.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      res.writeHead(200, { 'content-type': type });
+      res.end(readFileSync(file));
+      return;
+    }
+    if (url.pathname === '/inspect') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(INSPECT_PAGE);
+      return;
+    }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    res.end(TRIGGER_PAGE);
+    res.end(TRIGGER_PAGE.replace('__TALL__', url.searchParams.has('tall') ? tallBlock() : ''));
   });
   server.listen(HTTP_PORT, '127.0.0.1');
   return server;
+}
+
+/**
+ * Where the captures actually landed.
+ *
+ * The write seam routes to the chosen folder when its permission is live and
+ * to Downloads otherwise, and the macOS folder-picker automation in CHECK 1 is
+ * not reliable enough to assume the first. These checks are about the report
+ * and the image, not about which directory won, so they follow the files —
+ * and print which directory that was.
+ */
+function captureDir() {
+  const candidates = [OUTPUT_DIR, `${DOWNLOADS}/${'capture-kit'}`];
+  let best = null;
+  for (const dir of candidates) {
+    if (!existsSync(dir)) continue;
+    for (const name of readdirSync(dir)) {
+      if (name.startsWith('.')) continue;
+      const mtime = statSync(`${dir}/${name}`).mtimeMs;
+      if (!best || mtime > best.mtime) best = { dir, mtime };
+    }
+  }
+  return best?.dir ?? OUTPUT_DIR;
+}
+
+/** Newest capture file matching a suffix, in whichever directory got written. */
+function newestFile(suffix) {
+  const dir = captureDir();
+  const entries = readdirSync(dir)
+    .filter((n) => !n.startsWith('.') && n.endsWith(suffix) && !n.startsWith('latest.'))
+    .map((n) => ({ name: n, mtime: statSync(`${dir}/${n}`).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime);
+  return entries[0]?.name ?? null;
+}
+
+function readCapture(name) {
+  return readFileSync(`${captureDir()}/${name}`, 'utf8');
+}
+
+/** The context block: the H1 plus the metadata block that immediately follows. */
+function contextBlockOf(markdownFile) {
+  if (!markdownFile) return '(no report file was written — reporting as a failure)';
+  const blocks = readCapture(markdownFile).split('\n\n');
+  return `${blocks[0]}\n\n${blocks[1]}`;
+}
+
+async function setSetting(session, patch) {
+  return session.eval(
+    `(async () => {
+       await chrome.storage.sync.set(${JSON.stringify(patch)});
+       return await chrome.storage.sync.get(${JSON.stringify(Object.keys(patch))});
+     })()`,
+  );
 }
 
 function seedProfile() {
@@ -382,6 +527,281 @@ console.log('capture-kit:capture-complete → ' + JSON.stringify(detail));
 console.log(`\n${OUTPUT_DIR}:`);
 console.log(listDir(OUTPUT_DIR).join('\n'));
 
+// ======================================================================
+// This round: one-click capture, context block, URL stamp, copy naming.
+// ======================================================================
+
+await openTab(optionsUrl);
+options = await attach(optionsUrl);
+
+// --- A1: the toolbar icon's popup follows the setting -------------------
+heading('CHECK A1 — one-click mode swaps the action popup, and OFF restores it exactly');
+console.log('default (fresh profile): ' + JSON.stringify(await options.eval(
+  `chrome.action.getPopup({})`,
+)));
+console.log('setting round-trip ON:  ' + JSON.stringify(
+  await setSetting(options, { iconCapturesImmediately: true }),
+));
+await sleep(1200);
+const popupWhenOn = await options.eval(`chrome.action.getPopup({})`);
+console.log('action popup with ON:   ' + JSON.stringify(popupWhenOn));
+console.log('setting round-trip OFF: ' + JSON.stringify(
+  await setSetting(options, { iconCapturesImmediately: false }),
+));
+await sleep(1200);
+const popupWhenOff = await options.eval(`chrome.action.getPopup({})`);
+console.log('action popup with OFF:  ' + JSON.stringify(popupWhenOff));
+console.log('ON→OFF→ON in one session: ' + JSON.stringify(await (async () => {
+  await setSetting(options, { iconCapturesImmediately: true });
+  await sleep(900);
+  const on2 = await options.eval(`chrome.action.getPopup({})`);
+  await setSetting(options, { iconCapturesImmediately: false });
+  await sleep(900);
+  const off2 = await options.eval(`chrome.action.getPopup({})`);
+  return { secondOn: on2, secondOff: off2 };
+})()));
+console.log('VERDICT popup empty when ON: ' + (popupWhenOn === ''));
+console.log('VERDICT popup restored when OFF: ' + /popup\/popup\.html$/.test(popupWhenOff));
+console.log(
+  'icon context menu present: ' +
+    JSON.stringify(await options.eval(
+      `new Promise((r) => { try { chrome.contextMenus.update('capture-kit-open-panel', {}, () =>
+         r(chrome.runtime.lastError ? 'missing: ' + chrome.runtime.lastError.message : 'present')); }
+         catch (e) { r('threw: ' + e.message); } })`,
+    )),
+);
+console.log('NOTE: the physical toolbar-icon click is ADAM-VERIFY — no automation can press it.');
+
+// --- A2: the context block, local and deployed --------------------------
+heading('CHECK A2 (i) — context block for a LOCALHOST page');
+page = await openTab(`http://127.0.0.1:${HTTP_PORT}/?n=5`);
+detail = await waitForResult(page.id);
+console.log('capture-kit:capture-complete → ' + JSON.stringify(detail));
+let md = newestFile('.md');
+console.log(`\n--- ${md} ---`);
+console.log(contextBlockOf(md));
+
+heading('CHECK A2 (ii) — context block for a DEPLOYED page');
+// The in-page trigger needs our script on the page, which a real site will not
+// have. An extension page can message the worker instead, which is the popup's
+// own path — so the target tab is activated first and CAPTURE_BUNDLE is sent
+// from here. Needs network; a failure is reported, never faked.
+const deployedUrl = process.env.CK_DEPLOYED_URL ?? 'https://example.com/';
+const deployedTab = await openTab(deployedUrl);
+if (!deployedTab) {
+  console.log(`FAILED to load ${deployedUrl} — no network? Reporting, not skipping.`);
+} else {
+  const before = newestFile('.md');
+  console.log(
+    'activate + CAPTURE_BUNDLE → ' +
+      JSON.stringify(
+        await options.eval(
+          `(async () => {
+             const tabs = await chrome.tabs.query({});
+             const target = tabs.find(t => t.url && t.url.startsWith(${JSON.stringify(deployedUrl)}));
+             if (!target) return { ok: false, reason: 'tab not found' };
+             await chrome.tabs.update(target.id, { active: true });
+             await chrome.windows.update(target.windowId, { focused: true });
+             await new Promise(r => setTimeout(r, 600));
+             return await chrome.runtime.sendMessage({ type: 'CAPTURE_BUNDLE' });
+           })()`,
+        ),
+      ),
+  );
+  await sleep(3000);
+  md = newestFile('.md');
+  if (md && md !== before) {
+    console.log(`\n--- ${md} ---`);
+    console.log(contextBlockOf(md));
+  } else {
+    console.log('no new report was written for the deployed page — reporting as a failure');
+  }
+}
+
+// --- A3: the URL stamp --------------------------------------------------
+heading('CHECK A3 — URL stamp OFF then ON, on a page tall enough to segment');
+async function inspect(file) {
+  const t = await openTab(`http://127.0.0.1:${HTTP_PORT}/inspect?file=${encodeURIComponent(file)}`);
+  return waitForResult(t.id, 30000);
+}
+
+// A small segment size forces the segmented path on an ordinary page, which is
+// the case the "never mid-image" requirement is really about.
+console.log('force segmentation: ' + JSON.stringify(
+  await setSetting(options, { segmentSize: 1024, stampUrlOnImage: false }),
+));
+page = await openTab(`http://127.0.0.1:${HTTP_PORT}/?n=6&tall=1`);
+detail = await waitForResult(page.id);
+const unstampedImage = newestFile('.jpg');
+const unstampedReport = newestFile('.md');
+console.log(`OFF image: ${unstampedImage}`);
+console.log('OFF pixels: ' + JSON.stringify(await inspect(unstampedImage)));
+console.log('OFF report stamp line: ' + JSON.stringify(
+  readCapture(unstampedReport)
+    .split('\n').filter((l) => l.startsWith('- **URL stamp:**')),
+));
+console.log('OFF report size lines: ' + JSON.stringify(
+  readCapture(unstampedReport)
+    .split('\n').filter((l) => /Full page:|Image file:/.test(l)),
+));
+
+console.log('\nstamp ON: ' + JSON.stringify(await setSetting(options, { stampUrlOnImage: true })));
+// Result tabs accumulate and /json/list has no creation order, so the one this
+// capture opens is identified by difference rather than by position.
+const resultTabsBefore = new Set(
+  (await cdp('/json/list')).filter((t) => t.url.includes('/result/result.html')).map((t) => t.id),
+);
+page = await openTab(`http://127.0.0.1:${HTTP_PORT}/?n=7&tall=1`);
+detail = await waitForResult(page.id);
+const stampedImage = newestFile('.jpg');
+const stampedReport = newestFile('.md');
+console.log(`ON image: ${stampedImage}`);
+console.log('ON pixels: ' + JSON.stringify(await inspect(stampedImage)));
+console.log('ON report stamp line: ' + JSON.stringify(
+  readCapture(stampedReport)
+    .split('\n').filter((l) => l.startsWith('- **URL stamp:**')),
+));
+console.log('ON report size lines: ' + JSON.stringify(
+  readCapture(stampedReport)
+    .split('\n').filter((l) => /Full page:|Image file:/.test(l)),
+));
+// The "never mid-image" requirement is only meaningfully tested on a capture
+// that actually stitched segments, so the path taken is part of the evidence.
+console.log('ON capture path: ' + JSON.stringify(
+  readCapture(stampedReport).split('\n').filter((l) => l.startsWith('- **Capture mode:**')),
+));
+console.log('OFF capture path: ' + JSON.stringify(
+  readCapture(unstampedReport).split('\n').filter((l) => l.startsWith('- **Capture mode:**')),
+));
+console.log('restore segment size: ' + JSON.stringify(
+  await setSetting(options, { segmentSize: 8192, stampUrlOnImage: false }),
+));
+
+// --- A4: the result tab's copy controls ---------------------------------
+heading('CHECK A4 — result-tab button labels, tooltip, and Copy report visibility');
+{
+  const tabs = await cdp('/json/list');
+  const resultTabs = tabs.filter((t) => t.url.includes('/result/result.html'));
+  const newest = resultTabs.find((t) => !resultTabsBefore.has(t.id)) ?? resultTabs[0];
+  if (!newest) {
+    console.log('no result tab open — reporting as a failure');
+  } else {
+    const r = new Session(newest.webSocketDebuggerUrl);
+    await r.open();
+    await r.send('Runtime.enable');
+    console.log('buttons in the actions bar: ' + JSON.stringify(
+      await r.eval(
+        `[...document.querySelectorAll('.actions button')]
+           .map(b => ({ id: b.id, text: b.textContent.replace(/\\s+/g,' ').trim(), hidden: b.hidden }))`,
+      ),
+    ));
+    console.log('tooltip (character-exact compare): ' + JSON.stringify(
+      await r.eval(
+        `(() => {
+           const b = document.getElementById('copy-image-report');
+           const want = "Puts the screenshot and the markdown report on the clipboard together. Some AI chats keep only the image - if the report didn't arrive, paste it separately with Copy report.";
+           return { title: b && b.title, matchesExactly: !!b && b.title === want };
+         })()`,
+      ),
+    ));
+    console.log('Copy report is visible: ' + JSON.stringify(
+      await r.eval(
+        `(() => {
+           const b = document.getElementById('copy-report');
+           if (!b) return 'button missing';
+           const cs = getComputedStyle(b);
+           return { hidden: b.hidden, display: cs.display, visible: !b.hidden && cs.display !== 'none' && b.offsetParent !== null };
+         })()`,
+      ),
+    ));
+    console.log('any remaining "Copy for AI" / "Copy markdown" text on the surface: ' + JSON.stringify(
+      await r.eval(`/Copy for AI|Copy markdown/.test(document.body.innerText) ? 'FOUND' : 'none'`),
+    ));
+    r.close();
+  }
+}
+
+// --- A5: the other capture paths still work -----------------------------
+heading('CHECK A5 — regression: Image only, responsive sweep, session list');
+console.log('CAPTURE_PAGE (Image only) → ' + JSON.stringify(
+  await options.eval(
+    `(async () => {
+       const tabs = await chrome.tabs.query({});
+       const target = tabs.find(t => t.url && t.url.startsWith('http://127.0.0.1:${HTTP_PORT}/?'));
+       if (!target) return { ok: false, reason: 'no http tab' };
+       await chrome.tabs.update(target.id, { active: true });
+       await new Promise(r => setTimeout(r, 600));
+       return await chrome.runtime.sendMessage({ type: 'CAPTURE_PAGE', png: false });
+     })()`,
+  ),
+));
+await sleep(2500);
+console.log('CAPTURE_SWEEP → ' + JSON.stringify(
+  await options.eval(
+    `(async () => {
+       const tabs = await chrome.tabs.query({});
+       const target = tabs.find(t => t.url && t.url.startsWith('http://127.0.0.1:${HTTP_PORT}/?'));
+       if (!target) return { ok: false, reason: 'no http tab' };
+       await chrome.tabs.update(target.id, { active: true });
+       await new Promise(r => setTimeout(r, 600));
+       return await chrome.runtime.sendMessage({ type: 'CAPTURE_SWEEP' });
+     })()`,
+  ),
+));
+await sleep(4000);
+const sweepReport = newestFile('_sweep.md');
+if (sweepReport) {
+  console.log(`\n--- ${sweepReport} (context block) ---`);
+  console.log(contextBlockOf(sweepReport));
+}
+console.log('SESSION_LIST_TABS still answers → ' + JSON.stringify(
+  await options.eval(
+    `chrome.runtime.sendMessage({ type: 'SESSION_LIST_TABS' }).then(r => Array.isArray(r) ? r.length + ' tabs' : r)`,
+  ),
+));
+// A real two-tab session run: the session path calls captureReport with its own
+// trigger and writes an index.md, so it is the one path that would break
+// silently if the new trigger argument were threaded wrong.
+console.log('SESSION_START (2 capturable tabs) → ' + JSON.stringify(
+  await options.eval(
+    `(async () => {
+       const tabs = await chrome.runtime.sendMessage({ type: 'SESSION_LIST_TABS' });
+       const ids = tabs.filter(t => !t.blockedReason && t.url.startsWith('http://127.0.0.1:${HTTP_PORT}/?'))
+                       .slice(0, 2).map(t => t.id);
+       if (ids.length < 2) return { ok: false, reason: 'not enough capturable tabs: ' + ids.length };
+       const r = await chrome.runtime.sendMessage({ type: 'SESSION_START', tabIds: ids, reload: false });
+       return r.ok ? { ok: true, pages: r.summary.pages, folder: r.summary.folder, failures: r.summary.failures } : r;
+     })()`,
+  ),
+));
+await sleep(1500);
+{
+  const sessionDir = readdirSync(captureDir()).filter((n) => n.startsWith('session_')).sort().pop();
+  console.log('session folder written: ' + JSON.stringify(sessionDir ?? null));
+  if (sessionDir) {
+    console.log('session folder contents: ' + JSON.stringify(listDir(`${captureDir()}/${sessionDir}`)));
+    const indexPath = `${captureDir()}/${sessionDir}/index.md`;
+    if (existsSync(indexPath)) {
+      console.log('index.md first 6 lines:');
+      console.log(readFileSync(indexPath, 'utf8').split('\n').slice(0, 6).join('\n'));
+    }
+    // One per-page report from inside the session, to prove the context block
+    // and its "Triggered by" reach that path too.
+    const pageReport = readdirSync(`${captureDir()}/${sessionDir}`)
+      .find((n) => n.endsWith('.md') && n !== 'index.md');
+    if (pageReport) {
+      console.log(`\n--- ${sessionDir}/${pageReport} (context block) ---`);
+      const blocks = readFileSync(`${captureDir()}/${sessionDir}/${pageReport}`, 'utf8').split('\n\n');
+      console.log(`${blocks[0]}\n\n${blocks[1]}`);
+    }
+  }
+}
+console.log(`\n${OUTPUT_DIR}:`);
+console.log(listDir(OUTPUT_DIR).join('\n'));
+console.log(`\n${DOWNLOADS} (must hold nothing from this round):`);
+console.log(listDir(DOWNLOADS).join('\n') || '(empty)');
+
+options.close();
 chrome.kill('SIGTERM');
 await sleep(2000);
 http.close();

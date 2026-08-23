@@ -9,11 +9,11 @@ const warningsEl = document.getElementById('warnings') as HTMLDivElement;
 const markdownPane = document.getElementById('markdown-pane') as HTMLElement;
 const markdownEl = document.getElementById('markdown') as HTMLPreElement;
 const showInFinderBtn = document.getElementById('show-in-finder') as HTMLButtonElement;
-const copyMarkdownBtn = document.getElementById('copy-markdown') as HTMLButtonElement;
-const copyForAiBtn = document.getElementById('copy-for-ai') as HTMLButtonElement;
+const copyReportBtn = document.getElementById('copy-report') as HTMLButtonElement;
+const copyImageReportBtn = document.getElementById('copy-image-report') as HTMLButtonElement;
 const copyImageBtn = document.getElementById('copy-image') as HTMLButtonElement;
 const copyImageKeyEl = document.getElementById('copy-image-key') as HTMLSpanElement;
-const copyForAiKeyEl = document.getElementById('copy-for-ai-key') as HTMLSpanElement;
+const copyImageReportKeyEl = document.getElementById('copy-image-report-key') as HTMLSpanElement;
 const statusEl = document.getElementById('status') as HTMLSpanElement;
 const zoomEl = document.getElementById('zoom') as HTMLDivElement;
 const viewFitBtn = document.getElementById('view-fit') as HTMLButtonElement;
@@ -268,7 +268,7 @@ async function copyImage(captureId: string): Promise<void> {
   }
 }
 
-async function copyForAi(captureId: string, meta: CaptureResultMeta): Promise<void> {
+async function copyImageAndReport(captureId: string, meta: CaptureResultMeta): Promise<void> {
   const png = clipboardPng(captureId);
   png.catch(() => {
     /* falls back to the text half below */
@@ -294,7 +294,7 @@ async function copyForAi(captureId: string, meta: CaptureResultMeta): Promise<vo
 }
 
 /**
- * Absolute paths for the Copy for AI block, read from the download records at
+ * Absolute paths for the "Copy image + report" block, read from the download records at
  * render time. A path that no longer resolves must say so — a broken path in
  * a block someone pastes to an assistant fails silently and wastes their time.
  */
@@ -334,11 +334,19 @@ async function main(): Promise<void> {
       chip('Files', 'Still in your Downloads/capture-kit folder'),
     );
     showInFinderBtn.hidden = true;
-    copyForAiBtn.hidden = true;
+    copyImageReportBtn.hidden = true;
+    copyReportBtn.hidden = true;
     copyImageBtn.hidden = true;
     zoomEl.hidden = true;
     return;
   }
+
+  // "Copy report" names a real control on this surface — the tooltip on
+  // "Copy image + report" sends people to it by name, so it is a visible
+  // button rather than the hidden one it used to be. It still hides when
+  // there is no report to copy (an "Image only" capture), because a button
+  // that copies nothing is worse than no button.
+  copyReportBtn.hidden = !meta.markdown;
 
   const first = meta.images[0];
   document.title = `capture-kit — ${first?.filename ?? 'result'}`;
@@ -373,10 +381,10 @@ async function main(): Promise<void> {
   }
 
   copyImageKeyEl.textContent = shortcutLabel(false);
-  copyForAiKeyEl.textContent = shortcutLabel(true);
+  copyImageReportKeyEl.textContent = shortcutLabel(true);
 
   copyImageBtn.addEventListener('click', () => void copyImage(captureId));
-  copyForAiBtn.addEventListener('click', () => void copyForAi(captureId, meta));
+  copyImageReportBtn.addEventListener('click', () => void copyImageAndReport(captureId, meta));
 
   /*
    * Two paths, separated by a modifier rather than a setting. A designer wants
@@ -394,7 +402,7 @@ async function main(): Promise<void> {
     if (event.shiftKey) {
       if (key !== DUAL_COPY_KEY) return;
       event.preventDefault();
-      void copyForAi(captureId, meta);
+      void copyImageAndReport(captureId, meta);
     } else {
       if (key !== 'c') return;
       event.preventDefault();
@@ -407,8 +415,7 @@ async function main(): Promise<void> {
     const clipboardVariant = buildClipboardMarkdown(markdown, first?.filename ?? '');
     markdownPane.hidden = false;
     markdownEl.textContent = markdown;
-    copyMarkdownBtn.hidden = false;
-    copyMarkdownBtn.addEventListener('click', () => {
+    copyReportBtn.addEventListener('click', () => {
       void navigator.clipboard
         .writeText(clipboardVariant)
         .then(() => flashStatus('Report copied'))
