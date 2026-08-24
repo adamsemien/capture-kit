@@ -76,6 +76,12 @@ export interface CaptureResult {
    */
   naturalSize?: PageDimensions;
   /**
+   * The tab's browser page zoom when the capture started. Captures are always
+   * taken at 100%, so anything other than 1 means the image is not the zoom
+   * level the user was looking at — which the report says out loud.
+   */
+  browserZoom?: number;
+  /**
    * Dimensions of the encoded file as written to disk — `fullSize` plus the
    * footer when one was appended. Everything that reports "the image is N×M"
    * reads this; `fullSize` keeps meaning page geometry so the truncation

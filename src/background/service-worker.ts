@@ -612,6 +612,7 @@ async function captureReport(
     trigger,
     stamp: result.stamp,
     naturalSize: result.naturalSize,
+    browserZoom: result.browserZoom,
   };
   const mirrorImageFilename = mirrorBasename
     ? `${mirrorBasename}.${isJpeg ? 'jpg' : 'png'}`

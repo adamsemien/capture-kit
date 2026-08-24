@@ -38,6 +38,8 @@ export interface BundleInput {
   stamp?: StampInfo;
   /** Size at the real viewport, when the page re-laid out for a segmented capture. */
   naturalSize?: PageDimensions;
+  /** The tab's page zoom when the capture started; captures normalize it to 1. */
+  browserZoom?: number;
 }
 
 function pad(value: number): string {
@@ -193,12 +195,27 @@ export interface ContextBlockInput {
   userAgent: string;
   /** Size at the real viewport, when the page re-laid out for a segmented capture. */
   naturalSize?: PageDimensions;
+  /** The tab's page zoom when the capture started; captures normalize it to 1. */
+  browserZoom?: number;
 }
 
 /** True when the captured layout is not the layout the user was looking at. */
 function relaidOut(input: ContextBlockInput): boolean {
   const n = input.naturalSize;
   return Boolean(n && (n.width !== input.contentSize.width || n.height !== input.contentSize.height));
+}
+
+/**
+ * How many image pixels there are per CSS pixel. 1 on the segmented path
+ * (which pins deviceScaleFactor), 2 on a single-shot from a Retina display.
+ * Rounded to two places because a stamped footer shifts the height ratio
+ * slightly and only the width ratio is meaningful.
+ */
+function pixelScale(input: ContextBlockInput): number | null {
+  if (!input.contentSize.width || !input.imageSize.width) return null;
+  const ratio = input.imageSize.width / input.contentSize.width;
+  if (Math.abs(ratio - 1) < 0.01) return null;
+  return Math.round(ratio * 100) / 100;
 }
 
 /**
@@ -219,14 +236,28 @@ export function contextBlock(input: ContextBlockInput): string[] {
     `- **Full page:** ${input.contentSize.width}×${input.contentSize.height}`,
     ...(relaidOut(input)
       ? [
-          '- **Relayout:** this capture used a virtual viewport and the page re-laid out. At your ' +
-            `${input.viewport.width}px viewport it measures ` +
-            `${input.naturalSize?.width}×${input.naturalSize?.height}; the image is of the ` +
-            `${input.contentSize.width}×${input.contentSize.height} layout above. Expect ` +
-            'viewport-relative sizing and media queries to differ from what you saw on screen.',
+          '- **Relayout:** the segmented path captures under a virtual viewport, and the page ' +
+            `re-laid out for it. Measured at the tab's own width first: ` +
+            `${input.naturalSize?.width}×${input.naturalSize?.height}. The image is of the ` +
+            `${input.contentSize.width}×${input.contentSize.height} layout named above. Expect ` +
+            'viewport-relative sizing and media queries to differ from what was on screen.',
         ]
       : []),
     `- **Image file:** ${input.imageSize.width}×${input.imageSize.height}`,
+    ...(pixelScale(input) !== null
+      ? [
+          `- **Pixel scale:** ${pixelScale(input)}× — the file holds ${pixelScale(input)} image ` +
+            'pixels per CSS pixel (a high-DPI display). Coordinates measured in the image must be ' +
+            `divided by ${pixelScale(input)} to match CSS pixels in DevTools.`,
+        ]
+      : []),
+    ...(input.browserZoom !== undefined && Math.abs(input.browserZoom - 1) > 0.001
+      ? [
+          `- **Browser zoom:** the tab was at ${Math.round(input.browserZoom * 100)}%. The capture ` +
+            'was taken at 100% and the zoom restored afterwards, so the image is 1:1 with CSS ' +
+            'pixels and does not match the zoom level on screen.',
+        ]
+      : []),
     `- **Captured at:** ${input.capturedAt.toISOString()}`,
     `- **Capture mode:** ${input.captureMode}`,
     `- **Triggered by:** ${CAPTURE_TRIGGER_LABEL[input.trigger]}`,
@@ -271,6 +302,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
         recorderActive: input.recorderActive,
         stamp: input.stamp,
         naturalSize: input.naturalSize,
+        browserZoom: input.browserZoom,
         userAgent: meta.userAgent,
       }),
     ].join('\n'),

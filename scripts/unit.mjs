@@ -22,6 +22,7 @@ const dir = mkdtempSync(join(tmpdir(), 'ck-unit-'));
 const ENTRY = `
 export { classifyEnvironment } from '${ROOT}/src/lib/env-marker.ts';
 export { bandHeight, stampLabel } from '${ROOT}/src/lib/capture-engine/stamp.ts';
+export { readEncodedImageSize } from '${ROOT}/src/lib/capture-engine/image-size.ts';
 export { contextBlock, buildBundleMarkdown, withLatestNotice, LATEST_NOTICE, OUTPUT_README } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { planScrollOffsets } from '${ROOT}/src/lib/capture-engine/segments.ts';
 export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
@@ -126,6 +127,22 @@ test('monotonic across the range', () => {
   }
 });
 
+heading('readEncodedImageSize');
+test('reads PNG dimensions from the IHDR header', () => {
+  // 1×1 PNG, 2×3 patched into IHDR to prove the bytes are being read.
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  png.writeUInt32BE(7, 16);
+  png.writeUInt32BE(11, 20);
+  assert.deepEqual(mod.readEncodedImageSize(png.toString('base64'), 'png'), { width: 7, height: 11 });
+});
+test('unreadable bytes return null rather than a guess', () => {
+  assert.equal(mod.readEncodedImageSize('bm90YW5pbWFnZQ==', 'png'), null);
+  assert.equal(mod.readEncodedImageSize('bm90YW5pbWFnZQ==', 'jpeg'), null);
+});
+
 heading('stampLabel');
 test('absent stamp reads off', () => assert.equal(mod.stampLabel(undefined), 'off'));
 test('extended names the height', () =>
@@ -193,7 +210,7 @@ test('Relayout line appears, and names both layouts, when they differ', () => {
     .contextBlock({ ...BLOCK_INPUT, naturalSize: { width: 1608, height: 5578 } })
     .join('\n');
   assert.match(text, /- \*\*Relayout:\*\*/);
-  assert.ok(text.includes('1608×5578'), 'on-screen layout not named');
+  assert.ok(text.includes('1608×5578'), 'pre-override layout not named');
   assert.ok(text.includes('1512×4210'), 'captured layout not named');
 });
 test('identical naturalSize does not trigger the Relayout line', () => {
@@ -202,6 +219,31 @@ test('identical naturalSize does not trigger the Relayout line', () => {
     .join('\n');
   assert.ok(!text.includes('Relayout'));
 });
+heading('pixel scale and browser zoom');
+test('no Pixel scale line at 1:1', () => {
+  assert.ok(!mod.contextBlock(BLOCK_INPUT).join('\n').includes('Pixel scale'));
+});
+test('Pixel scale line names the ratio on a high-DPI single shot', () => {
+  const text = mod
+    .contextBlock({
+      ...BLOCK_INPUT,
+      contentSize: { width: 1200, height: 5520 },
+      imageSize: { width: 2400, height: 11040 },
+      stamp: undefined,
+    })
+    .join('\n');
+  assert.match(text, /- \*\*Pixel scale:\*\* 2×/);
+});
+test('no Browser zoom line at 100%', () => {
+  const text = mod.contextBlock({ ...BLOCK_INPUT, browserZoom: 1 }).join('\n');
+  assert.ok(!text.includes('Browser zoom'));
+});
+test('Browser zoom line states the tab zoom and that capture was at 100%', () => {
+  const text = mod.contextBlock({ ...BLOCK_INPUT, browserZoom: 0.25 }).join('\n');
+  assert.match(text, /- \*\*Browser zoom:\*\* the tab was at 25%/);
+  assert.match(text, /captured at 100%|capture was taken at 100%/);
+});
+
 test('recorder-inactive wording is unmistakable', () => {
   const text = mod.contextBlock({ ...BLOCK_INPUT, recorderActive: false }).join('\n');
   assert.match(text, /NOT ACTIVE for this page/);

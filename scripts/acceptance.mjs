@@ -917,6 +917,62 @@ console.log('restore segment size: ' + JSON.stringify(
   await setSetting(options, { segmentSize: 8192 }),
 ));
 
+// --- A9: browser page zoom ----------------------------------------------
+heading('CHECK A9 — browser page zoom is normalized, not compensated');
+// Emulation.setDeviceMetricsOverride takes DIPs and page zoom multiplies on
+// top, so under zoom Z a virtual viewport of W lays out W/Z CSS pixels. The
+// segmented path used to size its canvas from the CSS measurement while each
+// screenshot covered only W of it, leaving a 1/Z-proportion of the canvas
+// unpainted — black in JPEG. Measured at DPR 1 and DPR 2 alike, so zoom is the
+// variable and devicePixelRatio is not.
+console.log('segment size 2048: ' + JSON.stringify(
+  await setSetting(options, { segmentSize: 2048, stampUrlOnImage: false }),
+));
+for (const zoom of [0.25, 0.8]) {
+  page = await openTab(`http://127.0.0.1:${HTTP_PORT}/?n=1${zoom * 100}&tall=1&wide=400`);
+  // The trigger page fires a capture of its own on load. Let that one finish —
+  // a capture is a debugger attach, and two on one tab is an instant failure.
+  await waitForResult(page.id);
+  await sleep(1500);
+  console.log(`\nzoom ${zoom * 100}% applied: ` + JSON.stringify(
+    await options.eval(
+      `(async () => {
+         const tabs = await chrome.tabs.query({});
+         const t = tabs.filter(t => t.url && t.url.includes('n=1${zoom * 100}')).pop();
+         if (!t) return 'tab not found';
+         await chrome.tabs.setZoom(t.id, ${zoom});
+         await new Promise(r => setTimeout(r, 500));
+         await chrome.tabs.update(t.id, { active: true });
+         await new Promise(r => setTimeout(r, 500));
+         const before = await chrome.tabs.getZoom(t.id);
+         const res = await chrome.runtime.sendMessage({ type: 'CAPTURE_BUNDLE' });
+         await new Promise(r => setTimeout(r, 500));
+         // The user's zoom must be given back after the capture.
+         return { zoomBefore: before, ok: res.ok, reason: res.reason, zoomAfter: await chrome.tabs.getZoom(t.id) };
+       })()`,
+    ),
+  ));
+  await sleep(2500);
+  const zoomImage = newestFile('.jpg');
+  const zoomReport = newestFile('.md');
+  const px = await inspect(zoomImage);
+  console.log('pixels: ' + JSON.stringify(px));
+  console.log('report: ' + JSON.stringify(
+    readCapture(zoomReport)
+      .split('\n')
+      .filter((l) => /Viewport:|Full page:|Image file:|Browser zoom:|Pixel scale:/.test(l)),
+  ));
+  console.log(
+    `VERDICT zoom ${zoom * 100}%: ` +
+      (px.blankColumnFromRight > 2
+        ? `FAIL — ${px.blankColumnFromRight}px unpainted of ${px.width}`
+        : 'PASS — full canvas width painted'),
+  );
+}
+console.log('\nrestore segment size: ' + JSON.stringify(
+  await setSetting(options, { segmentSize: 8192 }),
+));
+
 // --- A4: the result tab's copy controls ---------------------------------
 heading('CHECK A4 — result-tab button labels, tooltip, and Copy report visibility');
 {
