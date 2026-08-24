@@ -10,7 +10,15 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["debugger", "activeTab", "downloads", "storage", "clipboardWrite", "scripting"],
+  "permissions": [
+    "debugger",
+    "activeTab",
+    "downloads",
+    "storage",
+    "clipboardWrite",
+    "scripting",
+    "contextMenus"
+  ],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background/service-worker.js", "type": "module" },
   "content_scripts": [

@@ -5,7 +5,8 @@ import type {
   LastError,
   SweepResponse,
 } from '../lib/messages';
-import { SESSION_SEED_TAB_KEY } from '../lib/messages';
+import { CAPTURE_PROGRESS_KEY, SESSION_SEED_TAB_KEY } from '../lib/messages';
+import type { CaptureProgressState } from '../lib/messages';
 import { getSettings, setImageOnlyPng } from '../lib/settings';
 
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
@@ -33,6 +34,30 @@ function setBusy(busy: boolean): void {
   ]) {
     button.disabled = busy;
   }
+}
+
+/**
+ * Segment counts while a capture runs. The worker publishes them to
+ * chrome.storage.session, so this follows a capture the popup did not start —
+ * open the popup mid one-click capture and it says where the capture is up to
+ * instead of looking idle.
+ */
+function watchCaptureProgress(): void {
+  const render = (progress: CaptureProgressState | undefined) => {
+    if (!progress || progress.state !== 'running') return;
+    if (progress.total > 1) {
+      setStatus(`Capturing — segment ${progress.done} of ${progress.total}…`);
+    } else {
+      setStatus('Capturing…');
+    }
+  };
+  void chrome.storage.session
+    .get(CAPTURE_PROGRESS_KEY)
+    .then((stored) => render(stored[CAPTURE_PROGRESS_KEY] as CaptureProgressState | undefined));
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'session' || !(CAPTURE_PROGRESS_KEY in changes)) return;
+    render(changes[CAPTURE_PROGRESS_KEY].newValue as CaptureProgressState | undefined);
+  });
 }
 
 async function activeTabId(): Promise<number | null> {
@@ -189,6 +214,7 @@ imageOnlyPngInput.addEventListener('change', () => {
 
 void (async () => {
   imageOnlyPngInput.checked = (await getSettings()).imageOnlyPng;
+  watchCaptureProgress();
   await refreshStats();
   // Surface the most recent shortcut-triggered failure (there was no popup
   // open to show it at the time).

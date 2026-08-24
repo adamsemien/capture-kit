@@ -1,6 +1,8 @@
-import type { ConsoleEntry, NetworkFailure, PageMeta } from '../messages';
-import { CONSOLE_LOGS_IN_BUNDLE } from '../messages';
-import type { CaptureMode, PageDimensions } from '../capture-engine/types';
+import type { CaptureTrigger, ConsoleEntry, NetworkFailure, PageMeta } from '../messages';
+import { CAPTURE_TRIGGER_LABEL, CONSOLE_LOGS_IN_BUNDLE } from '../messages';
+import type { CaptureMode, PageDimensions, StampInfo } from '../capture-engine/types';
+import { classifyEnvironment } from '../env-marker';
+import { stampLabel } from '../capture-engine/stamp';
 import {
   collapseFailures,
   formatDemotedHost,
@@ -28,6 +30,16 @@ export interface BundleInput {
   revealForced: number;
   /** Segments stitched for the image (1 = true single-shot). */
   segments: number;
+  /** Dimensions of the file on disk, footer included. */
+  imageSize: PageDimensions;
+  /** What set this capture going. */
+  trigger: CaptureTrigger;
+  /** Present only when the URL footer was composited onto the image. */
+  stamp?: StampInfo;
+  /** Size at the real viewport, when the page re-laid out for a segmented capture. */
+  naturalSize?: PageDimensions;
+  /** The tab's page zoom when the capture started; captures normalize it to 1. */
+  browserZoom?: number;
 }
 
 function pad(value: number): string {
@@ -167,6 +179,100 @@ function contentsLine(
   });
 }
 
+export interface ContextBlockInput {
+  url: string;
+  title: string;
+  capturedAt: Date;
+  viewport: PageDimensions;
+  contentSize: PageDimensions;
+  /** Dimensions of the file on disk. Differs from contentSize when a footer was added. */
+  imageSize: PageDimensions;
+  /** Already-formatted captureModeLabel output. */
+  captureMode: string;
+  trigger: CaptureTrigger;
+  recorderActive: boolean;
+  stamp?: StampInfo;
+  userAgent: string;
+  /** Size at the real viewport, when the page re-laid out for a segmented capture. */
+  naturalSize?: PageDimensions;
+  /** The tab's page zoom when the capture started; captures normalize it to 1. */
+  browserZoom?: number;
+}
+
+/** True when the captured layout is not the layout the user was looking at. */
+function relaidOut(input: ContextBlockInput): boolean {
+  const n = input.naturalSize;
+  return Boolean(n && (n.width !== input.contentSize.width || n.height !== input.contentSize.height));
+}
+
+/**
+ * How many image pixels there are per CSS pixel. 1 on the segmented path
+ * (which pins deviceScaleFactor), 2 on a single-shot from a Retina display.
+ * Rounded to two places because a stamped footer shifts the height ratio
+ * slightly and only the width ratio is meaningful.
+ */
+function pixelScale(input: ContextBlockInput): number | null {
+  if (!input.contentSize.width || !input.imageSize.width) return null;
+  const ratio = input.imageSize.width / input.contentSize.width;
+  if (Math.abs(ratio - 1) < 0.01) return null;
+  return Math.round(ratio * 100) / 100;
+}
+
+/**
+ * THE context block, and the reason this feature exists: an assistant reading
+ * a report should never have to ask "is this localhost or production?" It is
+ * the first content block of every report, before any console output, because
+ * the answer changes what every line under it means.
+ *
+ * Ordering is deliberate — URL and Environment first, then the geometry, then
+ * provenance. Nothing here is duplicated further down the file.
+ */
+export function contextBlock(input: ContextBlockInput): string[] {
+  const environment = classifyEnvironment(input.url);
+  const lines = [
+    `- **URL:** ${input.url}`,
+    `- **Environment:** ${environment.label}`,
+    `- **Viewport:** ${input.viewport.width}×${input.viewport.height}`,
+    `- **Full page:** ${input.contentSize.width}×${input.contentSize.height}`,
+    ...(relaidOut(input)
+      ? [
+          '- **Relayout:** the segmented path captures under a virtual viewport, and the page ' +
+            `re-laid out for it. Measured at the tab's own width first: ` +
+            `${input.naturalSize?.width}×${input.naturalSize?.height}. The image is of the ` +
+            `${input.contentSize.width}×${input.contentSize.height} layout named above. Expect ` +
+            'viewport-relative sizing and media queries to differ from what was on screen.',
+        ]
+      : []),
+    `- **Image file:** ${input.imageSize.width}×${input.imageSize.height}`,
+    ...(pixelScale(input) !== null
+      ? [
+          `- **Pixel scale:** ${pixelScale(input)}× — the file holds ${pixelScale(input)} image ` +
+            'pixels per CSS pixel (a high-DPI display). Coordinates measured in the image must be ' +
+            `divided by ${pixelScale(input)} to match CSS pixels in DevTools.`,
+        ]
+      : []),
+    ...(input.browserZoom !== undefined && Math.abs(input.browserZoom - 1) > 0.001
+      ? [
+          `- **Browser zoom:** the tab was at ${Math.round(input.browserZoom * 100)}%. The capture ` +
+            'was taken at 100% and the zoom restored afterwards, so the image is 1:1 with CSS ' +
+            'pixels and does not match the zoom level on screen.',
+        ]
+      : []),
+    `- **Captured at:** ${input.capturedAt.toISOString()}`,
+    `- **Capture mode:** ${input.captureMode}`,
+    `- **Triggered by:** ${CAPTURE_TRIGGER_LABEL[input.trigger]}`,
+    `- **URL stamp:** ${stampLabel(input.stamp)}`,
+    `- **Recorder:** ${
+      input.recorderActive
+        ? 'active since page load — console and network data below are complete'
+        : 'NOT ACTIVE for this page — console and network data are unavailable, not empty'
+    }`,
+    `- **Title:** ${input.title || '(untitled)'}`,
+    `- **User agent:** ${input.userAgent}`,
+  ];
+  return lines;
+}
+
 export function buildBundleMarkdown(input: BundleInput): string {
   const { meta } = input;
   const errors = input.consoleEntries.filter((e) => e.level === 'error');
@@ -184,18 +290,21 @@ export function buildBundleMarkdown(input: BundleInput): string {
         warnings: warnings.length,
         logs: input.includeLogs ? logs.length : 0,
       }),
-      `- **URL:** ${meta.url}`,
-      `- **Title:** ${meta.title || '(untitled)'}`,
-      `- **Captured at:** ${input.capturedAt.toISOString()}`,
-      `- **Viewport:** ${meta.viewport.width}×${meta.viewport.height}`,
-      `- **Full page:** ${input.contentSize.width}×${input.contentSize.height}`,
-      `- **Capture mode:** ${captureModeLabel(input.captureMode, input.revealForced, input.segments)}`,
-      `- **Recorder:** ${
-        input.recorderActive
-          ? 'active since page load — console and network data below are complete'
-          : 'NOT ACTIVE for this page — console and network data are unavailable, not empty'
-      }`,
-      `- **User agent:** ${meta.userAgent}`,
+      ...contextBlock({
+        url: meta.url,
+        title: meta.title,
+        capturedAt: input.capturedAt,
+        viewport: meta.viewport,
+        contentSize: input.contentSize,
+        imageSize: input.imageSize,
+        captureMode: captureModeLabel(input.captureMode, input.revealForced, input.segments),
+        trigger: input.trigger,
+        recorderActive: input.recorderActive,
+        stamp: input.stamp,
+        naturalSize: input.naturalSize,
+        browserZoom: input.browserZoom,
+        userAgent: meta.userAgent,
+      }),
     ].join('\n'),
   );
 
@@ -317,6 +426,8 @@ export interface SweepWidthInput {
   filename: string;
   fullSize: PageDimensions;
   contentSize: PageDimensions;
+  /** Dimensions of the file on disk, footer included. */
+  imageSize: PageDimensions;
   truncated: boolean;
   captureMode: CaptureMode;
   revealForced: number;
@@ -332,6 +443,9 @@ export interface SweepMarkdownInput {
   networkFailures: NetworkFailure[];
   recorderActive: boolean;
   includeLogs: boolean;
+  viewport: PageDimensions;
+  /** Present only when the URL footer was composited onto the widths. */
+  stamp?: StampInfo;
 }
 
 /**
@@ -347,12 +461,24 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
 
   const parts: string[] = [];
   parts.push(`# Responsive sweep — ${meta.title || meta.url}`);
+  // The same context grammar as a page report, minus the per-width geometry
+  // that each width states for itself below.
+  const environment = classifyEnvironment(meta.url);
   parts.push(
     [
       `- **URL:** ${meta.url}`,
-      `- **Title:** ${meta.title || '(untitled)'}`,
+      `- **Environment:** ${environment.label}`,
+      `- **Viewport:** ${input.viewport.width}×${input.viewport.height}`,
       `- **Captured at:** ${input.capturedAt.toISOString()}`,
       `- **Widths:** ${input.widths.map((w) => `${w.width} px`).join(', ') || '(none)'}`,
+      `- **Triggered by:** ${CAPTURE_TRIGGER_LABEL.sweep}`,
+      `- **URL stamp:** ${stampLabel(input.stamp)}`,
+      `- **Recorder:** ${
+        input.recorderActive
+          ? 'active since page load — console and network data below are complete'
+          : 'NOT ACTIVE for this page — console and network data are unavailable, not empty'
+      }`,
+      `- **Title:** ${meta.title || '(untitled)'}`,
       `- **User agent:** ${meta.userAgent}`,
     ].join('\n'),
   );
@@ -377,6 +503,7 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
           thirdPartyFailures: 0,
         }),
         `- **Size:** ${width.fullSize.width}×${width.fullSize.height}`,
+        `- **Image file:** ${width.imageSize.width}×${width.imageSize.height}`,
         `- **Capture mode:** ${captureModeLabel(width.captureMode, width.revealForced, width.segments)}`,
       ].join('\n'),
     );
@@ -404,3 +531,44 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
 export function buildClipboardMarkdown(markdown: string, imageFilename: string): string {
   return `> Screenshot saved as \`${imageFilename}\` — attach it alongside this report.\n\n${markdown}`;
 }
+
+/**
+ * The rolling-copy notice, inserted immediately under the H1 of latest.md.
+ *
+ * latest.md and its timestamped original are byte-identical apart from this
+ * line, and an assistant handed the rolling copy has no way to tell which one
+ * it is holding — or that the file it read a minute ago has since been
+ * replaced. One line fixes that.
+ */
+export const LATEST_NOTICE =
+  '_This is the rolling copy — always the most recent capture. Timestamped originals sit alongside it._';
+
+/**
+ * Inserts the notice after the first line (the H1). Falls back to prepending
+ * if the report somehow has no heading, so the notice is never lost.
+ */
+export function withLatestNotice(markdown: string): string {
+  const newline = markdown.indexOf('\n');
+  if (newline === -1 || !markdown.startsWith('# ')) {
+    return `${LATEST_NOTICE}\n\n${markdown}`;
+  }
+  return `${markdown.slice(0, newline)}\n\n${LATEST_NOTICE}${markdown.slice(newline)}`;
+}
+
+/**
+ * Written once into the output folder, the first time a bundle lands there and
+ * finds no README.txt. Plain text, not markdown: it is for a human opening the
+ * folder in Finder, and it should not render as anything.
+ *
+ * Never overwrites — someone may have put their own notes here.
+ */
+export const OUTPUT_README = `capture-kit — what is in this folder
+
+{page-title}_{date}_{time}.jpg   one capture's screenshot
+{page-title}_{date}_{time}.md    that capture's report: URL, environment, console errors, network failures
+latest.jpg / latest.md           the most recent capture, overwritten every time — the stable path to point an AI assistant at
+session_{date}_{time}/           a multi-tab session capture, with an index.md triaging every page
+{page-title}_{date}_{time}_sweep.md   a responsive sweep: the same page at 375, 768 and 1440 px wide
+
+Tell your assistant once: "when I say check my capture, read latest.md and the image next to it."
+`;

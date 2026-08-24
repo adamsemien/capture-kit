@@ -71,6 +71,26 @@ export interface AgentCaptureDetail {
   error?: string;
 }
 
+/**
+ * What set a capture going. Printed in the report's context block, because
+ * "how was this taken" changes how its contents should be read: an icon
+ * one-click and a keyboard shortcut catch the page as-is, while an in-page
+ * agent trigger implies a script was driving it.
+ *
+ * This replaced a bare `viaCommand: boolean` whose only consumer was the badge
+ * flash; `trigger !== 'popup'` reproduces that exactly.
+ */
+export type CaptureTrigger = 'popup' | 'shortcut' | 'icon' | 'agent' | 'session' | 'sweep';
+
+export const CAPTURE_TRIGGER_LABEL: Record<CaptureTrigger, string> = {
+  popup: 'popup Capture + Report button',
+  shortcut: 'keyboard shortcut (Ctrl/Cmd+Shift+9)',
+  icon: 'toolbar icon (one-click capture mode)',
+  agent: 'in-page agent trigger (capture-kit:capture)',
+  session: 'session capture (multiple tabs)',
+  sweep: 'responsive sweep',
+};
+
 /** Popup / result page / content script → service worker. */
 export type RuntimeMessage =
   | { type: 'CAPTURE_BUNDLE' }
@@ -124,6 +144,21 @@ export interface SessionSummary {
 export const SESSION_SEED_TAB_KEY = 'sessionSeedTabId';
 export const SESSION_PROGRESS_KEY = 'sessionProgress';
 export const SESSION_SUMMARY_KEY = 'sessionSummary';
+
+/**
+ * Live single-capture progress, in chrome.storage.session so the popup can
+ * follow a capture it did not start (one-click mode fires with no popup open,
+ * and the user may open the popup mid-capture to see what is happening).
+ */
+export const CAPTURE_PROGRESS_KEY = 'captureProgress';
+
+export interface CaptureProgressState {
+  state: 'running' | 'idle';
+  /** Segments completed and expected; 0/0 before the grid is known. */
+  done: number;
+  total: number;
+  startedAt: number;
+}
 
 /** Service worker / popup → isolated content script. */
 export type TabMessage =

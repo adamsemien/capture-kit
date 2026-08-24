@@ -1,6 +1,7 @@
 import type { CaptureFormat, CaptureRequest, CaptureResult, CaptureStrategy } from './types';
 import { JPEG_QUALITY, SINGLE_SHOT_SURFACE_LIMIT } from './types';
 import { SegmentCanvas, clampDimensions, planScrollOffsets } from './segments';
+import { readEncodedImageSize } from './image-size';
 
 export const CDP_VERSION = '1.3';
 
@@ -317,6 +318,37 @@ export async function captureAttached(
     target,
     '({ x: window.scrollX, y: window.scrollY })',
   );
+  // Browser page zoom is normalized to 100% for the duration of the capture.
+  //
+  // Emulation.setDeviceMetricsOverride takes its width in DIPs and page zoom
+  // multiplies on top, so under zoom Z a virtual viewport of W gives a CSS
+  // layout viewport of W/Z. The segmented path then measures the page in CSS
+  // pixels, sizes the canvas from that, and places screenshots that only cover
+  // W of those pixels — leaving (W/Z − W) unpainted, which encodes as solid
+  // black in JPEG. Measured 2026-08-23: at zoom 0.25 a 2048px virtual viewport
+  // produced an 8192px canvas with only 2048px painted, exactly the 1/Z ratio;
+  // at zoom 0.8, 1500 painted of 1875. Reproduced identically at DPR 1 and 2,
+  // so devicePixelRatio is not the variable — zoom is.
+  //
+  // Normalizing rather than compensating: it makes the capture 1:1 with CSS
+  // pixels on every path, which is also what makes the reported numbers mean
+  // anything. The tab's zoom is restored in the finally below.
+  const zoomTabId = request.tabId;
+  let restoreZoom: number | null = null;
+  let browserZoom = 1;
+  try {
+    const zoom = await chrome.tabs.getZoom(zoomTabId);
+    if (Number.isFinite(zoom) && zoom > 0) browserZoom = zoom;
+    if (Math.abs(browserZoom - 1) > 0.001) {
+      restoreZoom = browserZoom;
+      await chrome.tabs.setZoom(zoomTabId, 1);
+      // Zoom is a layout change; let it settle before anything is measured.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  } catch {
+    // Zoom is unavailable for some tabs; capturing at whatever zoom is set is
+    // still better than failing the capture.
+  }
   let frozen = false;
   let unstuck = false;
   let revealForced = 0;
@@ -353,8 +385,15 @@ export async function captureAttached(
     const result = fitsInOneShot
       ? await captureSingleShot(target, contentSize, request.format)
       : await captureSegmented(target, contentSize, request);
-    return { ...result, revealForced };
+    return { ...result, revealForced, browserZoom };
   } finally {
+    if (restoreZoom !== null) {
+      try {
+        await chrome.tabs.setZoom(zoomTabId, restoreZoom);
+      } catch {
+        /* the tab may be gone; the user's zoom is a preference, not the capture */
+      }
+    }
     if (unstuck) {
       try {
         await evaluateInPage<void>(target, RESTICK_SCRIPT);
@@ -409,6 +448,10 @@ async function captureSingleShot(
     mode: 'standard',
     fullSize: contentSize,
     contentSize,
+    // Measured, not assumed. clip.scale: 1 does NOT pin this path's output to
+    // CSS pixels: on a DPR-2 display the file comes back at 2× the clip. The
+    // stamp seam rewrites this again if the footer is added.
+    imageSize: readEncodedImageSize(shot.data, format) ?? contentSize,
     truncated: false,
     segments: 1,
     revealForced: 0,
@@ -432,9 +475,15 @@ async function captureSegmented(
     '({ x: window.scrollX, y: window.scrollY })',
   );
 
+  // The virtual viewport actually in force. Held in variables because the grid
+  // below MUST be planned against these numbers and not against a second
+  // min() of the re-measured size — see the comment at viewportWidth.
+  const overrideWidth = Math.min(naturalSize.width, request.segmentSize);
+  const overrideHeight = Math.min(naturalSize.height, request.segmentSize);
+
   await sendCommand(target, 'Emulation.setDeviceMetricsOverride', {
-    width: Math.min(naturalSize.width, request.segmentSize),
-    height: Math.min(naturalSize.height, request.segmentSize),
+    width: overrideWidth,
+    height: overrideHeight,
     deviceScaleFactor: 1,
     mobile: false,
   });
@@ -454,13 +503,31 @@ async function captureSegmented(
       overriddenSize.width,
       overriddenSize.height,
     );
-    const viewportWidth = Math.min(width, request.segmentSize);
-    const viewportHeight = Math.min(height, request.segmentSize);
+    // Plan against the viewport that EXISTS, not a fresh min() of the size we
+    // just re-measured. Those two disagree whenever the page's content grows
+    // under the override — a page with horizontal overflow that tracks the
+    // viewport (`width: calc(100% + Npx)`, a table with a fixed-width gutter)
+    // reports a wider scrollWidth every time the viewport widens. When
+    // segmentSize exceeds the page width, the override is naturalSize.width
+    // while the re-measured width is larger, and the old
+    // `Math.min(width, segmentSize)` believed the viewport covered the whole
+    // canvas: one column was planned, one viewport-wide shot was taken, and
+    // everything to the right of it stayed at the canvas's initial
+    // transparent-black — a solid black stripe once encoded to JPEG.
+    // Measured 2026-08-23: a 1608px page under a 2048px segment size produced
+    // a 2016px canvas with only 1608px painted.
+    const viewportWidth = overrideWidth;
+    const viewportHeight = overrideHeight;
     const xOffsets = planScrollOffsets(width, viewportWidth);
     const yOffsets = planScrollOffsets(height, viewportHeight);
 
     const canvas = new SegmentCanvas(width, height);
+    // The grid is known before the loop runs, so progress can be reported as
+    // "3/7" rather than a spinner. A segmented capture of a long page is the
+    // case where the user has no other sign anything is happening.
+    const totalSegments = xOffsets.length * yOffsets.length;
     let segments = 0;
+    request.onProgress?.(0, totalSegments);
     for (const y of yOffsets) {
       for (const x of xOffsets) {
         const reached = await evaluateInPage<ScrollPosition>(
@@ -473,17 +540,28 @@ async function captureSegmented(
         // Sequential on purpose: bounded memory, one decoded segment at a time.
         await canvas.add(Math.round(reached.x), Math.round(reached.y), shot.data);
         segments += 1;
+        request.onProgress?.(segments, totalSegments);
       }
     }
 
     // Segments are always captured as PNG (lossless intermediates); the
     // joined canvas encodes once into the requested output format.
+    const imageBase64 = await canvas.toBase64(request.format);
     return {
-      imageBase64: await canvas.toBase64(request.format),
+      imageBase64,
       format: request.format,
       mode: 'standard',
       fullSize: { width, height },
-      contentSize: naturalSize,
+      // The layout the IMAGE depicts, which on this path is the one measured
+      // under the virtual viewport — not the one measured at the tab's real
+      // viewport. Reporting naturalSize here described a layout the file is
+      // not of, and made the truncation line compare a clamped overridden
+      // size against an unrelated natural one.
+      contentSize: overriddenSize,
+      // Kept so the report can say the page re-laid out rather than leaving a
+      // reader to wonder why "Full page" does not match their browser.
+      naturalSize,
+      imageSize: readEncodedImageSize(imageBase64, request.format) ?? { width, height },
       truncated,
       segments,
       revealForced: 0,

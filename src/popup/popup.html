@@ -26,9 +26,16 @@
           </label>
         </div>
 
-        <button id="capture-session" class="quiet">Capture session (multiple tabs)</button>
-        <button id="copy-last" class="quiet">Copy last report</button>
-        <button id="responsive-sweep" class="quiet">Responsive sweep (3 widths)</button>
+        <!--
+          Not .quiet: that class zeroes the border and background, and these
+          three rendered as bare text with no affordance — people did not read
+          them as clickable. They now use the same bordered treatment as
+          "Image only". The hero button keeps .primary, so the hierarchy is
+          still primary > secondary rather than flat.
+        -->
+        <button id="capture-session">Capture session (multiple tabs)</button>
+        <button id="copy-last">Copy last report</button>
+        <button id="responsive-sweep">Responsive sweep (3 widths)</button>
       </div>
 
       <p id="status" class="status"></p>

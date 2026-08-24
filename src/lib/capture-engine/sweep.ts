@@ -1,5 +1,6 @@
-import type { CaptureResult } from './types';
+import type { CaptureResult, StampRequest } from './types';
 import { CDP_VERSION, captureAttached, evaluateInPage, sendCommand } from './cdp-fullpage';
+import { stampCaptureResult } from './stamp';
 
 /**
  * Responsive sweep: capture the current page at fixed widths under an
@@ -33,7 +34,12 @@ const SETTLE_SCRIPT = `(async () => {
   return true;
 })()`;
 
-export async function captureSweep(tabId: number, segmentSize: number): Promise<SweepOutcome> {
+export async function captureSweep(
+  tabId: number,
+  segmentSize: number,
+  /** Present only when "Stamp URL on image" is on; every width gets the footer. */
+  stamp?: StampRequest,
+): Promise<SweepOutcome> {
   const target: chrome.debugger.Debuggee = { tabId };
   await chrome.debugger.attach(target, CDP_VERSION);
   const captures: SweepCapture[] = [];
@@ -51,7 +57,10 @@ export async function captureSweep(tabId: number, segmentSize: number): Promise<
         });
         await evaluateInPage<boolean>(target, SETTLE_SCRIPT);
         const result = await captureAttached(target, { tabId, segmentSize, format: 'jpeg' });
-        captures.push({ width, result });
+        // Same seam as captureFullPage, one function, applied per width. The
+        // sweep cannot route through captureFullPage: one debugger attachment
+        // has to span all three widths, and captureFullPage attaches its own.
+        captures.push({ width, result: stamp ? await stampCaptureResult(result, stamp) : result });
       } catch (error) {
         failures.push({
           width,

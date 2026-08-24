@@ -19,6 +19,17 @@ user-initiated capture and detached immediately after, in a `finally` block.
 Captures always target the tab the user is looking at, and are always
 user-initiated (toolbar button or keyboard shortcut).
 
+## `contextMenus`
+
+Exactly one menu item, `contexts: ["action"]` — a right-click entry on the
+toolbar icon reading **Open capture-kit panel**. It exists because
+"Toolbar icon captures immediately" takes the popup off the icon's left-click,
+and the popup still holds Image only, session capture, the responsive sweep and
+Copy last report. `contexts: ["action"]` is the only API for an item in that
+menu. The item is hidden whenever one-click mode is off, and nothing is ever
+added to a **page's** right-click menu. Chrome shows no permission warning for
+`contextMenus`.
+
 ## `downloads`
 
 Each capture writes an image (and, for bundles, a sibling markdown file) via
@@ -39,13 +50,17 @@ so the extension can never silently regain access to a folder you revoked.
 ## `storage`
 
 - `storage.sync` holds the user settings (segment size cap, include-logs
-  toggle, image format, result tab, `latest.*` pointers, and whether a page may
-  trigger a capture — **off by default**, see below).
+  toggle, image format, result tab, `latest.*` pointers, whether the toolbar
+  icon captures immediately — **off by default** — whether the URL footer is
+  stamped onto images — **off by default** — and whether a page may trigger a
+  capture — **off by default**, see below).
 - IndexedDB (no permission required) holds the chosen output directory handle,
   which `chrome.storage` cannot store because it JSON-serializes its values.
-- `storage.session` holds the last captured bundle (for the "Copy Last
-  Bundle" button) and the last error (so shortcut-triggered failures can be
-  shown next time the popup opens). Session storage survives service-worker
+- `storage.session` holds the last captured bundle (for the "Copy last report"
+  button), the last error (so shortcut-triggered failures can be shown next
+  time the popup opens), and live segment counts for the capture in flight (so
+  a popup opened mid-capture can say where it is up to). Session storage
+  survives service-worker
   death — required because MV3 workers are killed at will — and is cleared
   when the browser closes.
 
