@@ -30,6 +30,7 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
+import { DRAWER_RGB, fixture as drawerFixture, viewportFor } from './drawer-fixture.mjs';
 import {
   existsSync,
   mkdirSync,
@@ -54,8 +55,10 @@ const DIST = process.env.CK_DIST ?? `${ROOT}/dist`;
 const PROFILE = '/tmp/ck-accept-profile';
 const DOWNLOADS = '/tmp/ck-accept-downloads';
 const OUTPUT_DIR = `${process.env.HOME}/NoBad/_work/capture-kit-accept`;
-const PORT = 9334;
-const HTTP_PORT = 8765;
+// Overridable so a run is not blocked by an unrelated local service holding a
+// port. Defaults are unchanged; CK_HTTP_PORT/CK_CDP_PORT are for that case.
+const PORT = Number(process.env.CK_CDP_PORT ?? 9334);
+const HTTP_PORT = Number(process.env.CK_HTTP_PORT ?? 8765);
 const README_NAME = 'README.txt';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -272,6 +275,57 @@ const INSPECT_PAGE = `<!doctype html>
   img.src = '/image?file=' + encodeURIComponent(name);
 </script></body></html>`;
 
+/**
+ * CHECK A10's inspector. Two colours, both unique to the fixture:
+ * the drawer (#c2185b) must be absent, the fixed header (#123a6b) must be
+ * present exactly once. Header presence is reduced to BANDS — contiguous runs
+ * of rows carrying header colour — because on the segmented path a header
+ * left position:fixed repeats once per segment, and a count alone cannot see
+ * that. One band = painted once.
+ */
+const DRAWER_INSPECT_PAGE = `<!doctype html>
+<html><head><meta charset="utf-8"><title>inspecting</title></head>
+<body><script>
+  const name = new URLSearchParams(location.search).get('file');
+  const drawer = { r: ${DRAWER_RGB.r}, g: ${DRAWER_RGB.g}, b: ${DRAWER_RGB.b} };
+  const header = { r: 18, g: 58, b: 107 };
+  const img = new Image();
+  img.onerror = () => { document.title = 'RESULT ' + JSON.stringify({ error: 'decode failed' }); };
+  img.onload = () => {
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const near = (d, t) => Math.abs(d[0] - t.r) < 40 && Math.abs(d[1] - t.g) < 40 &&
+      Math.abs(d[2] - t.b) < 40;
+    let drawerPixels = 0, x0 = Infinity, x1 = -1, headerPixels = 0;
+    const bands = [];
+    let bandStart = -1;
+    for (let y = 0; y < c.height; y += 4) {
+      let headerRow = 0;
+      for (let x = 0; x < c.width; x += 4) {
+        const d = ctx.getImageData(x, y, 1, 1).data;
+        if (near(d, drawer)) { drawerPixels++; if (x < x0) x0 = x; if (x > x1) x1 = x; }
+        if (near(d, header)) { headerPixels++; headerRow++; }
+      }
+      // Absolute, not a fraction of image width: a leak widens the image,
+      // which would push a perfectly good header below a percentage bar.
+      const isHeaderRow = headerRow * 4 >= 200;
+      if (isHeaderRow && bandStart < 0) bandStart = y;
+      else if (!isHeaderRow && bandStart >= 0) { bands.push({ top: bandStart, bottom: y - 4 }); bandStart = -1; }
+    }
+    if (bandStart >= 0) bands.push({ top: bandStart, bottom: c.height - 1 });
+    document.title = 'RESULT ' + JSON.stringify({
+      width: c.width, height: c.height,
+      drawerPixels: drawerPixels,
+      drawerX: drawerPixels ? { from: x0, to: x1 } : null,
+      headerPixels: headerPixels,
+      headerBands: bands,
+    });
+  };
+  img.src = '/image?file=' + encodeURIComponent(name);
+</script></body></html>`;
+
 function startHttp() {
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -288,9 +342,23 @@ function startHttp() {
       res.end(readFileSync(file));
       return;
     }
+    // CHECK A10's fixture: studio's shape, served from the same origin as
+    // every other page here so one browser session covers the whole suite.
+    if (url.pathname === '/drawer') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(drawerFixture(url.searchParams.get('v') ?? 'S studio-fixed-offcanvas', {
+        reportsResult: true,
+      }));
+      return;
+    }
     if (url.pathname === '/inspect') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(INSPECT_PAGE);
+      return;
+    }
+    if (url.pathname === '/inspect-drawer') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(DRAWER_INSPECT_PAGE);
       return;
     }
     const wide = Number(url.searchParams.get('wide') ?? 0);
@@ -824,6 +892,13 @@ async function inspect(file) {
   return waitForResult(t.id, 30000);
 }
 
+async function inspectDrawer(file) {
+  const t = await openTab(
+    `http://127.0.0.1:${HTTP_PORT}/inspect-drawer?file=${encodeURIComponent(file)}`,
+  );
+  return waitForResult(t.id, 30000);
+}
+
 // A small segment size forces the segmented path on an ordinary page, which is
 // the case the "never mid-image" requirement is really about.
 console.log('force segmentation: ' + JSON.stringify(
@@ -1180,6 +1255,96 @@ heading('CHECK A8 — latest.md notice and the one-time README.txt');
     `timestamped original (${original}) carries the rolling-copy line: ` +
       (original ? readCapture(original).includes('rolling copy') : 'n/a'),
   );
+}
+
+// --- A10: a closed off-canvas fixed drawer stays closed -----------------
+heading('CHECK A10 — UNSTICK does not re-anchor an off-canvas fixed element');
+// The studio defect: a chat drawer that is SHUT on screen appeared fully open
+// in every capture. It is position:fixed and parked off-canvas, and `fixed`
+// contributes nothing to the document's scrollable overflow — so the page
+// measures as if the drawer were not there. UNSTICK's non-placeable branch
+// rewrote it to position:absolute, which puts it INTO the document: the page
+// widened by the off-canvas extent and the drawer painted, open, into the
+// image.
+//
+// Fixture geometry is studio's literal numbers (left:916px +
+// translateX(422.4px), width 384, overflow:clip on body and html). Before the
+// fix this capture came back 1722 wide carrying 9406 drawer-coloured pixels;
+// after it, 1300 wide and zero.
+//
+// The header is the negative half of the check and matters as much: the
+// non-placeable branch exists to bring legitimate fixed chrome into a
+// full-page capture, so a "fix" that simply stopped unsticking things would
+// pass the drawer half and silently break the feature. It must appear, and on
+// the segmented path it must appear exactly ONCE.
+console.log('segment size 8192, stamp off: ' + JSON.stringify(
+  await setSetting(options, { segmentSize: 8192, stampUrlOnImage: false }),
+));
+
+for (const [variant, expectSegments] of [
+  ['S studio-fixed-offcanvas', false],
+  ['S2 studio-fixed-offcanvas-tall', true],
+]) {
+  console.log(`\n--- ${variant} ---`);
+  page = await openTab(`http://127.0.0.1:${HTTP_PORT}/drawer?v=${encodeURIComponent(variant)}`);
+  detail = await waitForResult(page.id);
+  console.log('capture-kit:capture-complete → ' + JSON.stringify(detail));
+  await sleep(1500);
+  const drawerImage = newestFile('.jpg');
+  const drawerReport = newestFile('.md');
+  const modeLine = drawerReport
+    ? readCapture(drawerReport).split('\n').filter((l) => /Full page:|Capture mode:/.test(l))
+    : [];
+  console.log('report geometry: ' + JSON.stringify(modeLine));
+  const px = await inspectDrawer(drawerImage);
+  console.log('pixels: ' + JSON.stringify(px));
+
+  console.log(
+    'VERDICT drawer: ' +
+      (px.drawerPixels > 200
+        ? `FAIL — closed drawer painted (${px.drawerPixels} px at x ${px.drawerX.from}..${px.drawerX.to} of ${px.width})`
+        : `PASS — closed drawer absent (${px.drawerPixels} px)`),
+  );
+  console.log(
+    'VERDICT fixed header survived: ' +
+      (px.headerPixels > 100 ? `PASS — ${px.headerPixels} px` : `FAIL — ${px.headerPixels} px, chrome lost`),
+  );
+  console.log(
+    'VERDICT header painted once: ' +
+      (px.headerBands.length === 1
+        ? `PASS — 1 band ${JSON.stringify(px.headerBands)}`
+        : px.headerBands.length === 0
+          ? 'FAIL — 0 bands, header never painted'
+          : `FAIL — ${px.headerBands.length} bands ${JSON.stringify(px.headerBands)} (per-segment repeat)`),
+  );
+  if (expectSegments) {
+    const segmented = modeLine.some((l) => /segmented, \d+ segments/.test(l));
+    console.log(
+      'VERDICT took the segmented path (pass 2 of UNSTICK ran): ' +
+        (segmented ? 'PASS' : 'FAIL — single-shot, pass 2 never executed'),
+    );
+  }
+
+  // The live page must come back exactly as it was: the veto hides an element
+  // the user can see, and a capture that dies mid-flight must not leave it that
+  // way.
+  const live = await attach(`http://127.0.0.1:${HTTP_PORT}/drawer?v=${encodeURIComponent(variant)}`);
+  console.log('live-page residue: ' + JSON.stringify(await live.eval(
+    `(() => {
+       const attrs = ['offscreen','position','prev-style','scroll','force-reveal','expand','expand-h'];
+       const counts = {};
+       for (const a of attrs) counts[a] = document.querySelectorAll('[data-capture-kit-' + a + ']').length;
+       const d = document.getElementById('drawer');
+       return {
+         totalAttrs: Object.values(counts).reduce((a, b) => a + b, 0),
+         stylesheets: ['__capture_kit_unstick__','__capture_kit_freeze__','__capture_kit_force_reveal__',
+                       '__capture_kit_expand__'].filter((id) => document.getElementById(id)),
+         drawerVisibility: d ? getComputedStyle(d).visibility : null,
+         drawerPosition: d ? getComputedStyle(d).position : null,
+       };
+     })()`,
+  )));
+  live.close();
 }
 
 options.close();
