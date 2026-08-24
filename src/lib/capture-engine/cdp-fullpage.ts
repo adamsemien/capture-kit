@@ -168,11 +168,43 @@ async function revealScrollPass(target: chrome.debugger.Debuggee): Promise<void>
 // chrome that only becomes fixed under a media query. Marker attributes, one
 // injected stylesheet, and per-element original inline style + inner scroll
 // offsets recorded for restore — never a blanket rule.
+// A fixed element the user cannot see must not be re-anchored. `fixed` is
+// viewport-relative and contributes nothing to the document's scrollable
+// overflow, so a closed drawer parked off-canvas measures as if it were not
+// there. Rewriting it to `absolute` puts it INTO the document: the page widens
+// by the off-canvas extent and the drawer paints into the capture, fully open,
+// on a page where it is shut. Measured on a fixture reproducing
+// app.thenobadcompany.com/operator/studio's geometry (left:916px +
+// translateX(422.4px), width 384, overflow:clip on body and html): the
+// document went 1300 -> 1722 at this step, and the written image carried 9406
+// drawer-coloured pixels in a 381x785 box at x 1340..1720.
+//
+// Vetoed elements are marked and hidden rather than left alone: leaving one
+// `fixed` would paint it once per segment, which is the artifact this whole
+// script exists to kill.
+//
+// The two passes veto on different evidence, because only one of them can
+// trust its own geometry:
+//
+//   pass 1 (captureAttached) runs at the real viewport, so "does this box
+//     overlap what the user is looking at" is a real question. Geometric.
+//   pass 2 (captureSegmented, after setDeviceMetricsOverride) runs under a
+//     virtual viewport up to segmentSize tall, where almost everything
+//     overlaps and the geometric test silently stops rejecting. It vetoes on
+//     closed markers only — evidence the page states outright, which no
+//     viewport can distort.
+//
+// The pass-1 verdict is sticky: pass 2 skips anything already carrying either
+// marker, so a marker-less drawer vetoed geometrically at the real viewport is
+// not re-examined under the inflated one and re-anchored.
 const UNSTICK_SCRIPT = `(() => {
   const STYLE_ID = '__capture_kit_unstick__';
   const ATTR = 'data-capture-kit-position';
+  const OFFSCREEN_ATTR = 'data-capture-kit-offscreen';
   const PREV_STYLE = 'data-capture-kit-prev-style';
   const SCROLL_ATTR = 'data-capture-kit-scroll';
+  // Set by captureSegmented for the second pass, where geometry is unusable.
+  const markersOnly = window.__captureKitUnstickMarkersOnly === true;
 
   if (!document.getElementById(STYLE_ID)) {
     const style = document.createElement('style');
@@ -181,9 +213,43 @@ const UNSTICK_SCRIPT = `(() => {
       '[' + ATTR + '="sticky"]{position:static !important;}' +
       '[' + ATTR + '="fixed"]{position:absolute !important;}' +
       '[' + ATTR + '="pinned"]{position:absolute !important;right:auto !important;' +
-      'bottom:auto !important;box-sizing:border-box !important;}';
+      'bottom:auto !important;box-sizing:border-box !important;}' +
+      '[' + OFFSCREEN_ATTR + ']{visibility:hidden !important;}';
     document.documentElement.appendChild(style);
   }
+
+  // The page saying, in its own words, that this is shut. Checked on the
+  // element and its ancestors: a closed drawer marks its root, not each of
+  // the hundreds of descendants inside it.
+  const closedMarker = (node) =>
+    node.getAttribute('aria-hidden') === 'true' ||
+    node.hasAttribute('hidden') ||
+    node.hasAttribute('inert') ||
+    (node.tagName === 'DIALOG' && !node.hasAttribute('open'));
+  const collapsedIds = new Set();
+  for (const control of document.querySelectorAll('[aria-controls][aria-expanded="false"]')) {
+    for (const id of (control.getAttribute('aria-controls') || '').split(/\\s+/)) {
+      if (id) collapsedIds.add(id);
+    }
+  }
+  const declaredClosed = (el) => {
+    for (let node = el; node; node = node.parentElement) {
+      if (closedMarker(node)) return true;
+      if (node.id && collapsedIds.has(node.id)) return true;
+    }
+    return false;
+  };
+
+  // Positive overlap area, not a shared edge: a drawer whose box starts at
+  // exactly clientWidth touches the viewport and paints nothing.
+  const onScreen = (rect) => {
+    const vw = document.documentElement.clientWidth || window.innerWidth;
+    const vh = document.documentElement.clientHeight || window.innerHeight;
+    return (
+      Math.min(rect.right, vw) - Math.max(rect.left, 0) > 0 &&
+      Math.min(rect.bottom, vh) - Math.max(rect.top, 0) > 0
+    );
+  };
 
   // Inner scrollers (a docs sidebar with its own overflow) go back to the top
   // first, so their sticky children resolve where they belong and every rect
@@ -222,8 +288,12 @@ const UNSTICK_SCRIPT = `(() => {
   // Measure everything before moving anything — the first reposition
   // invalidates every rect read after it.
   const targets = [];
+  const vetoed = [];
   for (const el of document.querySelectorAll('*')) {
-    if (el.hasAttribute(ATTR)) continue;
+    // Both markers, not just ATTR: an element vetoed on pass 1 carries only
+    // OFFSCREEN_ATTR, and re-examining it on pass 2 under the inflated
+    // viewport would re-anchor it and bring the leak straight back.
+    if (el.hasAttribute(ATTR) || el.hasAttribute(OFFSCREEN_ATTR)) continue;
     let cs;
     try { cs = getComputedStyle(el); } catch { continue; }
     if (cs.position === 'sticky') {
@@ -233,6 +303,15 @@ const UNSTICK_SCRIPT = `(() => {
     if (cs.position !== 'fixed') continue;
 
     const rect = el.getBoundingClientRect();
+
+    // The veto. Pass 1 trusts geometry; pass 2 trusts only what the page
+    // declares. Legitimate chrome — a header, a toolbar, a bottom bar — is
+    // on screen at the unscrolled viewport and carries no closed marker, so
+    // neither arm touches it.
+    if (markersOnly ? declaredClosed(el) : !onScreen(rect)) {
+      vetoed.push(el);
+      continue;
+    }
     let placeable = rect.width > 0 && rect.height > 0 && !distorts(cs);
     let block = null;
     for (let node = el.parentElement; placeable && node; node = node.parentElement) {
@@ -266,6 +345,10 @@ const UNSTICK_SCRIPT = `(() => {
     });
   }
 
+  // Marker only — the hiding is the stylesheet rule, so restore is removing
+  // the attribute and the stylesheet, with no inline style to put back.
+  for (const el of vetoed) el.setAttribute(OFFSCREEN_ATTR, '');
+
   for (const t of targets) {
     t.el.setAttribute(ATTR, t.kind);
     if (t.kind !== 'pinned') continue;
@@ -294,6 +377,12 @@ const RESTICK_SCRIPT = `(() => {
   for (const el of document.querySelectorAll('[data-capture-kit-position]')) {
     el.removeAttribute('data-capture-kit-position');
   }
+  // Vetoed off-canvas fixed elements. Visibility came from the stylesheet
+  // removed above, so clearing the marker is the whole restore.
+  for (const el of document.querySelectorAll('[data-capture-kit-offscreen]')) {
+    el.removeAttribute('data-capture-kit-offscreen');
+  }
+  delete window.__captureKitUnstickMarkersOnly;
   // Scroll offsets last, once the layout they belong to is back.
   for (const el of document.querySelectorAll('[data-capture-kit-scroll]')) {
     const parts = (el.getAttribute('data-capture-kit-scroll') || '0,0').split(',');
@@ -366,8 +455,13 @@ export async function captureAttached(
     // their unstuck position and fixed chrome is measured where an unscrolled
     // visitor would see it.
     await evaluateInPage<ScrollPosition>(target, scrollAndSettleScript(0, 0, SEGMENT_SETTLE_MS));
-    await evaluateInPage<number>(target, UNSTICK_SCRIPT);
+    // Armed BEFORE the evaluate, not after it resolves. If the in-page script
+    // throws partway it has already written markers, and the veto means one of
+    // those markers hides an element the user can see — a page only a reload
+    // recovers. RESTICK is idempotent, so arming early costs nothing when the
+    // script succeeds.
     unstuck = true;
+    await evaluateInPage<number>(target, UNSTICK_SCRIPT);
 
     // Measure AFTER reveal handling and neutralization — forcing
     // transform:none on translated reveal elements, and re-anchoring fixed
@@ -494,6 +588,11 @@ async function captureSegmented(
     // overridden layout. It skips everything it already marked, and the
     // single restore stays in captureAttached's finally.
     await evaluateInPage<ScrollPosition>(target, scrollAndSettleScript(0, 0, SEGMENT_SETTLE_MS));
+    // Pass 2. The device-metrics override makes the viewport as much as
+    // segmentSize tall, so "off screen" stops discriminating — nearly every
+    // box overlaps it. This pass vetoes on closed markers only. Elements
+    // pass 1 already judged carry a marker and are skipped outright.
+    await evaluateInPage<void>(target, 'window.__captureKitUnstickMarkersOnly = true');
     await evaluateInPage<number>(target, UNSTICK_SCRIPT);
 
     // The virtual viewport can change layout (vh units, media queries), so
