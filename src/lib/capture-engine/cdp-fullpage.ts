@@ -97,16 +97,56 @@ const UNFREEZE_SCRIPT = `(() => {
 const FORCE_REVEAL_SCRIPT = `(() => {
   const ATTR = 'data-capture-kit-force-reveal';
   const STYLE_ID = '__capture_kit_force_reveal__';
+  // The page saying, in its own words, that this is shut. These five markers
+  // are the same list as declaredClosed() in UNSTICK_SCRIPT below, written out
+  // again rather than shared: UNSTICK is frozen for this change. Keep the two
+  // lists in sync by hand until they are consolidated.
+  // <dialog>.open is the reflecting IDL attribute, so asking the property is
+  // asking the 'open' attribute that declaredClosed() reads.
+  const collapsedIds = new Set();
+  for (const control of document.querySelectorAll('[aria-controls][aria-expanded="false"]')) {
+    for (const id of (control.getAttribute('aria-controls') || '').split(/\\s+/)) {
+      if (id) collapsedIds.add(id);
+    }
+  }
+  const declaredClosed = (el) =>
+    el.getAttribute('aria-hidden') === 'true' ||
+    el.hasAttribute('hidden') ||
+    el.hasAttribute('inert') ||
+    (el.tagName === 'DIALOG' && !el.open) ||
+    (!!el.id && collapsedIds.has(el.id));
+
+  // Top-down, so a veto takes the whole subtree with it. The flat
+  // querySelectorAll('*') scan this replaced could not: visibility inherits, so
+  // every child of a closed visibility:hidden drawer computed
+  // visibility:hidden with position:static, got marked, and painted into the
+  // capture while the drawer box itself stayed transparent. An explicit stack
+  // rather than recursion, so a deep DOM cannot overflow it.
   let count = 0;
-  for (const el of document.querySelectorAll('*')) {
+  const stack = [document.documentElement];
+  while (stack.length > 0) {
+    const el = stack.pop();
+    const descend = () => {
+      for (let child = el.firstElementChild; child; child = child.nextElementSibling) {
+        stack.push(child);
+      }
+    };
     let cs;
-    try { cs = getComputedStyle(el); } catch { continue; }
+    // Unreadable computed style: judge nothing, keep walking the children, as
+    // the flat scan did when it hit the same throw.
+    try { cs = getComputedStyle(el); } catch { descend(); continue; }
+    // The vetoes. Each one skips the element AND everything under it.
     if (cs.position === 'fixed') continue;
     if (cs.display === 'none') continue;
+    if (declaredClosed(el)) continue;
     const hidden = parseFloat(cs.opacity) === 0 || cs.visibility === 'hidden';
-    if (!hidden) continue;
-    el.setAttribute(ATTR, '');
-    count += 1;
+    if (hidden) {
+      el.setAttribute(ATTR, '');
+      count += 1;
+    }
+    // Descend even past a marked element: a descendant hidden on its own
+    // account still needs its own marker, exactly as before.
+    descend();
   }
   if (count > 0 && !document.getElementById(STYLE_ID)) {
     const style = document.createElement('style');

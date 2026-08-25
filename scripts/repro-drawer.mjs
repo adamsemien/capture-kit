@@ -258,7 +258,7 @@ for (const [variant, out] of Object.entries(results)) {
   }
   const drawer = out.firstPaint.find((f) => f.el.includes('drawer'));
   const lazy = out.firstPaint.find((f) => f.el.includes('lazy'));
-  if (variant.startsWith('E')) {
+  if (variant.startsWith('E') || variant.startsWith('H')) {
     line(`  ${variant.padEnd(24)} lazy block becomesPaintedAt=${lazy?.becomesPaintedAt ?? 'not tracked'}`);
     continue;
   }

@@ -30,8 +30,15 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { DRAWER_RGB, fixture as drawerFixture, viewportFor } from './drawer-fixture.mjs';
 import {
+  DRAWER_RGB,
+  F_CHILD_RGB,
+  H_SECTION_RGB,
+  fixture as drawerFixture,
+  viewportFor,
+} from './drawer-fixture.mjs';
+import {
+  cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -69,8 +76,8 @@ const osa = (s) => execFileSync('/usr/bin/osascript', ['-e', s], { encoding: 'ut
 // produces an id that does not exist — the options page then 404s and every
 // chrome.* eval comes back "undefined", which reads like a product failure
 // rather than a harness one. realpath first.
-function extensionId() {
-  const resolved = existsSync(DIST) ? realpathSync(DIST) : DIST;
+function extensionId(dist = DIST) {
+  const resolved = existsSync(dist) ? realpathSync(dist) : dist;
   const hex = createHash('sha256').update(resolved).digest('hex').slice(0, 32);
   return [...hex].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join('');
 }
@@ -326,6 +333,54 @@ const DRAWER_INSPECT_PAGE = `<!doctype html>
   img.src = '/image?file=' + encodeURIComponent(name);
 </script></body></html>`;
 
+/**
+ * CHECK A11's inspector. A10's asks two fixed questions; A11 has to ask about
+ * six colours across three fixtures - a drawer, its three children, and three
+ * lazy sections - so the list comes in on the query string.
+ *
+ * Same 40-per-channel tolerance and same every-fourth-pixel sampling stride as
+ * A10, so a count printed here means the same thing as a count printed there.
+ * The whole bitmap is pulled once rather than a getImageData per pixel: at
+ * these image sizes the per-pixel form takes minutes.
+ */
+const COLOUR_INSPECT_PAGE = `<!doctype html>
+<html><head><meta charset="utf-8"><title>inspecting</title></head>
+<body><script>
+  const q = new URLSearchParams(location.search);
+  const targets = JSON.parse(q.get('colours'));
+  const img = new Image();
+  img.onerror = () => { document.title = 'RESULT ' + JSON.stringify({ error: 'decode failed' }); };
+  img.onload = () => {
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const data = ctx.getImageData(0, 0, c.width, c.height).data;
+    const out = targets.map((t) => ({ name: t.name, pixels: 0, from: Infinity, to: -1 }));
+    for (let y = 0; y < c.height; y += 4) {
+      for (let x = 0; x < c.width; x += 4) {
+        const i = (y * c.width + x) * 4;
+        for (let k = 0; k < targets.length; k++) {
+          const t = targets[k];
+          if (Math.abs(data[i] - t.r) < 40 && Math.abs(data[i + 1] - t.g) < 40 &&
+              Math.abs(data[i + 2] - t.b) < 40) {
+            out[k].pixels++;
+            if (x < out[k].from) out[k].from = x;
+            if (x > out[k].to) out[k].to = x;
+          }
+        }
+      }
+    }
+    document.title = 'RESULT ' + JSON.stringify({
+      width: c.width, height: c.height,
+      colours: out.map((o) => ({
+        name: o.name, pixels: o.pixels, x: o.pixels ? { from: o.from, to: o.to } : null,
+      })),
+    });
+  };
+  img.src = '/image?file=' + encodeURIComponent(q.get('file'));
+</script></body></html>`;
+
 function startHttp() {
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -359,6 +414,11 @@ function startHttp() {
     if (url.pathname === '/inspect-drawer') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(DRAWER_INSPECT_PAGE);
+      return;
+    }
+    if (url.pathname === '/inspect-colours') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(COLOUR_INSPECT_PAGE);
       return;
     }
     const wide = Number(url.searchParams.get('wide') ?? 0);
@@ -469,7 +529,7 @@ function killStrays() {
   }
 }
 
-function launch() {
+function launch(dist = DIST) {
   // Never share the profile with a survivor of an earlier run.
   killStrays();
   seedProfile();
@@ -478,8 +538,8 @@ function launch() {
     CHROME,
     [
       `--user-data-dir=${PROFILE}`,
-      `--load-extension=${DIST}`,
-      `--disable-extensions-except=${DIST}`,
+      `--load-extension=${dist}`,
+      `--disable-extensions-except=${dist}`,
       '--disable-features=DisableLoadExtensionCommandLineSwitch',
       ...(HEADED ? [] : ['--headless=new']),
       `--remote-debugging-port=${PORT}`,
@@ -491,6 +551,69 @@ function launch() {
   );
   return child;
 }
+
+// --- CHECK A11's disable mechanism --------------------------------------
+//
+// A check that only ever reports zero proves nothing. A11 therefore runs once
+// against a build with the subtree veto deliberately no-opped, and the leak has
+// to come back.
+//
+// The no-op is a textual substitution on a COPY of the built bundle, and the
+// beacon it injects announces itself from the page the way `unstickNeutered`
+// does in scripts/capture-fixture.mjs. Neither string exists in src, so
+// neither can reach a shipped dist - which is a claim the PR body checks with
+// `find dist -name '*.js' | xargs grep -l`.
+const NEUTER_BEACON = '__ckRevealVetoNeutered';
+const VETO_SOURCE_LINE = 'if (declaredClosed(el)) continue;';
+const NEUTERED_DIST = '/tmp/ck-a11-neutered-dist';
+
+/**
+ * Copy dist, disable the closed-marker veto inside FORCE_REVEAL_SCRIPT, and
+ * have the neutered script set the beacon on the page it runs in. The
+ * substitution target has to appear exactly once, or the copy is not the thing
+ * this check thinks it is.
+ */
+function neuterDist() {
+  rmSync(NEUTERED_DIST, { recursive: true, force: true });
+  cpSync(DIST, NEUTERED_DIST, { recursive: true });
+  const worker = `${NEUTERED_DIST}/background/service-worker.js`;
+  const before = readFileSync(worker, 'utf8');
+  const hits = before.split(VETO_SOURCE_LINE).length - 1;
+  if (hits !== 1) {
+    throw new Error(
+      `A11 disable mechanism found ${hits} copies of the veto line in the bundle, expected 1`,
+    );
+  }
+  writeFileSync(
+    worker,
+    before.replace(
+      VETO_SOURCE_LINE,
+      `window.${NEUTER_BEACON} = true; if (false && declaredClosed(el)) continue;`,
+    ),
+  );
+  return NEUTERED_DIST;
+}
+
+/**
+ * FORCE_REVEAL_SCRIPT lifted out of src byte-for-byte, the same way
+ * scripts/probe-reveal.mjs lifts it, so the reveal-forced identity check
+ * compares the report against the real script rather than a retyped copy.
+ */
+const FORCE_REVEAL_SCRIPT_SRC = (() => {
+  const src = readFileSync(`${ROOT}/src/lib/capture-engine/cdp-fullpage.ts`, 'utf8');
+  const open = src.indexOf('const FORCE_REVEAL_SCRIPT = `');
+  if (open < 0) throw new Error('could not find FORCE_REVEAL_SCRIPT in cdp-fullpage.ts');
+  const start = src.indexOf('`', open) + 1;
+  const end = src.indexOf('`', start);
+  const body = src.slice(start, end);
+  if (body.includes('${')) throw new Error('FORCE_REVEAL_SCRIPT interpolates; extraction is unsafe');
+  // The slice is SOURCE text, not the runtime string: a `\\s` in the source is
+  // a `\s` once TypeScript has evaluated the template literal, and evaluating
+  // the raw slice instead would compile a regex that matches a literal
+  // backslash. Re-evaluating it as a template literal - safe, since it
+  // interpolates nothing - reproduces exactly the string the extension sends.
+  return new Function('return `' + body + '`')();
+})();
 
 // Whatever ends this script — success, a thrown check, Ctrl-C — the browser
 // goes with it. Without this, a failed run silently leaves a browser behind
@@ -1346,6 +1469,253 @@ for (const [variant, expectSegments] of [
   )));
   live.close();
 }
+
+// --- A11: FORCE_REVEAL vetoes closed subtrees ---------------------------
+heading('CHECK A11 — FORCE_REVEAL skips closed subtrees, and still reveals lazy sections');
+// Leak 2. FORCE_REVEAL was a flat querySelectorAll('*') scan that forced
+// opacity:1;visibility:visible on every computed-hidden element it found. Two
+// holes, both artifacts of the scan being flat:
+//
+//   1. the position:fixed skip did not reach descendants. visibility inherits,
+//      so a closed fixed drawer was skipped while every child inside it
+//      computed visibility:hidden with position:static, got marked, and
+//      painted. Variant F.
+//   2. nothing consulted the closed-state markers the page already publishes,
+//      so a drawer carrying aria-hidden="true" was treated exactly like a
+//      lazy section waiting on scroll. Variant G, and variant D.
+//
+// The replacement walks the tree top down and skips a vetoed element's whole
+// subtree. Variant H is the guard on the other side: three opacity:0 sections
+// with no marker of any kind, which must still be revealed. A fix that closed
+// the drawers by simply revealing less would fail H.
+console.log('segment size 8192, stamp off: ' + JSON.stringify(
+  await setSetting(options, { segmentSize: 8192, stampUrlOnImage: false }),
+));
+
+// A and B are leak 1: an off-canvas absolute drawer un-clipped by the inner
+// scroll expansion. Nothing in this check touches that path - neither drawer is
+// computed-hidden, so FORCE_REVEAL never marked either of them - and the fix
+// for it is a separate PR. They are captured here as a regression guard, so
+// their numbers are RECORDED against the origin/main build rather than judged.
+// Calling them FAIL would report someone else's open bug as this check's.
+const LEAK_1_VARIANTS = new Set(['A off-canvas-left100', 'B off-canvas-transform']);
+
+const named = (rgb, name) => ({ name, r: rgb.r, g: rgb.g, b: rgb.b });
+const DRAWER_ONLY = [named(DRAWER_RGB, 'drawer')];
+const A11_COLOURS = {
+  'A off-canvas-left100': DRAWER_ONLY,
+  'B off-canvas-transform': DRAWER_ONLY,
+  'C display-none': DRAWER_ONLY,
+  'D visibility-hidden': DRAWER_ONLY,
+  'F fixed-visibility-hidden': [
+    ...DRAWER_ONLY,
+    ...F_CHILD_RGB.map((c, i) => named(c, `child${i}`)),
+  ],
+  'G absolute-aria-hidden': DRAWER_ONLY,
+  'H lazy-sections': H_SECTION_RGB.map((c, i) => named(c, `section${i}`)),
+};
+
+/** Opens a tab and waits for that exact URL, so seven drawer tabs cannot alias. */
+async function openExact(url) {
+  await cdp(`/json/new?${encodeURIComponent(url)}`, 'PUT');
+  for (let i = 0; i < 25; i++) {
+    await sleep(400);
+    const target = (await cdp('/json/list')).find((t) => t.url === url);
+    if (target) return target;
+  }
+  return null;
+}
+
+async function inspectColours(file, colours) {
+  const url =
+    `http://127.0.0.1:${HTTP_PORT}/inspect-colours?file=${encodeURIComponent(file)}` +
+    `&colours=${encodeURIComponent(JSON.stringify(colours))}`;
+  const t = await openExact(url);
+  if (!t) return { error: 'inspector tab never appeared' };
+  const out = await waitForResult(t.id, 60000);
+  await cdp(`/json/close/${t.id}`);
+  return out;
+}
+
+/** Runs one drawer-fixture variant through the real extension and counts colours. */
+async function captureVariant(variant) {
+  const url = `http://127.0.0.1:${HTTP_PORT}/drawer?v=${encodeURIComponent(variant)}`;
+  const t = await openExact(url);
+  if (!t) return { variant, error: 'fixture tab never appeared' };
+  const detail = await waitForResult(t.id, 90000);
+  await sleep(1500);
+  const image = newestFile('.jpg');
+  const report = newestFile('.md');
+  const modeLine = report
+    ? readCapture(report).split('\n').filter((l) => /Full page:|Capture mode:/.test(l))
+    : [];
+  const px = await inspectColours(image, A11_COLOURS[variant]);
+  // Positive evidence that a deliberately no-opped build was the one running,
+  // mirroring `unstickNeutered` in scripts/capture-fixture.mjs. The literal is
+  // written into a COPY of dist by neuterDist() below and exists nowhere in
+  // src, so it can never reach a shipped build.
+  const live = new Session(t.webSocketDebuggerUrl);
+  await live.open();
+  await live.send('Runtime.enable');
+  const neutered = await live.eval(`window.${NEUTER_BEACON} === true`);
+  live.close();
+  await cdp(`/json/close/${t.id}`);
+  return { variant, detail, image, modeLine, px, neutered };
+}
+
+function revealForcedFrom(modeLine) {
+  const m = /reveal-forced \((\d+) elements\)/.exec(modeLine.join(' '));
+  return m ? Number(m[1]) : 0;
+}
+
+const a11 = {};
+for (const variant of Object.keys(A11_COLOURS)) {
+  console.log(`\n--- ${variant} ---`);
+  const r = await captureVariant(variant);
+  a11[variant] = r;
+  if (r.error) {
+    console.log(`FAIL — ${r.error}`);
+    continue;
+  }
+  console.log('capture-kit:capture-complete → ' + JSON.stringify(r.detail));
+  console.log('report geometry: ' + JSON.stringify(r.modeLine));
+  console.log('pixels: ' + JSON.stringify(r.px));
+  const by = Object.fromEntries((r.px.colours ?? []).map((c) => [c.name, c]));
+  if (variant.startsWith('H ')) {
+    for (const c of r.px.colours ?? []) {
+      console.log(
+        `VERDICT ${c.name} still revealed: ` +
+          (c.pixels >= 1000 ? `PASS — ${c.pixels} px` : `FAIL — ${c.pixels} px, over-corrected`),
+      );
+    }
+    const forced = revealForcedFrom(r.modeLine);
+    console.log(
+      'VERDICT reveal-forced count >= 3: ' +
+        (forced >= 3 ? `PASS — ${forced}` : `FAIL — ${forced}`),
+    );
+  } else if (LEAK_1_VARIANTS.has(variant)) {
+    console.log(
+      `RECORDED (leak 1, separate PR) drawer: ${by.drawer.pixels} px` +
+        (by.drawer.pixels ? ` at x ${by.drawer.x.from}..${by.drawer.x.to}` : '') +
+        ` of ${r.px.width} — compare against the origin/main build, must be equal`,
+    );
+  } else {
+    console.log(
+      'VERDICT drawer absent: ' +
+        (by.drawer.pixels > 200
+          ? `FAIL — closed drawer painted (${by.drawer.pixels} px at x ` +
+            `${by.drawer.x.from}..${by.drawer.x.to} of ${r.px.width})`
+          : `PASS — closed drawer absent (${by.drawer.pixels} px)`),
+    );
+    for (const c of r.px.colours ?? []) {
+      if (c.name === 'drawer') continue;
+      console.log(
+        `VERDICT ${c.name} absent: ` +
+          (c.pixels > 200
+            ? `FAIL — drawer child painted (${c.pixels} px at x ${c.x.from}..${c.x.to})`
+            : `PASS — ${c.pixels} px`),
+      );
+    }
+  }
+}
+
+// CK_DIST lets this same harness drive an older commit's build, which is how
+// the A/B/H numbers above are compared across builds. Two parts of A11 only
+// mean anything against a build compiled from THIS checkout's src: the
+// reveal-forced identity check, and the neutering, whose substitution target
+// does not exist in a pre-fix bundle at all.
+const OWN_BUILD = existsSync(DIST) && realpathSync(DIST) === realpathSync(`${ROOT}/dist`);
+
+// The report's reveal-forced number has to be the script's own return value,
+// not a recount taken somewhere else in the pipeline.
+if (OWN_BUILD) {
+  const url = `http://127.0.0.1:${HTTP_PORT}/drawer?v=${encodeURIComponent('H lazy-sections')}`;
+  const t = await openExact(url);
+  const s = new Session(t.webSocketDebuggerUrl);
+  await s.open();
+  await s.send('Runtime.enable');
+  const direct = await s.eval(FORCE_REVEAL_SCRIPT_SRC);
+  s.close();
+  await cdp(`/json/close/${t.id}`);
+  const reported = revealForcedFrom(a11['H lazy-sections'].modeLine ?? []);
+  console.log(
+    `\nVERDICT reported revealForced === FORCE_REVEAL_SCRIPT return: ` +
+      (reported === direct
+        ? `PASS — both ${direct}`
+        : `FAIL — report says ${reported}, script returns ${direct}`),
+  );
+} else {
+  console.log(
+    `\nreveal-forced identity check skipped: running ${DIST}, which was not built from this src`,
+  );
+}
+
+// --- A11 falsifiability: the same check against a neutered build ---------
+// The negative control. Without it "0 drawer pixels" could mean the fix works
+// or could mean the fixture never leaked in the first place. The disable is a
+// textual no-op applied to a COPY of the built bundle, which is the mechanism
+// leak 3's STEP 1 negative control used (scripts/capture-fixture.mjs reports
+// `unstickNeutered` off a hand-neutered build). Nothing about it is in src, so
+// no shipped dist can contain it.
+heading('CHECK A11 (falsifiability) — variant G with the subtree veto disabled');
+if (!OWN_BUILD) {
+  console.log(`skipped: running ${DIST}, whose bundle has no veto to neuter`);
+  options.close();
+  chrome.kill('SIGTERM');
+  killStrays();
+  await sleep(2000);
+  http.close();
+  process.exit(0);
+}
+console.log(`veto source line:  ${VETO_SOURCE_LINE}`);
+console.log(`neuter beacon:     window.${NEUTER_BEACON}`);
+const neuteredDist = neuterDist();
+console.log(`neutered dist:     ${neuteredDist}`);
+
+async function relaunchWith(dist) {
+  options.close();
+  chrome.kill('SIGTERM');
+  killStrays();
+  await sleep(2000);
+  chrome = launch(dist);
+  await waitForPort();
+  await armDownloads();
+  const newId = await discoverExtensionId(extensionId(dist));
+  const url = `chrome-extension://${newId}/options/options.html`;
+  await openExact(url);
+  options = await attach(url);
+  await setSetting(options, {
+    allowInPageTrigger: true,
+    segmentSize: 8192,
+    stampUrlOnImage: false,
+  });
+  return newId;
+}
+
+console.log(`extension id (neutered build): ${await relaunchWith(neuteredDist)}`);
+const gOff = await captureVariant('G absolute-aria-hidden');
+console.log('pixels: ' + JSON.stringify(gOff.px));
+console.log(`neutered build was the one running: ${gOff.neutered}`);
+const gOffPixels = gOff.px.colours?.[0]?.pixels ?? -1;
+console.log(
+  'VERDICT A11 is falsifiable: ' +
+    (gOffPixels > 200 && gOff.neutered === true
+      ? `PASS — veto off leaks ${gOffPixels} px at x ${gOff.px.colours[0].x.from}..` +
+        `${gOff.px.colours[0].x.to} of ${gOff.px.width}`
+      : `FAIL — veto off leaked ${gOffPixels} px, beacon ${gOff.neutered}`),
+);
+
+console.log(`\nextension id (real build): ${await relaunchWith(DIST)}`);
+const gOn = await captureVariant('G absolute-aria-hidden');
+console.log('pixels: ' + JSON.stringify(gOn.px));
+console.log(`neutered build was the one running: ${gOn.neutered}`);
+const gOnPixels = gOn.px.colours?.[0]?.pixels ?? -1;
+console.log(
+  'VERDICT veto re-enabled: ' +
+    (gOnPixels <= 200 && gOn.neutered === false
+      ? `PASS — ${gOnPixels} px, beacon ${gOn.neutered}`
+      : `FAIL — ${gOnPixels} px, beacon ${gOn.neutered}`),
+);
 
 options.close();
 chrome.kill('SIGTERM');

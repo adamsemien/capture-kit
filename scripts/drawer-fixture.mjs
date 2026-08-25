@@ -14,6 +14,32 @@
 export const DRAWER_RGB = { r: 194, g: 24, b: 91 }; // #c2185b
 export const DRAWER_WIDTH = 452;
 
+// Variant F's three block children, each a colour that appears nowhere else in
+// any fixture here. F is the hole-1 case: the drawer is position:fixed, so the
+// flat scan skipped the drawer itself but marked every child, because
+// visibility inherits and each child computed visibility:hidden with
+// position:static. The drawer box stayed transparent while its contents
+// painted - so counting the drawer's own colour would have reported a clean
+// capture. These colours are what actually leaked.
+export const F_CHILD_RGB = [
+  { r: 0x7b, g: 0x1f, b: 0xa2 }, // #7b1fa2
+  { r: 0x00, g: 0x83, b: 0x8f }, // #00838f
+  { r: 0xef, g: 0x6c, b: 0x00 }, // #ef6c00
+];
+
+// Variant H's three lazy sections. H is the positive control: nothing about
+// them is closed, so the fix must leave every one of them revealed. Same
+// separation rule as above - each is more than the inspector's 40-per-channel
+// tolerance away from every other colour in these fixtures.
+export const H_SECTION_RGB = [
+  { r: 0x45, g: 0x27, b: 0xa0 }, // #4527a0
+  { r: 0x82, g: 0x77, b: 0x17 }, // #827717
+  { r: 0xb7, g: 0x1c, b: 0x1c }, // #b71c1c
+];
+
+export const hex = (c) =>
+  '#' + [c.r, c.g, c.b].map((n) => n.toString(16).padStart(2, '0')).join('');
+
 export const DRAWER_VARIANTS = {
   // Parked past the right edge of its clipping ancestor.
   'A off-canvas-left100': `position:absolute;top:0;left:100%;width:${DRAWER_WIDTH}px;height:100%;`,
@@ -24,6 +50,18 @@ export const DRAWER_VARIANTS = {
   // Not a drawer: in-flow content inside the scroller, faded out the way a
   // scroll-reveal library leaves it until it enters the viewport.
   'E lazy-content': null,
+  // Hole 1, isolated: a fixed drawer hidden by visibility:hidden with three
+  // coloured children. The drawer itself was always skipped (position:fixed);
+  // the children were not, and they are what painted.
+  'F fixed-visibility-hidden': `position:fixed;top:0;right:0;width:${DRAWER_WIDTH}px;height:100%;visibility:hidden;`,
+  // Hole 2, isolated: not fixed, so the drawer itself is marked, but the page
+  // says outright that it is shut. Wrapped in its own position:relative
+  // container so the absolute positioning is anchored somewhere stated.
+  'G absolute-aria-hidden': `position:absolute;top:0;right:0;width:${DRAWER_WIDTH}px;height:100%;visibility:hidden;`,
+  // The positive control, and the only variant with no drawer at all. Three
+  // opacity:0 sections below the first viewport, no marker of any kind - the
+  // hero case FORCE_REVEAL exists for. If H stops painting, the fix is wrong.
+  'H lazy-sections': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
   // /studio: position:fixed, off-canvas right, clipped by overflow:clip on
   // body and html, and NO dominant inner scroller — shouldExpand is false, so
@@ -62,6 +100,7 @@ const STUDIO = { left: 916, translateX: 422.4, width: 384 };
  */
 export function fixture(variant, { reportsResult = false, manual = false } = {}) {
   if (/^S\d* /.test(variant)) return studioFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('H ')) return lazySectionsFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
   const rows = Array.from(
     { length: 60 },
@@ -73,10 +112,26 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   const lazy =
     `<div id="lazy" style="opacity:0;height:300px;background:#0a7d34;color:#fff;` +
     `font:20px sans-serif;padding:12px">lazy scroll-reveal block — SHOULD be revealed</div>`;
-  const drawer = drawerStyle
-    ? `<aside id="drawer" aria-hidden="true" style="${drawerStyle}background:#c2185b;color:#fff;` +
-      `font:20px sans-serif;padding:16px;z-index:50">CHAT DRAWER — closed on screen</aside>`
+  // F is the only variant whose children carry their own colours; every other
+  // variant's drawer is a single coloured box, so counting the drawer colour
+  // is the whole test there.
+  const drawerChildren = variant.startsWith('F ')
+    ? F_CHILD_RGB.map(
+        (c, i) =>
+          `<div style="height:160px;background:${hex(c)};color:#fff;font:18px sans-serif;` +
+          `padding:8px">drawer child ${i} - must not paint</div>`,
+      ).join('')
     : '';
+  const aside = drawerStyle
+    ? `<aside id="drawer" aria-hidden="true" style="${drawerStyle}background:#c2185b;color:#fff;` +
+      `font:20px sans-serif;padding:16px;z-index:50">CHAT DRAWER — closed on screen${drawerChildren}</aside>`
+    : '';
+  // G's own containing block, stated rather than inherited from #shell, so the
+  // variant is readable on its own terms.
+  const drawer =
+    aside && variant.startsWith('G ')
+      ? `<div id="g-wrap" style="position:relative;width:0;height:100%">${aside}</div>`
+      : aside;
   const reporter = reporterScript(reportsResult, manual);
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
@@ -146,6 +201,39 @@ function studioFixture(variant, { reportsResult = false, manual = false } = {}) 
 </body></html>`;
 }
 
+
+/**
+ * Variant H. The positive control, and deliberately the plainest page here:
+ * ordinary document scroll, no inner scroller, no drawer, no closed marker
+ * anywhere, and no IntersectionObserver - so nothing but FORCE_REVEAL can
+ * bring these sections back. Three position:static blocks sit below the first
+ * viewport at opacity:0, which is the shape a scroll-reveal library leaves
+ * behind and the exact case the flat scan existed to rescue.
+ *
+ * If a fix that vetoes closed subtrees also stops these painting, the fix has
+ * over-corrected and H is what says so.
+ */
+function lazySectionsFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const sections = H_SECTION_RGB.map(
+    (c, i) =>
+      `<section id="lazy${i}" style="position:static;opacity:0;height:400px;background:${hex(c)};` +
+      `color:#fff;font:24px sans-serif;padding:16px">lazy section ${i} - SHOULD be revealed</section>`,
+  ).join('');
+  const reporter = reporterScript(reportsResult, manual);
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>
+  html,body{margin:0}
+  /* One full viewport of ordinary content, so every lazy section below it is
+     genuinely out of the first viewport rather than merely faded. */
+  #hero{height:100vh;background:#f2f2f4;font:20px sans-serif;padding:16px}
+</style></head>
+<body>
+  <div id="hero"><h1>repro: ${variant}</h1><p>hero content, always visible</p></div>
+  ${sections}
+  ${reporter}
+</body></html>`;
+}
 
 /**
  * `manual` suppresses the auto-fire so the harness can snapshot the page
