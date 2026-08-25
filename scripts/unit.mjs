@@ -11,7 +11,7 @@
 
 import * as esbuild from 'esbuild';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -370,6 +370,77 @@ test('says latest.* is the stable path for an assistant', () => {
 });
 test('is plain text, not markdown', () => {
   assert.ok(!/^#|\*\*/m.test(mod.OUTPUT_README));
+});
+
+/**
+ * The stylesheet innerScrollPage injects, evaluated rather than eyeballed.
+ *
+ * innerScrollPage is not exported - it is serialized into the page by
+ * chrome.scripting.executeScript, so it has to stay self-contained - and the
+ * assignment is a chain of template literals interpolating ATTR/ATTR_H. So the
+ * file is de-typed with esbuild (already a dependency), the assignment
+ * expression is lifted out, and it is evaluated with those two names bound.
+ * What comes back is the literal CSS the extension puts on the page.
+ *
+ * This is leak 1's regression guard. The whole fix is that the ancestor rule
+ * carries no `overflow` declaration: an ancestor at height:auto grows to
+ * contain the expanded scroller, so its own overflow:hidden clips nothing on
+ * the scroll axis, while still clipping an off-canvas sibling on the cross
+ * axis. Put `overflow` back on that rule and NOBC-82 is reopened.
+ */
+heading('innerScrollPage injected stylesheet');
+const innerScrollJs = (
+  await esbuild.transform(readFileSync(`${ROOT}/src/lib/capture-engine/inner-scroll.ts`, 'utf8'), {
+    loader: 'ts',
+    format: 'esm',
+  })
+).code;
+const assignment = /styleEl\.textContent\s*=\s*([\s\S]*?);\n/.exec(innerScrollJs);
+assert.ok(assignment, 'could not find the styleEl.textContent assignment after de-typing');
+const injectedCss = new Function(
+  'ATTR',
+  'ATTR_H',
+  `return ${assignment[1]};`,
+)('data-capture-kit-expand', 'data-capture-kit-expand-h');
+
+/** One rule body by selector substring, e.g. `="ancestor"`. */
+function ruleFor(selectorPart) {
+  const rule = injectedCss
+    .split('}')
+    .map((s) => s + '}')
+    .find((s) => s.includes(selectorPart));
+  assert.ok(rule, `no rule in the injected stylesheet matched ${selectorPart}`);
+  return rule;
+}
+
+test('the scroller rule releases its own overflow', () => {
+  const rule = ruleFor('="scroller"');
+  assert.match(rule, /overflow:visible/);
+  assert.match(rule, /height:auto/);
+  assert.match(rule, /max-height:none/);
+});
+
+test('the ancestor rule carries no overflow declaration', () => {
+  const rule = ruleFor('="ancestor"');
+  assert.ok(
+    !/overflow/.test(rule),
+    `ancestor rule must not touch overflow, got: ${rule}`,
+  );
+});
+
+test('the ancestor rule still releases height', () => {
+  const rule = ruleFor('="ancestor"');
+  assert.match(rule, /height:auto/);
+  assert.match(rule, /max-height:none/);
+});
+
+test('the horizontal rule releases width for both roles', () => {
+  const rule = ruleFor('data-capture-kit-expand-h');
+  assert.match(rule, /width:auto/);
+  assert.match(rule, /max-width:none/);
+  // Unscoped by role on purpose: a horizontal scroller and its ancestors both
+  // need the width release, and neither needs an overflow change to get it.
+  assert.ok(!/="(scroller|ancestor)"/.test(rule), `horizontal rule must stay role-agnostic: ${rule}`);
 });
 
 rmSync(dir, { recursive: true, force: true });

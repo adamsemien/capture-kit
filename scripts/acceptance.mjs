@@ -34,6 +34,7 @@ import {
   DRAWER_RGB,
   F_CHILD_RGB,
   H_SECTION_RGB,
+  SENTINEL_RGB,
   fixture as drawerFixture,
   viewportFor,
 } from './drawer-fixture.mjs';
@@ -592,6 +593,56 @@ function neuterDist() {
     ),
   );
   return NEUTERED_DIST;
+}
+
+// --- CHECK A12's disable mechanism --------------------------------------
+//
+// Same shape as A11's above, aimed at leak 1. The fix is the absence of an
+// `overflow` declaration from the ancestor rule in the stylesheet
+// innerScrollPage injects, so the way to disable it is to put that declaration
+// back. The substitution puts `overflow:visible !important` into the ancestor
+// rule, which is exactly the pre-fix stylesheet, and has the same edit announce
+// itself from the page.
+//
+// The beacon is an attribute on <html>, not a window property, because
+// innerScrollPage runs in an isolated world (see captureVariant). The literal
+// exists nowhere in src, so no shipped dist can contain it - checked in the PR
+// body with `find dist -name '*.js' | xargs grep -l`.
+const A12_BEACON = '__ckAncestorUnclipRestored';
+// The invariant part of the ancestor rule, so a variable rename by the bundler
+// cannot move the target.
+const UNCLIP_SOURCE_LINE = '="ancestor"]{height:auto !important;max-height:none !important;}';
+const UNCLIPPED_DIST = '/tmp/ck-a12-unclipped-dist';
+
+/**
+ * Copy dist, put `overflow:visible` back on the ancestor rule, and have the
+ * restored stylesheet stamp the beacon on <html> as it is built. The stamp
+ * rides in as a template-literal interpolation that evaluates to the empty
+ * string, so the CSS text it produces is byte-for-byte the pre-fix rule.
+ */
+function restoreAncestorUnclip() {
+  rmSync(UNCLIPPED_DIST, { recursive: true, force: true });
+  cpSync(DIST, UNCLIPPED_DIST, { recursive: true });
+  const worker = `${UNCLIPPED_DIST}/background/service-worker.js`;
+  const before = readFileSync(worker, 'utf8');
+  const hits = before.split(UNCLIP_SOURCE_LINE).length - 1;
+  if (hits !== 1) {
+    throw new Error(
+      `A12 disable mechanism found ${hits} copies of the ancestor rule in the bundle, expected 1`,
+    );
+  }
+  writeFileSync(
+    worker,
+    before.replace(
+      UNCLIP_SOURCE_LINE,
+      '="ancestor"]{height:auto !important;max-height:none !important;' +
+        'overflow:visible !important;}' +
+        '${(document.documentElement.setAttribute("' +
+        A12_BEACON +
+        '","1"), "")}',
+    ),
+  );
+  return UNCLIPPED_DIST;
 }
 
 /**
@@ -1537,8 +1588,12 @@ async function inspectColours(file, colours) {
   return out;
 }
 
-/** Runs one drawer-fixture variant through the real extension and counts colours. */
-async function captureVariant(variant) {
+/**
+ * Runs one drawer-fixture variant through the real extension and counts
+ * colours. `colours` defaults to A11's list for the variant; A12 passes its
+ * own, because it asks about the sentinel as well as the drawer.
+ */
+async function captureVariant(variant, colours = A11_COLOURS[variant]) {
   const url = `http://127.0.0.1:${HTTP_PORT}/drawer?v=${encodeURIComponent(variant)}`;
   const t = await openExact(url);
   if (!t) return { variant, error: 'fixture tab never appeared' };
@@ -1549,7 +1604,7 @@ async function captureVariant(variant) {
   const modeLine = report
     ? readCapture(report).split('\n').filter((l) => /Full page:|Capture mode:/.test(l))
     : [];
-  const px = await inspectColours(image, A11_COLOURS[variant]);
+  const px = await inspectColours(image, colours);
   // Positive evidence that a deliberately no-opped build was the one running,
   // mirroring `unstickNeutered` in scripts/capture-fixture.mjs. The literal is
   // written into a COPY of dist by neuterDist() below and exists nowhere in
@@ -1558,9 +1613,18 @@ async function captureVariant(variant) {
   await live.open();
   await live.send('Runtime.enable');
   const neutered = await live.eval(`window.${NEUTER_BEACON} === true`);
+  // A12's beacon. innerScrollPage runs through chrome.scripting.executeScript,
+  // whose default world is ISOLATED, so a window property set there is not
+  // readable from the main world this Session evaluates in. The DOM is shared
+  // across worlds, so the beacon is an attribute on <html> instead. Same shape
+  // as A11's otherwise: one literal, written into a COPY of dist, absent from
+  // src, checkable in a shipped dist with a grep.
+  const unclipRestored = await live.eval(
+    `document.documentElement.getAttribute('${A12_BEACON}') === '1'`,
+  );
   live.close();
   await cdp(`/json/close/${t.id}`);
-  return { variant, detail, image, modeLine, px, neutered };
+  return { variant, detail, image, modeLine, px, neutered, unclipRestored };
 }
 
 function revealForcedFrom(modeLine) {
@@ -1650,28 +1714,15 @@ if (OWN_BUILD) {
   );
 }
 
-// --- A11 falsifiability: the same check against a neutered build ---------
-// The negative control. Without it "0 drawer pixels" could mean the fix works
-// or could mean the fixture never leaked in the first place. The disable is a
-// textual no-op applied to a COPY of the built bundle, which is the mechanism
-// leak 3's STEP 1 negative control used (scripts/capture-fixture.mjs reports
-// `unstickNeutered` off a hand-neutered build). Nothing about it is in src, so
-// no shipped dist can contain it.
-heading('CHECK A11 (falsifiability) — variant G with the subtree veto disabled');
-if (!OWN_BUILD) {
-  console.log(`skipped: running ${DIST}, whose bundle has no veto to neuter`);
-  options.close();
-  chrome.kill('SIGTERM');
-  killStrays();
-  await sleep(2000);
-  http.close();
-  process.exit(0);
-}
-console.log(`veto source line:  ${VETO_SOURCE_LINE}`);
-console.log(`neuter beacon:     window.${NEUTER_BEACON}`);
-const neuteredDist = neuterDist();
-console.log(`neutered dist:     ${neuteredDist}`);
-
+// --- shared by both falsifiability rounds --------------------------------
+// A11 and A12 each need a negative control: without one, "0 drawer pixels"
+// could mean the fix works or could mean the fixture never leaked in the first
+// place. Both disables are a textual substitution on a COPY of the built
+// bundle, which is the mechanism leak 3's STEP 1 negative control used
+// (scripts/capture-fixture.mjs reports `unstickNeutered` off a hand-neutered
+// build). Nothing about either is in src, so no shipped dist can contain them.
+// Swapping the loaded extension means relaunching the browser, which is what
+// this does.
 async function relaunchWith(dist) {
   options.close();
   chrome.kill('SIGTERM');
@@ -1692,30 +1743,155 @@ async function relaunchWith(dist) {
   return newId;
 }
 
-console.log(`extension id (neutered build): ${await relaunchWith(neuteredDist)}`);
-const gOff = await captureVariant('G absolute-aria-hidden');
-console.log('pixels: ' + JSON.stringify(gOff.px));
-console.log(`neutered build was the one running: ${gOff.neutered}`);
-const gOffPixels = gOff.px.colours?.[0]?.pixels ?? -1;
-console.log(
-  'VERDICT A11 is falsifiable: ' +
-    (gOffPixels > 200 && gOff.neutered === true
-      ? `PASS — veto off leaks ${gOffPixels} px at x ${gOff.px.colours[0].x.from}..` +
-        `${gOff.px.colours[0].x.to} of ${gOff.px.width}`
-      : `FAIL — veto off leaked ${gOffPixels} px, beacon ${gOff.neutered}`),
-);
+heading('CHECK A11 (falsifiability) — variant G with the subtree veto disabled');
+if (!OWN_BUILD) {
+  console.log(`skipped: running ${DIST}, whose bundle has no veto to neuter`);
+} else {
+  console.log(`veto source line:  ${VETO_SOURCE_LINE}`);
+  console.log(`neuter beacon:     window.${NEUTER_BEACON}`);
+  const neuteredDist = neuterDist();
+  console.log(`neutered dist:     ${neuteredDist}`);
 
-console.log(`\nextension id (real build): ${await relaunchWith(DIST)}`);
-const gOn = await captureVariant('G absolute-aria-hidden');
-console.log('pixels: ' + JSON.stringify(gOn.px));
-console.log(`neutered build was the one running: ${gOn.neutered}`);
-const gOnPixels = gOn.px.colours?.[0]?.pixels ?? -1;
-console.log(
-  'VERDICT veto re-enabled: ' +
-    (gOnPixels <= 200 && gOn.neutered === false
-      ? `PASS — ${gOnPixels} px, beacon ${gOn.neutered}`
-      : `FAIL — ${gOnPixels} px, beacon ${gOn.neutered}`),
-);
+  console.log(`extension id (neutered build): ${await relaunchWith(neuteredDist)}`);
+  const gOff = await captureVariant('G absolute-aria-hidden');
+  console.log('pixels: ' + JSON.stringify(gOff.px));
+  console.log(`neutered build was the one running: ${gOff.neutered}`);
+  const gOffPixels = gOff.px.colours?.[0]?.pixels ?? -1;
+  console.log(
+    'VERDICT A11 is falsifiable: ' +
+      (gOffPixels > 200 && gOff.neutered === true
+        ? `PASS — veto off leaks ${gOffPixels} px at x ${gOff.px.colours[0].x.from}..` +
+          `${gOff.px.colours[0].x.to} of ${gOff.px.width}`
+        : `FAIL — veto off leaked ${gOffPixels} px, beacon ${gOff.neutered}`),
+  );
+
+  console.log(`\nextension id (real build): ${await relaunchWith(DIST)}`);
+  const gOn = await captureVariant('G absolute-aria-hidden');
+  console.log('pixels: ' + JSON.stringify(gOn.px));
+  console.log(`neutered build was the one running: ${gOn.neutered}`);
+  const gOnPixels = gOn.px.colours?.[0]?.pixels ?? -1;
+  console.log(
+    'VERDICT veto re-enabled: ' +
+      (gOnPixels <= 200 && gOn.neutered === false
+        ? `PASS — ${gOnPixels} px, beacon ${gOn.neutered}`
+        : `FAIL — ${gOnPixels} px, beacon ${gOn.neutered}`),
+  );
+}
+
+// --- CHECK A12 ----------------------------------------------------------
+heading('CHECK A12 — inner-scroll expansion no longer un-clips off-canvas siblings');
+// Leak 1. innerScrollPage expands the dominant inner scroller and then walked
+// every ancestor up to <html> forcing `overflow:visible` on each. An app shell
+// that hides an off-canvas drawer by nothing but `overflow:hidden` on a
+// container it shares with the scroller had that concealment taken away, and
+// the drawer both widened the captured document box and painted.
+//
+// The fix does not scope the un-clip to one axis - CSS forbids it, and
+// scripts/probe-innerscroll.mjs measures that: overflow-x:hidden with
+// overflow-y:visible computes overflow-y:auto, and an auto axis clips into a
+// scroll region rather than painting outward. It releases HEIGHT instead. An
+// ancestor at height:100% with overflow:hidden clips the expanded child only
+// because it cannot grow; at height:auto it grows to contain the child, so its
+// retained overflow:hidden clips nothing on the scroll axis while still
+// clipping the off-canvas sibling on the cross axis.
+//
+// Two questions, not one. A check that only counted the drawer would pass just
+// as well against a "fix" that stopped expanding: no expansion, no un-clip, no
+// drawer. So every variant here also counts the sentinel - a cyan block that is
+// the last child of the scroller, thousands of pixels below the fold, which
+// paints only if expansion reached the end of the scroller's content.
+console.log('segment size 8192, stamp off: ' + JSON.stringify(
+  await setSetting(options, { segmentSize: 8192, stampUrlOnImage: false }),
+));
+
+const A12_DRAWER_AND_SENTINEL = [
+  named(DRAWER_RGB, 'drawer'),
+  named(SENTINEL_RGB, 'sentinel'),
+];
+const A12_COLOURS = {
+  'A off-canvas-left100': A12_DRAWER_AND_SENTINEL,
+  'B off-canvas-transform': A12_DRAWER_AND_SENTINEL,
+  // The positive control: same shell, same sentinel, no drawer at all. It
+  // carries the drawer colour in its list anyway, so "no drawer painted" is
+  // measured here rather than assumed from the markup.
+  'I sentinel-no-drawer': A12_DRAWER_AND_SENTINEL,
+};
+const SENTINEL_FLOOR = 1000;
+
+const a12 = {};
+for (const variant of Object.keys(A12_COLOURS)) {
+  console.log(`\n--- ${variant} ---`);
+  const r = await captureVariant(variant, A12_COLOURS[variant]);
+  a12[variant] = r;
+  if (r.error) {
+    console.log(`FAIL — ${r.error}`);
+    continue;
+  }
+  console.log('capture-kit:capture-complete → ' + JSON.stringify(r.detail));
+  console.log('report geometry: ' + JSON.stringify(r.modeLine));
+  console.log('pixels: ' + JSON.stringify(r.px));
+  const by = Object.fromEntries((r.px.colours ?? []).map((c) => [c.name, c]));
+  console.log(
+    `VERDICT ${variant} off-canvas drawer absent: ` +
+      (by.drawer.pixels === 0
+        ? 'PASS — 0 drawer-colour pixels'
+        : `FAIL — ${by.drawer.pixels} drawer-colour px at x ${by.drawer.x.from}..` +
+          `${by.drawer.x.to} of ${r.px.width}`),
+  );
+  console.log(
+    `VERDICT ${variant} scroller still expanded: ` +
+      (by.sentinel.pixels >= SENTINEL_FLOOR
+        ? `PASS — sentinel ${by.sentinel.pixels} px (floor ${SENTINEL_FLOOR})`
+        : `FAIL — sentinel ${by.sentinel.pixels} px, below the ${SENTINEL_FLOOR} floor; ` +
+          'expansion did not reach the end of the scroller'),
+  );
+}
+
+// --- A12 falsifiability: the ancestor overflow rule put back --------------
+// Without this, "0 drawer pixels" could mean the fix works or could mean the
+// fixture never leaked. Same mechanism A11 uses: a textual substitution on a
+// COPY of the built bundle, announcing itself from the page, with a literal
+// that exists nowhere in src.
+heading('CHECK A12 (falsifiability) — variant A with the ancestor overflow rule restored');
+if (!OWN_BUILD) {
+  console.log(`skipped: running ${DIST}, whose bundle has no ancestor rule to restore`);
+} else {
+  console.log(`ancestor rule target: ${UNCLIP_SOURCE_LINE}`);
+  console.log(`restore beacon:       <html ${A12_BEACON}="1">`);
+  const unclippedDist = restoreAncestorUnclip();
+  console.log(`unclipped dist:       ${unclippedDist}`);
+
+  console.log(`extension id (unclipped build): ${await relaunchWith(unclippedDist)}`);
+  const aOff = await captureVariant('A off-canvas-left100', A12_DRAWER_AND_SENTINEL);
+  console.log('pixels: ' + JSON.stringify(aOff.px));
+  console.log(`unclipped build was the one running: ${aOff.unclipRestored}`);
+  const aOffBy = Object.fromEntries((aOff.px.colours ?? []).map((c) => [c.name, c]));
+  const aOffDrawer = aOffBy.drawer?.pixels ?? -1;
+  console.log(
+    'VERDICT A12 is falsifiable: ' +
+      (aOffDrawer > 200 && aOff.unclipRestored === true
+        ? `PASS — ancestor overflow back on leaks ${aOffDrawer} drawer px at x ` +
+          `${aOffBy.drawer.x.from}..${aOffBy.drawer.x.to} of ${aOff.px.width}`
+        : `FAIL — ancestor overflow back on leaked ${aOffDrawer} px, ` +
+          `beacon ${aOff.unclipRestored}`),
+  );
+
+  console.log(`\nextension id (real build): ${await relaunchWith(DIST)}`);
+  const aOn = await captureVariant('A off-canvas-left100', A12_DRAWER_AND_SENTINEL);
+  console.log('pixels: ' + JSON.stringify(aOn.px));
+  console.log(`unclipped build was the one running: ${aOn.unclipRestored}`);
+  const aOnBy = Object.fromEntries((aOn.px.colours ?? []).map((c) => [c.name, c]));
+  const aOnDrawer = aOnBy.drawer?.pixels ?? -1;
+  const aOnSentinel = aOnBy.sentinel?.pixels ?? -1;
+  console.log(
+    'VERDICT ancestor rule re-disabled: ' +
+      (aOnDrawer === 0 && aOnSentinel >= SENTINEL_FLOOR && aOn.unclipRestored === false
+        ? `PASS — ${aOnDrawer} drawer px, sentinel ${aOnSentinel} px, ` +
+          `beacon ${aOn.unclipRestored}`
+        : `FAIL — ${aOnDrawer} drawer px, sentinel ${aOnSentinel} px, ` +
+          `beacon ${aOn.unclipRestored}`),
+  );
+}
 
 options.close();
 chrome.kill('SIGTERM');

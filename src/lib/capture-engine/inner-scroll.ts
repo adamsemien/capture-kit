@@ -91,8 +91,25 @@ function innerScrollPage(action: PageAction): { shouldExpand: boolean } {
   }
   const styleEl = document.createElement('style');
   styleEl.id = STYLE_ID;
+  // The scroller has to release its own scroll, so it keeps overflow:visible.
+  //
+  // The ancestors do NOT. What they were clipping is the scroller's expanded
+  // height, and they were only clipping it because they could not grow:
+  // height:100% (or a fixed height) plus overflow:hidden. Give them
+  // height:auto and they grow to contain the child, so their own
+  // overflow:hidden clips nothing on the scroll axis - and it still clips an
+  // off-canvas sibling on the cross axis, which is the drawer an app shell
+  // hides by nothing but that clip.
+  //
+  // Scoping the un-clip to one axis instead is not available: when overflow-x
+  // and overflow-y differ and one is visible, CSS computes the visible axis to
+  // auto, and an auto axis clips into a scroll region rather than painting
+  // outward. Measured on this build by scripts/probe-innerscroll.mjs -
+  // overflow-x:hidden with overflow-y:visible computes overflow-y:auto.
   styleEl.textContent =
-    `[${ATTR}]{height:auto !important;max-height:none !important;overflow:visible !important;}` +
+    `[${ATTR}="scroller"]{height:auto !important;max-height:none !important;` +
+    `overflow:visible !important;}` +
+    `[${ATTR}="ancestor"]{height:auto !important;max-height:none !important;}` +
     `[${ATTR_H}]{width:auto !important;max-width:none !important;}`;
   document.documentElement.appendChild(styleEl);
   return { shouldExpand: true };

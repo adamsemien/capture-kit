@@ -14,6 +14,34 @@
 export const DRAWER_RGB = { r: 194, g: 24, b: 91 }; // #c2185b
 export const DRAWER_WIDTH = 452;
 
+// The expansion sentinel, for leak 1 (NOBC-82). A leak-only check would pass
+// just as well against a "fix" that stopped expanding altogether: no expansion,
+// no un-clip, no drawer, green. This block sits at the very bottom of the
+// scroller, far below the fold, so it paints only if expansion reached the end
+// of the scroller's content. Counting it alongside the drawer asks both
+// questions at once - did the drawer stay out, and did the content come in.
+//
+// Cyan, and more than 40 per channel - the inspector's tolerance - away from
+// every other colour any fixture here paints: the drawer #c2185b, the lazy
+// block #0a7d34, F's children #7b1fa2 / #00838f / #ef6c00, H's sections
+// #4527a0 / #827717 / #b71c1c, the row greys #e4e4e8 / #f2f2f4, and studio's
+// header #123a6b.
+export const SENTINEL_RGB = { r: 0x00, g: 0xe5, b: 0xff }; // #00e5ff
+
+// Rows are height:120 + padding:8, so each one occupies 136px. The sentinel is
+// built to occupy exactly two of them and two rows are dropped to pay for it,
+// which keeps the scroller's content height byte-identical to the pre-sentinel
+// fixture. That matters: in A and B the drawer is height:100% of #shell, so
+// once #shell grows to the expanded content the drawer's height - and its
+// pixel count - is the content height. Changing the total would move the
+// pre-fix leak number and there would be nothing left to compare against.
+const ROW_HEIGHT = 120;
+const ROW_PADDING = 8;
+const ROW_BOX = ROW_HEIGHT + ROW_PADDING * 2;
+const SENTINEL_ROWS = 2;
+const SENTINEL_HEIGHT = SENTINEL_ROWS * ROW_BOX - ROW_PADDING * 2;
+const ROW_COUNT = 60 - SENTINEL_ROWS;
+
 // Variant F's three block children, each a colour that appears nowhere else in
 // any fixture here. F is the hole-1 case: the drawer is position:fixed, so the
 // flat scan skipped the drawer itself but marked every child, because
@@ -62,6 +90,12 @@ export const DRAWER_VARIANTS = {
   // opacity:0 sections below the first viewport, no marker of any kind - the
   // hero case FORCE_REVEAL exists for. If H stops painting, the fix is wrong.
   'H lazy-sections': null,
+  // Leak 1's positive control: the same app shell and the same sentinel, with
+  // no drawer at all. It proves the expansion still reaches the bottom of the
+  // scroller on its own terms, with nothing for the fix to suppress - so a
+  // regression in expansion shows up here even if every drawer variant is
+  // clean.
+  'I sentinel-no-drawer': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
   // /studio: position:fixed, off-canvas right, clipped by overflow:clip on
   // body and html, and NO dominant inner scroller — shouldExpand is false, so
@@ -103,10 +137,15 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('H ')) return lazySectionsFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
   const rows = Array.from(
-    { length: 60 },
+    { length: ROW_COUNT },
     (_, i) =>
-      `<div style="height:120px;background:${i % 2 ? '#e4e4e8' : '#f2f2f4'};padding:8px;font:16px sans-serif">row ${i}</div>`,
+      `<div style="height:${ROW_HEIGHT}px;background:${i % 2 ? '#e4e4e8' : '#f2f2f4'};padding:${ROW_PADDING}px;font:16px sans-serif">row ${i}</div>`,
   ).join('');
+  // Last child of the scroller, thousands of pixels below the fold.
+  const sentinel =
+    `<div id="sentinel" style="height:${SENTINEL_HEIGHT}px;padding:${ROW_PADDING}px;` +
+    `background:${hex(SENTINEL_RGB)};color:#002b33;font:20px sans-serif">` +
+    `expansion sentinel - paints only if the scroller expanded to its end</div>`;
   // The over-correction control: opacity:0, no closed-marker of any kind, the
   // exact thing FORCE_REVEAL exists to rescue.
   const lazy =
@@ -144,7 +183,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
 </style></head>
 <body>
   <div id="shell">
-    <div id="main"><h1>repro: ${variant}</h1>${rows}${lazy}</div>
+    <div id="main"><h1>repro: ${variant}</h1>${rows}${lazy}${sentinel}</div>
     ${drawer}
   </div>
   ${reporter}
