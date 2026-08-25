@@ -26,7 +26,19 @@ export const DRAWER_WIDTH = 452;
 // block #0a7d34, F's children #7b1fa2 / #00838f / #ef6c00, H's sections
 // #4527a0 / #827717 / #b71c1c, the row greys #e4e4e8 / #f2f2f4, and studio's
 // header #123a6b.
+//
+// Its LABEL is white, and that is not a style choice. A distinct flat colour is
+// not enough on a JPEG: the encoder blends every glyph edge into the background,
+// and the blend sweeps the whole line between the two colours. The first
+// version of this block had dark text (#002b33), whose blend line to cyan
+// passes almost exactly through F's child colour #00838f - measured 2026-08-25,
+// variant F reported 214 stray child1 pixels at x 8..752, which is the label,
+// not the drawer. White fixes it by construction rather than by luck: every
+// colour counted in any of these fixtures has a green channel of 131 or less,
+// while the cyan-to-white segment never drops below green 229, so no point on
+// that blend can come within 40 of any of them.
 export const SENTINEL_RGB = { r: 0x00, g: 0xe5, b: 0xff }; // #00e5ff
+const SENTINEL_LABEL_COLOUR = '#ffffff';
 
 // Rows are height:120 + padding:8, so each one occupies 136px. The sentinel is
 // built to occupy exactly two of them and two rows are dropped to pay for it,
@@ -144,7 +156,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   // Last child of the scroller, thousands of pixels below the fold.
   const sentinel =
     `<div id="sentinel" style="height:${SENTINEL_HEIGHT}px;padding:${ROW_PADDING}px;` +
-    `background:${hex(SENTINEL_RGB)};color:#002b33;font:20px sans-serif">` +
+    `background:${hex(SENTINEL_RGB)};color:${SENTINEL_LABEL_COLOUR};font:20px sans-serif">` +
     `expansion sentinel - paints only if the scroller expanded to its end</div>`;
   // The over-correction control: opacity:0, no closed-marker of any kind, the
   // exact thing FORCE_REVEAL exists to rescue.

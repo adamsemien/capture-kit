@@ -1831,6 +1831,12 @@ for (const variant of Object.keys(A12_COLOURS)) {
   console.log('report geometry: ' + JSON.stringify(r.modeLine));
   console.log('pixels: ' + JSON.stringify(r.px));
   const by = Object.fromEntries((r.px.colours ?? []).map((c) => [c.name, c]));
+  if (!by.drawer || !by.sentinel) {
+    // An inspector that failed to decode reports no colours at all, and a
+    // missing count must not read as a clean zero.
+    console.log(`FAIL — inspector returned no counts: ${JSON.stringify(r.px)}`);
+    continue;
+  }
   console.log(
     `VERDICT ${variant} off-canvas drawer absent: ` +
       (by.drawer.pixels === 0
