@@ -27,31 +27,46 @@ export const DRAWER_WIDTH = 452;
 // #4527a0 / #827717 / #b71c1c, the row greys #e4e4e8 / #f2f2f4, and studio's
 // header #123a6b.
 //
-// Its LABEL is white, and that is not a style choice. A distinct flat colour is
-// not enough on a JPEG: the encoder blends every glyph edge into the background,
-// and the blend sweeps the whole line between the two colours. The first
-// version of this block had dark text (#002b33), whose blend line to cyan
-// passes almost exactly through F's child colour #00838f - measured 2026-08-25,
-// variant F reported 214 stray child1 pixels at x 8..752, which is the label,
-// not the drawer. White fixes it by construction rather than by luck: every
-// colour counted in any of these fixtures has a green channel of 131 or less,
-// while the cyan-to-white segment never drops below green 229, so no point on
-// that blend can come within 40 of any of them.
+// A distinct flat colour is not enough on a JPEG. The encoder rings at every
+// sharp edge, and the ring sweeps past the colour on the far side of that edge
+// - so what has to be separated is not just the block's own colour but every
+// colour it can be made to pass through. Two measurements, both on the
+// origin/main build, both variant F, both the sentinel and not the drawer:
+//
+//   - dark label (#002b33): 214 stray child1 pixels at x 8..752. The
+//     cyan-to-#002b33 blend line runs almost exactly through F's child colour
+//     #00838f, and glyph antialiasing walks the whole line.
+//   - white label, cyan block flush to the edge of #main: 136 stray child1
+//     pixels at x 748..752 - the last two sampled columns, which is the
+//     block's own right edge ringing against the image boundary.
+//
+// So the label is white AND the block is inset in white on every side. Both
+// are load-bearing. Against white, cyan differs in essentially one channel
+// (red 0 vs 255; green 229 vs 255, blue 255 vs 255), so a ring at that edge
+// moves red and leaves green near 229. Every colour counted in any fixture
+// here has a green channel of 131 or less, so nothing on a cyan-white edge can
+// come within the inspector's 40-per-channel tolerance of any of them.
 export const SENTINEL_RGB = { r: 0x00, g: 0xe5, b: 0xff }; // #00e5ff
 const SENTINEL_LABEL_COLOUR = '#ffffff';
+// White gutter around the cyan block, wide enough that a ring cannot reach
+// across it - a JPEG MCU is 8 or 16 px, so 32 is at least two clear of it.
+const SENTINEL_INSET = 32;
 
-// Rows are height:120 + padding:8, so each one occupies 136px. The sentinel is
-// built to occupy exactly two of them and two rows are dropped to pay for it,
-// which keeps the scroller's content height byte-identical to the pre-sentinel
-// fixture. That matters: in A and B the drawer is height:100% of #shell, so
-// once #shell grows to the expanded content the drawer's height - and its
-// pixel count - is the content height. Changing the total would move the
-// pre-fix leak number and there would be nothing left to compare against.
+// Rows are height:120 + padding:8, so each one occupies 136px. The sentinel
+// wrapper is built to occupy exactly three of them and three rows are dropped
+// to pay for it, which keeps the scroller's content height byte-identical to
+// the pre-sentinel fixture. That matters: in A and B the drawer is height:100%
+// of #shell, so once #shell grows to the expanded content the drawer's height
+// - and its pixel count - is the content height. Changing the total would move
+// the pre-fix leak number and there would be nothing left to compare against.
 const ROW_HEIGHT = 120;
 const ROW_PADDING = 8;
 const ROW_BOX = ROW_HEIGHT + ROW_PADDING * 2;
-const SENTINEL_ROWS = 2;
-const SENTINEL_HEIGHT = SENTINEL_ROWS * ROW_BOX - ROW_PADDING * 2;
+const SENTINEL_ROWS = 3;
+// wrapper box = inset*2 + block padding*2 + block height, and must equal
+// SENTINEL_ROWS whole rows.
+const SENTINEL_HEIGHT =
+  SENTINEL_ROWS * ROW_BOX - SENTINEL_INSET * 2 - ROW_PADDING * 2;
 const ROW_COUNT = 60 - SENTINEL_ROWS;
 
 // Variant F's three block children, each a colour that appears nowhere else in
@@ -153,11 +168,15 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
     (_, i) =>
       `<div style="height:${ROW_HEIGHT}px;background:${i % 2 ? '#e4e4e8' : '#f2f2f4'};padding:${ROW_PADDING}px;font:16px sans-serif">row ${i}</div>`,
   ).join('');
-  // Last child of the scroller, thousands of pixels below the fold.
+  // Last child of the scroller, thousands of pixels below the fold. The white
+  // wrapper is the gutter described above: it keeps every edge of the cyan
+  // block a cyan-to-white edge, including the one that would otherwise sit on
+  // the image boundary.
   const sentinel =
+    `<div id="sentinel-frame" style="background:#ffffff;padding:${SENTINEL_INSET}px">` +
     `<div id="sentinel" style="height:${SENTINEL_HEIGHT}px;padding:${ROW_PADDING}px;` +
     `background:${hex(SENTINEL_RGB)};color:${SENTINEL_LABEL_COLOUR};font:20px sans-serif">` +
-    `expansion sentinel - paints only if the scroller expanded to its end</div>`;
+    `expansion sentinel - paints only if the scroller expanded to its end</div></div>`;
   // The over-correction control: opacity:0, no closed-marker of any kind, the
   // exact thing FORCE_REVEAL exists to rescue.
   const lazy =
