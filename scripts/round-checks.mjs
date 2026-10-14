@@ -37,6 +37,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import * as esbuild from 'esbuild';
 
 const CHROME = process.env.CHROME_BIN;
 if (!CHROME || !existsSync(CHROME)) {
@@ -136,6 +137,71 @@ const SHORT_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>read
   }, 800));
 </script></body></html>`;
 
+// CHECK A15's subject: the real writeFileAtomically from src/lib/output-dir.ts,
+// bundled for a plain page and driven against the origin-private file system,
+// which exposes the same directory/file handle API the chosen folder does.
+const A15_BUNDLE = (
+  await esbuild.build({
+    stdin: {
+      contents: `export { writeFileAtomically } from '${ROOT}/src/lib/output-dir.ts';`,
+      resolveDir: ROOT,
+      loader: 'ts',
+    },
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    write: false,
+    logLevel: 'warning',
+  })
+).outputFiles[0].text;
+
+// The bad chunk is a truncate with no size, which the stream rejects - after
+// the good chunk before it has already reached the swap file. That is the
+// shape of a write that dies partway.
+const A15_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>a15</title></head><body>
+<script type="module">
+  import { writeFileAtomically } from '/a15.js';
+  const BAD = { type: 'truncate' };
+  // Pre-fix shape, kept here as the control: close() in a finally.
+  async function preFix(dir, target, chunks) {
+    const fh = await dir.getFileHandle(target, { create: true });
+    const w = await fh.createWritable();
+    try { for (const c of chunks) await w.write(c); } finally { await w.close(); }
+  }
+  const read = async (dir, name) => {
+    try { return await (await (await dir.getFileHandle(name)).getFile()).text(); }
+    catch (e) { return e.name === 'NotFoundError' ? null : 'ERR ' + e.name; }
+  };
+  const out = {};
+  try {
+    const root = await navigator.storage.getDirectory();
+    for await (const name of root.keys()) await root.removeEntry(name, { recursive: true });
+
+    // 1. A fresh name, failing partway.
+    let threw = false;
+    try { await writeFileAtomically(root, 'fresh.jpg', ['AAAAAAAA', BAD], false); } catch { threw = true; }
+    out.fresh = { threw, left: await read(root, 'fresh.jpg') };
+
+    // 2. An existing latest.jpg, overwrite failing partway.
+    await writeFileAtomically(root, 'latest.jpg', ['OLD-BYTES'], false);
+    threw = false;
+    try { await writeFileAtomically(root, 'latest.jpg', ['NEWNEW', BAD], true); } catch { threw = true; }
+    out.existing = { threw, left: await read(root, 'latest.jpg') };
+
+    // 3. The ordinary case still writes.
+    await writeFileAtomically(root, 'ok.jpg', ['GOOD', '-BYTES'], false);
+    out.ok = await read(root, 'ok.jpg');
+
+    // Control: the pre-fix shape on the same failing input.
+    threw = false;
+    try { await preFix(root, 'control.jpg', ['AAAAAAAA', BAD]); } catch { threw = true; }
+    out.control = { threw, left: await read(root, 'control.jpg') };
+  } catch (e) {
+    out.error = String(e);
+  }
+  document.title = 'RESULT ' + JSON.stringify(out);
+</script></body></html>`;
+
 // Decodes the capture in a Chrome tab (no image decoder in Node, no
 // dependencies here) and reports run lengths of each fixture colour down the
 // middle column.
@@ -177,6 +243,12 @@ const server = createServer((req, res) => {
   if (url.pathname === '/fixture') {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(FIXTURE);
+  } else if (url.pathname === '/a15') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(A15_PAGE);
+  } else if (url.pathname === '/a15.js') {
+    res.writeHead(200, { 'content-type': 'text/javascript' });
+    res.end(A15_BUNDLE);
   } else if (url.pathname === '/inspect-blank') {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end('<!doctype html><title>reader</title><p>reader</p>');
@@ -571,6 +643,37 @@ async function clipboardAfterCapture(id) {
     'A14 OFF leaves the image off the clipboard',
     Array.isArray(o.clip) && !offTypes.includes('image/png') && offTypes.includes('text/plain'),
     `types ${JSON.stringify(offTypes)}`,
+  );
+}
+
+// --- CHECK A15 - a write that fails partway leaves nothing behind ----------
+{
+  await launch(DIST);
+  console.log('\n--- A15 failed writes ---');
+  const url = `http://127.0.0.1:${HTTP_PORT}/a15?n=${Date.now()}`;
+  await cdp(`/json/new?${encodeURIComponent(url)}`, 'PUT');
+  await sleep(500);
+  const tab = (await cdp('/json/list')).find((t) => t.url === url);
+  const r = await titleResult(tab.id, 20000);
+  console.log(JSON.stringify(r));
+  verdict(
+    'A15 a fresh name that fails partway leaves no file',
+    r.fresh?.threw === true && r.fresh?.left === null,
+    `threw ${r.fresh?.threw}, left ${JSON.stringify(r.fresh?.left)}`,
+  );
+  verdict(
+    'A15 an existing file keeps its old bytes when an overwrite fails',
+    r.existing?.threw === true && r.existing?.left === 'OLD-BYTES',
+    `threw ${r.existing?.threw}, left ${JSON.stringify(r.existing?.left)}`,
+  );
+  verdict('A15 an ordinary write still lands', r.ok === 'GOOD-BYTES', JSON.stringify(r.ok));
+  // The control measures what the old code actually left: not a truncated
+  // file (an errored stream commits nothing on close) but an empty one, under
+  // the real name, in the chosen folder.
+  verdict(
+    'A15 is falsifiable - the pre-fix shape leaves a 0-byte file',
+    r.control?.threw === true && r.control?.left === '',
+    `threw ${r.control?.threw}, left ${JSON.stringify(r.control?.left)}`,
   );
 }
 

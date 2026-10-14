@@ -214,14 +214,65 @@ export async function writeToOutputDir(
   // gets Chrome's uniquify behavior.
   const target = overwrite ? filename : await uniqueName(dir, filename);
 
-  const fileHandle = await dir.getFileHandle(target, { create: true });
-  const writable = await fileHandle.createWritable();
-  try {
-    await writable.write(base64ToBlob(base64, mime));
-  } finally {
-    await writable.close();
+  // Whether a file already sat at this name. Only latest.* overwrites, and an
+  // existing latest.jpg must survive a failed write intact; a new name must
+  // not survive as an empty or partial file.
+  let existed = false;
+  if (overwrite) {
+    try {
+      await dir.getFileHandle(target);
+      existed = true;
+    } catch {
+      /* NotFoundError - a fresh name */
+    }
   }
+  await writeFileAtomically(dir, target, [base64ToBlob(base64, mime)], existed);
   return { filename: target, root: handle.name };
+}
+
+/**
+ * Write `chunks` to `dir/target` so that a failure leaves the folder as it
+ * was: an existing file keeps its old bytes, and a name this write created
+ * is removed. Exported for scripts/round-checks.mjs, which drives it against
+ * the origin-private file system with a chunk that fails partway.
+ */
+export async function writeFileAtomically(
+  dir: FileSystemDirectoryHandle,
+  target: string,
+  chunks: FileSystemWriteChunkType[],
+  existed: boolean,
+): Promise<void> {
+  const fileHandle = await dir.getFileHandle(target, { create: true });
+  let writable: FileSystemWritableFileStream | null = null;
+  try {
+    writable = await fileHandle.createWritable();
+    for (const chunk of chunks) await writable.write(chunk);
+    await writable.close();
+  } catch (error) {
+    // abort() discards the swap file explicitly. The old code called close()
+    // in a finally; on a stream a failed write has already errored, Chrome
+    // commits nothing either way (measured by CHECK A15), so the bytes were
+    // never the leak - the empty file below was.
+    try {
+      await writable?.abort();
+    } catch {
+      /* already closed or errored - nothing left to commit */
+    }
+    // getFileHandle({ create: true }) made an empty file before any byte was
+    // written, and the old code left it: a 0-byte image under a real name in
+    // the chosen folder, while the caller fell back to Downloads and wrote the
+    // real one there. A name this write created now goes away with the
+    // failure. An existing file (latest.*) is never removed - it keeps its old
+    // bytes.
+    if (!existed) {
+      try {
+        await dir.removeEntry(target);
+      } catch {
+        /* nothing to remove */
+      }
+    }
+    throw error;
+  }
 }
 
 function base64ToBlob(base64: string, mime: string): Blob {
