@@ -400,8 +400,9 @@ assert.ok(assignment, 'could not find the styleEl.textContent assignment after d
 const injectedCss = new Function(
   'ATTR',
   'ATTR_H',
+  'ATTR_FB',
   `return ${assignment[1]};`,
-)('data-capture-kit-expand', 'data-capture-kit-expand-h');
+)('data-capture-kit-expand', 'data-capture-kit-expand-h', 'data-capture-kit-expand-fb');
 
 /** One rule body by selector substring, e.g. `="ancestor"`. */
 function ruleFor(selectorPart) {
@@ -443,7 +444,23 @@ test('the horizontal rule releases width for both roles', () => {
   assert.ok(!/="(scroller|ancestor)"/.test(rule), `horizontal rule must stay role-agnostic: ${rule}`);
 });
 
+test('the column-item rule releases flex-basis and nothing else', () => {
+  const rule = ruleFor('data-capture-kit-expand-fb');
+  assert.match(rule, /flex-basis:auto/);
+  // Width, height and overflow belong to the other rules; this one exists
+  // only so a flex:1 1 0px item takes its size from its content.
+  assert.ok(!/(^|[;{])\s*(width|height|overflow)/.test(rule), `fb rule must not touch other properties: ${rule}`);
+});
+
 heading('captureModeLabel - viewport heights held');
+
+test('counts unrolled scrollers when there are several', () => {
+  assert.equal(
+    mod.captureModeLabel('expanded-inner-scroll', 0, 1, 0, 2),
+    'expanded inner scroll (2 scrollers), single-shot',
+  );
+  assert.equal(mod.captureModeLabel('expanded-inner-scroll', 0, 1, 0, 1), 'expanded inner scroll, single-shot');
+});
 
 test('names the hold with its count on a segmented capture', () => {
   assert.equal(

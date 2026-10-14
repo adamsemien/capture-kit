@@ -24,12 +24,16 @@ function innerScrollPage(action: PageAction): { shouldExpand: boolean; count: nu
   const STYLE_ID = '__capture_kit_expand__';
   const ATTR = 'data-capture-kit-expand';
   const ATTR_H = 'data-capture-kit-expand-h';
+  const ATTR_FB = 'data-capture-kit-expand-fb';
 
   const restore = () => {
     document.getElementById(STYLE_ID)?.remove();
-    for (const el of Array.from(document.querySelectorAll(`[${ATTR}], [${ATTR_H}]`))) {
+    for (const el of Array.from(
+      document.querySelectorAll(`[${ATTR}], [${ATTR_H}], [${ATTR_FB}]`),
+    )) {
       el.removeAttribute(ATTR);
       el.removeAttribute(ATTR_H);
+      el.removeAttribute(ATTR_FB);
     }
   };
   if (action === 'restore') {
@@ -91,7 +95,11 @@ function innerScrollPage(action: PageAction): { shouldExpand: boolean; count: nu
   // its own length.
   const picked: { el: Element; horizontal: boolean }[] = [];
   const scrollable = /^(auto|scroll|overlay)$/;
+  // Form controls scroll their own value, not the page: a textarea set to
+  // height:auto shrinks back to its rows attribute and reflows the form.
+  const FORM_CONTROL = /^(TEXTAREA|SELECT|INPUT)$/;
   for (const el of Array.from(document.querySelectorAll('*'))) {
+    if (FORM_CONTROL.test(el.tagName)) continue;
     if (el.clientHeight < MIN_SIZE || el.clientWidth < MIN_SIZE) continue;
     const vHidden = el.scrollHeight - el.clientHeight;
     const hHidden = el.scrollWidth - el.clientWidth;
@@ -136,6 +144,29 @@ function innerScrollPage(action: PageAction): { shouldExpand: boolean; count: nu
       node = node.parentElement;
     }
   }
+  // An element sized by "share what is left, starting from zero" never takes
+  // its size from its content: flex:1 1 0px inside a column flex container.
+  // Releasing its height does nothing - the column still hands it zero and
+  // stretches it to whatever space remains, one screen. The NoBC OS operator
+  // shell nests the builder row exactly that way (measured on the live page
+  // 2026-10-14: flex 1 1 0px, min-height 0, overflow hidden), so two
+  // expanded scrollers left the capture one screen tall. Measured before any
+  // write, then flex-basis:auto for those on a vertical axis only - a row
+  // child's flex-basis is its WIDTH, and touching it would resize columns.
+  const columnItems: Element[] = [];
+  for (const el of Array.from(document.querySelectorAll(`[${ATTR}]`))) {
+    const parent = el.parentElement;
+    if (!parent) continue;
+    let pcs: CSSStyleDeclaration;
+    try {
+      pcs = getComputedStyle(parent);
+    } catch {
+      continue;
+    }
+    if (!/flex/.test(pcs.display) || !/column/.test(pcs.flexDirection)) continue;
+    columnItems.push(el);
+  }
+  for (const el of columnItems) el.setAttribute(ATTR_FB, '');
   const styleEl = document.createElement('style');
   styleEl.id = STYLE_ID;
   // The scroller has to release its own scroll, so it keeps overflow:visible.
@@ -157,7 +188,8 @@ function innerScrollPage(action: PageAction): { shouldExpand: boolean; count: nu
     `[${ATTR}="scroller"]{height:auto !important;max-height:none !important;` +
     `overflow:visible !important;}` +
     `[${ATTR}="ancestor"]{height:auto !important;max-height:none !important;}` +
-    `[${ATTR_H}]{width:auto !important;max-width:none !important;}`;
+    `[${ATTR_H}]{width:auto !important;max-width:none !important;}` +
+    `[${ATTR_FB}]{flex-basis:auto !important;}`;
   document.documentElement.appendChild(styleEl);
   return { shouldExpand: true, count: picked.length };
 }

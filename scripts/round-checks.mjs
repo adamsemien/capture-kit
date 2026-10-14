@@ -226,6 +226,43 @@ const A16 = {
   columns: { nav: 150, preview: 300 + 250, settings: 800 + 250 },
 };
 const rgb = (c) => `rgb(${c.join(',')})`;
+// ?shell=app is the NoBC OS operator shell, measured on the live builder on
+// 2026-10-14: a min-h-dvh flex row, a flex-1 flex-col <main> with a header,
+// and the builder row as a flex:1 1 0px, min-height:0, overflow:hidden child
+// of that column. A flex-basis of 0 means the row's size never comes from its
+// content, so unrolled columns cannot push it taller and its overflow:hidden
+// clips them - the capture stayed one screen tall with two scrollers expanded.
+// The settings column also holds a <textarea> that scrolls; form controls are
+// never unrolled.
+const appShellPage = () => `<!doctype html>
+<html><head><meta charset="utf-8"><title>ready</title><style>
+html,body{margin:0;font:14px sans-serif}
+.app{display:flex;min-height:100dvh}
+.side{width:300px;flex:none;background:#3a3a3a}
+main{display:flex;flex-direction:column;flex:1 1 0%;min-width:0;min-height:100dvh}
+header{height:48px;flex:none;background:#ddd}
+.row{display:flex;flex:1 1 0px;min-height:0;overflow:hidden}
+.preview{flex:1 1 0%;min-height:0;overflow:auto;background:#111}
+.settings{flex:1 1 0%;overflow-y:auto;background:#f6f3ee}
+.tabs{position:sticky;top:0;height:56px;background:${rgb(A16.stickyTabs)}}
+.r{height:120px;border-bottom:1px solid #ccc}
+.sentinel-preview{height:160px;background:${rgb(A16.sentinelPreview)}}
+.sentinel-settings{height:160px;background:${rgb(A16.sentinelSettings)}}
+textarea{display:block;width:90%;height:220px;margin:12px}
+</style></head><body>
+<div class="app"><div class="side"></div><main><header></header><div class="row">
+  <div class="preview">${'<div class="r"></div>'.repeat(18)}<div class="sentinel-preview"></div></div>
+  <div class="settings"><div class="tabs"></div><textarea>${'line\n'.repeat(60)}</textarea>${'<div class="r"></div>'.repeat(26)}<div class="sentinel-settings"></div></div>
+</div></main></div>
+<script>
+  document.addEventListener('capture-kit:capture-complete', (e) => {
+    document.title = 'RESULT ' + JSON.stringify({ detail: e.detail, innerHeight, innerWidth });
+  });
+  addEventListener('load', () => setTimeout(() => {
+    document.dispatchEvent(new CustomEvent('capture-kit:capture'));
+  }, 800));
+</script></body></html>`;
+
 const multiColumnPage = (fixedShell) => `<!doctype html>
 <html><head><meta charset="utf-8"><title>ready</title><style>
 html,body{margin:0;height:100%;overflow:hidden;font:14px sans-serif}
@@ -329,7 +366,8 @@ const server = createServer((req, res) => {
     res.end(FIXTURE);
   } else if (url.pathname === '/multi-column') {
     res.writeHead(200, { 'content-type': 'text/html' });
-    res.end(multiColumnPage(url.searchParams.get('shell') === 'fixed'));
+    const shell = url.searchParams.get('shell');
+    res.end(shell === 'app' ? appShellPage() : multiColumnPage(shell === 'fixed'));
   } else if (url.pathname === '/inspect-columns') {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(INSPECT_COLUMNS);
@@ -782,7 +820,7 @@ async function clipboardAfterCapture(id) {
   ];
   const inspect = (image) => `/inspect-columns?file=${encodeURIComponent(image)}&spec=${encodeURIComponent(JSON.stringify(spec))}`;
   const runA16 = async (label, shell) => {
-    const r = await captureFixture(`/multi-column${shell === 'fixed' ? '?shell=fixed' : ''}`, inspect);
+    const r = await captureFixture(`/multi-column${shell === 'flex' ? '' : `?shell=${shell}`}`, inspect);
     console.log(`\n--- ${label} ---`);
     if (r.error) {
       console.log('error: ' + r.error);
@@ -793,7 +831,7 @@ async function clipboardAfterCapture(id) {
     return r;
   };
   await launch(DIST);
-  for (const shell of ['flex', 'fixed']) {
+  for (const shell of ['flex', 'fixed', 'app']) {
     const r = await runA16(`A16 real build, ${shell} shell`, shell);
     if (!r) {
       verdict(`A16 ${shell} capture ran`, false, 'no capture');
@@ -804,6 +842,7 @@ async function clipboardAfterCapture(id) {
     verdict(`A16 ${shell} settings column unrolled to its end`, c.settingsEnd.pixels >= 140, `sentinel ${c.settingsEnd.pixels}px`);
     verdict(`A16 ${shell} sticky tab bar paints once`, c.stickyTabs.runs === 1, `${c.stickyTabs.runs} run(s), ${c.stickyTabs.pixels}px`);
     verdict(`A16 ${shell} chat widget stays closed`, c.widgetHidden.pixels === 0, `${c.widgetHidden.pixels}px of its hidden content`);
+    // Exactly two: the textarea in the app shell scrolls too and must not count.
     verdict(`A16 ${shell} report counts both columns`, /expanded inner scroll \(2 scrollers\)/.test(r.modeLine), r.modeLine.trim());
   }
   const control = process.env.CK_CONTROL_DIST;
