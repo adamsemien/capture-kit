@@ -46,6 +46,17 @@ export interface Settings {
    * stamping code is never entered at all, not that it draws nothing.
    */
   stampUrlOnImage: boolean;
+  /**
+   * Put the image on the clipboard the moment the result tab opens - with the
+   * report for a bundle, alone for an image-only capture - so the next paste
+   * needs no click.
+   *
+   * Default OFF: it changes what lands on the clipboard after every capture,
+   * replacing the report text that lands there today. Rides on the result tab
+   * (openResult), because a write needs a focused document and that tab is
+   * the one that has focus when the capture finishes.
+   */
+  autoCopyImage: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -58,6 +69,7 @@ export const DEFAULT_SETTINGS: Settings = {
   allowInPageTrigger: false,
   iconCapturesImmediately: false,
   stampUrlOnImage: false,
+  autoCopyImage: false,
 };
 
 export function normalizeBundleFormat(value: unknown): CaptureFormat {
@@ -86,6 +98,7 @@ export async function getSettings(): Promise<Settings> {
     allowInPageTrigger: stored.allowInPageTrigger === true,
     iconCapturesImmediately: stored.iconCapturesImmediately === true,
     stampUrlOnImage: stored.stampUrlOnImage === true,
+    autoCopyImage: stored.autoCopyImage === true,
   };
 }
 
@@ -100,6 +113,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     allowInPageTrigger: settings.allowInPageTrigger === true,
     iconCapturesImmediately: settings.iconCapturesImmediately === true,
     stampUrlOnImage: settings.stampUrlOnImage === true,
+    autoCopyImage: settings.autoCopyImage === true,
   });
 }
 

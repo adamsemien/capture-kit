@@ -1,8 +1,11 @@
-// CHECK A13 - viewport-sized sections keep their real height in a segmented
-// capture. Self-contained and cross-platform (Linux or macOS), so it runs
-// without the macOS-only parts of scripts/acceptance.mjs.
+// Checks for the 2026-10-14 fix round. Self-contained and cross-platform
+// (Linux or macOS), so they run without the macOS-only parts of
+// scripts/acceptance.mjs.
 //
-//   npm run build && CHROME_BIN=/path/to/chrome-for-testing node scripts/vh-check.mjs
+//   npm run build && CHROME_BIN=/path/to/chrome-for-testing node scripts/round-checks.mjs
+//
+// CHECK A13 - viewport-sized sections keep their real height in a segmented
+// capture.
 //
 // The defect: the segmented path overrides the viewport to as much as
 // segmentSize tall, so every viewport-unit length resolves against that
@@ -42,7 +45,7 @@ if (!CHROME || !existsSync(CHROME)) {
 }
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const DIST = `${ROOT}/dist`;
-const WORK = process.env.CK_VH_WORK ?? '/tmp/ck-vh-check';
+const WORK = process.env.CK_ROUND_WORK ?? '/tmp/ck-round-checks';
 const DOWNLOADS = `${WORK}/downloads`;
 const PORT = Number(process.env.CK_CDP_PORT ?? 9431);
 const HTTP_PORT = Number(process.env.CK_HTTP_PORT ?? 8831);
@@ -119,6 +122,20 @@ ${BANDS.map((b) => `<section id="${b.id}">${b.id === 'pad' ? '<div></div>' : ''}
 </script>
 </body></html>`;
 
+// A one-screen page for the clipboard and sweep checks: fires the capture on
+// load and reports completion through its title, like FIXTURE.
+const SHORT_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>ready</title></head>
+<body style="margin:0;font:16px sans-serif"><h1>capture-kit round checks</h1>
+<div style="height:300px;background:rgb(30,120,220)"></div>
+<script>
+  document.addEventListener('capture-kit:capture-complete', (e) => {
+    document.title = 'RESULT ' + JSON.stringify({ detail: e.detail });
+  });
+  addEventListener('load', () => setTimeout(() => {
+    document.dispatchEvent(new CustomEvent('capture-kit:capture'));
+  }, 800));
+</script></body></html>`;
+
 // Decodes the capture in a Chrome tab (no image decoder in Node, no
 // dependencies here) and reports run lengths of each fixture colour down the
 // middle column.
@@ -160,6 +177,12 @@ const server = createServer((req, res) => {
   if (url.pathname === '/fixture') {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(FIXTURE);
+  } else if (url.pathname === '/inspect-blank') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<!doctype html><title>reader</title><p>reader</p>');
+  } else if (url.pathname === '/short') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(SHORT_PAGE);
   } else if (url.pathname === '/inspect') {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(INSPECT);
@@ -247,7 +270,7 @@ process.on('exit', () => {
   server.close();
 });
 
-async function launch(dist) {
+async function launch(dist, patch = {}) {
   await stop();
   // A fresh profile directory per launch: a killed Chrome can still be
   // flushing the last one.
@@ -306,8 +329,8 @@ async function launch(dist) {
   const options = new Session(opt.webSocketDebuggerUrl);
   await options.open();
   const set = await options.eval(`(async () => {
-    await chrome.storage.sync.set({ allowInPageTrigger: true, openResult: false, bundleFormat: 'png',
-      segmentSize: 8192, stampUrlOnImage: false, maintainLatest: false });
+    await chrome.storage.sync.set(Object.assign({ allowInPageTrigger: true, openResult: false, bundleFormat: 'png',
+      segmentSize: 8192, stampUrlOnImage: false, maintainLatest: false }, ${JSON.stringify(patch)}));
     return await chrome.storage.sync.get(null);
   })()`);
   options.close();
@@ -448,6 +471,106 @@ if (n) {
     'A13 is falsifiable',
     n.r.page.neutered === true && hero.got > hero.want * 2,
     `hold disabled: hero ${hero.got}px against ${hero.want}px on screen, beacon ${n.r.page.neutered}`,
+  );
+}
+
+// --- CHECK A14 - "Copy to clipboard after capture" -------------------------
+// ON: the result tab puts image/png AND the report on the clipboard with no
+// click. OFF (the control): the clipboard carries the report text only, as
+// before - so the image on the clipboard is the setting's doing.
+async function clipboardAfterCapture(id) {
+  const url = `http://127.0.0.1:${HTTP_PORT}/short?n=${Date.now()}`;
+  await cdp(`/json/new?${encodeURIComponent(url)}`, 'PUT');
+  await sleep(500);
+  const tab = (await cdp('/json/list')).find((t) => t.url === url);
+  const done = await titleResult(tab.id);
+  let result = null;
+  for (let i = 0; i < 30 && !result; i++) {
+    result = (await cdp('/json/list')).find((t) => t.url.startsWith(`chrome-extension://${id}/result/`));
+    if (!result) await sleep(300);
+  }
+  if (!result) return { done, error: 'no result tab opened' };
+  const session = new Session(result.webSocketDebuggerUrl);
+  await session.open();
+  // Give the write time to land: the PNG re-encode runs first.
+  let status = '';
+  for (let i = 0; i < 25; i++) {
+    status = await session.eval(`document.getElementById('status')?.textContent ?? ''`);
+    if (/copied|could not/i.test(status)) break;
+    await sleep(300);
+  }
+  session.close();
+  // Read it back from an ordinary page: an extension page cannot read the
+  // clipboard without the clipboardRead manifest permission, which this
+  // extension does not hold and should not gain for a test.
+  // Permission overrides last only as long as the CDP session that set them,
+  // so this one stays open until the read is done.
+  const b = new Session((await cdp('/json/version')).webSocketDebuggerUrl);
+  await b.open();
+  for (const name of ['clipboard-read', 'clipboard-write']) {
+    await b.send('Browser.setPermission', {
+      permission: { name },
+      setting: 'granted',
+      origin: `http://127.0.0.1:${HTTP_PORT}`,
+    });
+  }
+  await cdp(`/json/new?${encodeURIComponent('about:blank')}`, 'PUT');
+  await sleep(300);
+  const blank = (await cdp('/json/list')).filter((t) => t.url === 'about:blank').pop();
+  const reader = new Session(blank.webSocketDebuggerUrl);
+  await reader.open();
+  await reader.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+  // A page that does not fire a capture: same origin, no trigger script.
+  await reader.send('Page.navigate', { url: `http://127.0.0.1:${HTTP_PORT}/inspect-blank?${Date.now()}` });
+  await sleep(600);
+  const clip = await reader.eval(`(async () => {
+    try {
+      const items = await navigator.clipboard.read();
+      const out = [];
+      for (const item of items) {
+        for (const type of item.types) {
+          const blob = await item.getType(type);
+          out.push({ type, bytes: blob.size, head: type.startsWith('text/') ? (await blob.text()).slice(0, 60) : null });
+        }
+      }
+      return out;
+    } catch (error) { return { error: String(error) }; }
+  })()`);
+  reader.close();
+  b.close();
+  for (const t of await cdp('/json/list')) {
+    if (t.type === 'page' && t.url !== 'about:blank') await cdp(`/json/close/${t.id}`);
+  }
+  return { done, status, clip };
+}
+
+{
+  const on = await launch(DIST, { openResult: true, autoCopyImage: true, bundleFormat: 'jpeg' });
+  console.log(`\n--- A14 auto-copy ON (extension ${on.id}) ---`);
+  const r = await clipboardAfterCapture(on.id);
+  console.log('completion: ' + JSON.stringify(r.done?.detail));
+  console.log('result tab status: ' + JSON.stringify(r.status));
+  console.log('clipboard: ' + JSON.stringify(r.clip));
+  const types = Array.isArray(r.clip) ? r.clip.map((c) => c.type) : [];
+  const text = Array.isArray(r.clip) ? r.clip.find((c) => c.type === 'text/plain') : null;
+  verdict(
+    'A14 ON puts the image on the clipboard',
+    types.includes('image/png') && (r.clip.find((c) => c.type === 'image/png')?.bytes ?? 0) > 1000,
+    `types ${JSON.stringify(types)}`,
+  );
+  verdict('A14 ON puts the report alongside it', !!text && text.bytes > 200, `text ${text ? text.bytes + 'B' : 'absent'}`);
+  verdict('A14 ON says so on screen', /copied/i.test(r.status) && !/could not/i.test(r.status), JSON.stringify(r.status));
+
+  const offRun = await launch(DIST, { openResult: true, autoCopyImage: false, bundleFormat: 'jpeg' });
+  console.log(`\n--- A14 auto-copy OFF, the control (extension ${offRun.id}) ---`);
+  const o = await clipboardAfterCapture(offRun.id);
+  console.log('result tab status: ' + JSON.stringify(o.status));
+  console.log('clipboard: ' + JSON.stringify(o.clip));
+  const offTypes = Array.isArray(o.clip) ? o.clip.map((c) => c.type) : [];
+  verdict(
+    'A14 OFF leaves the image off the clipboard',
+    Array.isArray(o.clip) && !offTypes.includes('image/png') && offTypes.includes('text/plain'),
+    `types ${JSON.stringify(offTypes)}`,
   );
 }
 
