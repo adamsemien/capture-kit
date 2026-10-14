@@ -432,6 +432,151 @@ const RESTICK_SCRIPT = `(() => {
   }
 })()`;
 
+// Viewport-height hold, for the segmented path.
+//
+// The segmented path overrides the viewport to as much as segmentSize tall
+// (8192 by default) so it can photograph the page in a few big frames. Every
+// length the page wrote in viewport units resolves against that virtual
+// viewport, not the one the user is looking at: a `height: 100vh` hero
+// measured 757px at a 757px viewport and 6405px under a 6405px override, and
+// the page grew from 6405 to 34645px. The image then carries a hero many
+// screens tall - the stretched-hero captures Adam worked around with CleanShot
+// X on 2026-10-14, logged on NOBC-82 as a known tradeoff since August.
+//
+// Fix: record, at the real viewport, every element's computed value for the
+// properties a page sizes in viewport units; after the override, any value
+// that moved is held at its recorded value. Only what actually moved is
+// touched, so a fixed-px element is never written to, and the count in the
+// report means "elements the virtual viewport would have resized".
+//
+// Why computed values: computedStyleMap() reports vh, dvh, svh and calc()
+// lengths as absolute px (they resolve at computed-value time), and reports
+// `auto` and percentages as themselves. So an element whose height comes from
+// its content is never recorded for height and never held - it shrinks back
+// on its own once the viewport-sized child inside it is held. The one
+// percentage that refers to the viewport is a percentage height on <html>
+// (its containing block is the initial containing block); that one is
+// recorded by its resolved box height.
+//
+// Why a stylesheet rule reading a custom property, not an inline !important
+// value: a page that sizes a hero from JavaScript on resize assigns
+// `el.style.height`, which overwrites an inline declaration of any priority.
+// It cannot outrank a stylesheet !important rule, and it never touches the
+// custom property the rule reads.
+//
+// Elements UNSTICK pinned (they carry its prev-style marker) are skipped: they
+// already hold an inline !important box, and their restore belongs to RESTICK.
+const VH_PROPS = [
+  'height',
+  'min-height',
+  'max-height',
+  'padding-top',
+  'padding-bottom',
+  'margin-top',
+  'margin-bottom',
+  'row-gap',
+  'top',
+  'bottom',
+  'flex-basis',
+  'font-size',
+] as const;
+
+const VH_RECORD_SCRIPT = `(() => {
+  const PROPS = ${JSON.stringify(VH_PROPS)};
+  const record = new Map();
+  const px = (el, prop) => {
+    let v;
+    try { v = el.computedStyleMap().get(prop); } catch { return null; }
+    return v && v.unit === 'px' ? v.value : null;
+  };
+  for (const el of document.querySelectorAll('*')) {
+    if (!(el instanceof HTMLElement)) continue;
+    if (typeof el.computedStyleMap !== 'function') continue;
+    if (el.hasAttribute('data-capture-kit-prev-style')) continue;
+    const vals = {};
+    let any = false;
+    for (const prop of PROPS) {
+      const v = px(el, prop);
+      if (v !== null) { vals[prop] = v; any = true; }
+    }
+    if (el === document.documentElement) {
+      let h = null;
+      try { h = el.computedStyleMap().get('height'); } catch {}
+      if (h && h.unit === 'percent') {
+        vals.height = el.getBoundingClientRect().height;
+        vals.__resolved = true;
+        any = true;
+      }
+    }
+    if (any) record.set(el, vals);
+  }
+  window.__captureKitVhRecord = record;
+  return record.size;
+})()`;
+
+const VH_HOLD_SCRIPT = `(() => {
+  const record = window.__captureKitVhRecord;
+  if (!record) return 0;
+  const ATTR = 'data-capture-kit-vh';
+  const NOSTYLE = 'data-capture-kit-vh-nostyle';
+  const STYLE_ID = '__capture_kit_vh__';
+  const PROPS = ${JSON.stringify(VH_PROPS)};
+  const now = (el, prop, resolved) => {
+    if (resolved) return el.getBoundingClientRect().height;
+    let v;
+    try { v = el.computedStyleMap().get(prop); } catch { return null; }
+    return v && v.unit === 'px' ? v.value : null;
+  };
+  // Measure everything before writing anything.
+  const moved = [];
+  for (const [el, vals] of record) {
+    if (!el.isConnected) continue;
+    if (el.hasAttribute('data-capture-kit-prev-style')) continue;
+    if (el.hasAttribute(ATTR)) continue;
+    const props = [];
+    for (const prop of PROPS) {
+      if (!(prop in vals)) continue;
+      const v = now(el, prop, prop === 'height' && vals.__resolved === true);
+      if (v === null || Math.abs(v - vals[prop]) > 0.5) props.push(prop);
+    }
+    if (props.length > 0) moved.push([el, vals, props]);
+  }
+  for (const [el, vals, props] of moved) {
+    if (!el.hasAttribute('style')) el.setAttribute(NOSTYLE, '');
+    for (const prop of props) el.style.setProperty('--capture-kit-vh-' + prop, vals[prop] + 'px');
+    el.setAttribute(ATTR, props.join(' '));
+  }
+  if (moved.length > 0 && !document.getElementById(STYLE_ID)) {
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = PROPS.map(
+      (prop) => '[' + ATTR + '~="' + prop + '"]{' + prop + ':var(--capture-kit-vh-' + prop + ') !important;}',
+    ).join('');
+    document.documentElement.appendChild(style);
+  }
+  return moved.length;
+})()`;
+
+const VH_RELEASE_SCRIPT = `(() => {
+  const ATTR = 'data-capture-kit-vh';
+  const NOSTYLE = 'data-capture-kit-vh-nostyle';
+  const style = document.getElementById('__capture_kit_vh__');
+  if (style) style.remove();
+  for (const el of document.querySelectorAll('[' + ATTR + ']')) {
+    for (const prop of (el.getAttribute(ATTR) || '').split(/\\s+/)) {
+      if (prop) el.style.removeProperty('--capture-kit-vh-' + prop);
+    }
+    el.removeAttribute(ATTR);
+    if (el.hasAttribute(NOSTYLE)) {
+      el.removeAttribute(NOSTYLE);
+      // Drop the attribute only if nothing else wrote to it meanwhile - a
+      // page resize handler may legitimately have.
+      if (!el.getAttribute('style')) el.removeAttribute('style');
+    }
+  }
+  delete window.__captureKitVhRecord;
+})()`;
+
 /**
  * Post-attach capture core: measure the page, then single-shot or segmented.
  * Exposed separately from the strategy so callers that hold their own
@@ -615,6 +760,14 @@ async function captureSegmented(
   const overrideWidth = Math.min(naturalSize.width, request.segmentSize);
   const overrideHeight = Math.min(naturalSize.height, request.segmentSize);
 
+  // Record viewport-unit lengths while the viewport is still the real one -
+  // the last moment it is. captureAttached ran pass 1 of UNSTICK already, so
+  // what it pinned is marked and skipped. Only this path overrides the
+  // viewport, so only this path pays for the scan (about 200ms on a
+  // 20,000-element page). Read-only; the release in the finally below is
+  // idempotent, so a throw partway through leaves nothing behind.
+  await evaluateInPage<number>(target, VH_RECORD_SCRIPT);
+
   await sendCommand(target, 'Emulation.setDeviceMetricsOverride', {
     width: overrideWidth,
     height: overrideHeight,
@@ -635,8 +788,16 @@ async function captureSegmented(
     await evaluateInPage<void>(target, 'window.__captureKitUnstickMarkersOnly = true');
     await evaluateInPage<number>(target, UNSTICK_SCRIPT);
 
-    // The virtual viewport can change layout (vh units, media queries), so
-    // re-measure before planning the grid.
+    // Hold every viewport-unit length the override moved at the value it had
+    // at the real viewport (see VH_RECORD_SCRIPT), then let layout settle. The
+    // release is in this function's finally, after the override clears.
+    const heightHeld = (await evaluateInPage<number>(target, VH_HOLD_SCRIPT)) || 0;
+    if (heightHeld > 0) {
+      await evaluateInPage<ScrollPosition>(target, scrollAndSettleScript(0, 0, SEGMENT_SETTLE_MS));
+    }
+
+    // The virtual viewport can still change layout (media queries on width,
+    // anything the hold does not cover), so re-measure before planning.
     const overriddenSize = await readContentSize(target);
     const { width, height, truncated } = clampDimensions(
       overriddenSize.width,
@@ -704,12 +865,21 @@ async function captureSegmented(
       truncated,
       segments,
       revealForced: 0,
+      heightHeld,
     };
   } finally {
     try {
       await sendCommand(target, 'Emulation.clearDeviceMetricsOverride');
     } catch {
       /* best-effort restore */
+    }
+    // After the override clears, before captureAttached's RESTICK - reverse
+    // order of application. The two never touch the same element (the hold
+    // skips anything UNSTICK pinned), so the order is tidiness.
+    try {
+      await evaluateInPage<void>(target, VH_RELEASE_SCRIPT);
+    } catch {
+      /* page navigated away mid-capture */
     }
     try {
       await evaluateInPage<void>(

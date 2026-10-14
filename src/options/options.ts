@@ -16,6 +16,7 @@ const formatInputs = Array.from(
 const triggerInput = document.getElementById('allow-in-page-trigger') as HTMLInputElement;
 const iconCapturesInput = document.getElementById('icon-captures') as HTMLInputElement;
 const stampUrlInput = document.getElementById('stamp-url') as HTMLInputElement;
+const autoCopyInput = document.getElementById('auto-copy-image') as HTMLInputElement;
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
 const dirNameEl = document.getElementById('output-dir-name') as HTMLElement;
 const dirChooseBtn = document.getElementById('output-dir-choose') as HTMLButtonElement;
@@ -33,6 +34,8 @@ async function load(): Promise<void> {
   triggerInput.checked = settings.allowInPageTrigger;
   iconCapturesInput.checked = settings.iconCapturesImmediately;
   stampUrlInput.checked = settings.stampUrlOnImage;
+  autoCopyInput.checked = settings.autoCopyImage;
+  syncAutoCopy();
   for (const input of formatInputs) {
     input.checked = input.value === settings.bundleFormat;
   }
@@ -125,9 +128,20 @@ async function save(): Promise<void> {
     allowInPageTrigger: triggerInput.checked,
     iconCapturesImmediately: iconCapturesInput.checked,
     stampUrlOnImage: stampUrlInput.checked,
+    autoCopyImage: autoCopyInput.checked,
   });
+  syncAutoCopy();
   segmentInput.value = String(segmentSize);
   flashStatus('Saved');
+}
+
+/**
+ * The copy happens in the result tab, the one document that has focus when a
+ * capture finishes. With that tab off there is nothing to write from, so the
+ * option is shown disabled rather than left on and silently doing nothing.
+ */
+function syncAutoCopy(): void {
+  autoCopyInput.disabled = !openResultInput.checked;
 }
 
 function flashStatus(text: string): void {
@@ -145,6 +159,7 @@ openResultInput.addEventListener('change', () => void save());
 triggerInput.addEventListener('change', () => void save());
 iconCapturesInput.addEventListener('change', () => void save());
 stampUrlInput.addEventListener('change', () => void save());
+autoCopyInput.addEventListener('change', () => void save());
 for (const input of formatInputs) {
   input.addEventListener('change', () => void save());
 }

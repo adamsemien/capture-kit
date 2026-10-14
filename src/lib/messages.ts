@@ -220,6 +220,11 @@ export interface CaptureResultMeta {
   filenameConflicts: FilenameConflict[];
   /** Bundle markdown (plain — the result page composes the clipboard variant). */
   markdown?: string;
+  /**
+   * "Copy to clipboard after capture" was on: the result tab writes the image
+   * (and the report, for a bundle) as soon as it opens.
+   */
+  autoCopyImage?: boolean;
   createdAt: number;
 }
 

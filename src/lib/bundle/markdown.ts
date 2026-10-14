@@ -28,6 +28,8 @@ export interface BundleInput {
   captureMode: CaptureMode;
   /** Count of scroll-reveal elements that had to be force-revealed for this capture. */
   revealForced: number;
+  /** Elements whose viewport-unit lengths were held at the real viewport (segmented only). */
+  heightHeld?: number;
   /** Segments stitched for the image (1 = true single-shot). */
   segments: number;
   /** Dimensions of the file on disk, footer included. */
@@ -89,11 +91,16 @@ export function captureModeLabel(
   mode: CaptureMode,
   revealForced: number,
   segments: number,
+  heightHeld = 0,
 ): string {
   const strategy = mode === 'expanded-inner-scroll' ? 'expanded inner scroll' : 'standard';
   const path = segments > 1 ? `segmented, ${segments} segments` : 'single-shot';
   const reveal = revealForced > 0 ? ` + reveal-forced (${revealForced} elements)` : '';
-  return `${strategy}, ${path}${reveal}`;
+  // Says the page was altered for the capture, and how: viewport-unit lengths
+  // were held at the real viewport instead of resolving against the segmented
+  // path's taller virtual one. Absent when nothing moved.
+  const held = heightHeld > 0 ? ` + viewport heights held (${heightHeld} elements)` : '';
+  return `${strategy}, ${path}${reveal}${held}`;
 }
 
 /**
@@ -297,7 +304,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
         viewport: meta.viewport,
         contentSize: input.contentSize,
         imageSize: input.imageSize,
-        captureMode: captureModeLabel(input.captureMode, input.revealForced, input.segments),
+        captureMode: captureModeLabel(input.captureMode, input.revealForced, input.segments, input.heightHeld),
         trigger: input.trigger,
         recorderActive: input.recorderActive,
         stamp: input.stamp,
@@ -431,6 +438,7 @@ export interface SweepWidthInput {
   truncated: boolean;
   captureMode: CaptureMode;
   revealForced: number;
+  heightHeld?: number;
   segments: number;
 }
 
@@ -504,7 +512,7 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
         }),
         `- **Size:** ${width.fullSize.width}×${width.fullSize.height}`,
         `- **Image file:** ${width.imageSize.width}×${width.imageSize.height}`,
-        `- **Capture mode:** ${captureModeLabel(width.captureMode, width.revealForced, width.segments)}`,
+        `- **Capture mode:** ${captureModeLabel(width.captureMode, width.revealForced, width.segments, width.heightHeld)}`,
       ].join('\n'),
     );
   }

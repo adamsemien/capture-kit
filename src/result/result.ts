@@ -424,7 +424,9 @@ async function main(): Promise<void> {
     // The popup closes when this tab opens, which kills its clipboard write —
     // this page has focus now, so it honors the "report copied" promise.
     // Sweeps never promised a clipboard write, so they only get the button.
-    if (meta.kind === 'bundle') {
+    // With "Copy to clipboard after capture" on, the auto-copy below writes
+    // image and report together instead, so this report-only write steps aside.
+    if (meta.kind === 'bundle' && !meta.autoCopyImage) {
       void navigator.clipboard
         .writeText(clipboardVariant)
         .then(() => flashStatus('Report copied to your clipboard'))
@@ -432,6 +434,24 @@ async function main(): Promise<void> {
           /* the buttons are still there */
         });
     }
+  }
+
+  // "Copy to clipboard after capture": the whole point is no click, so it runs
+  // the same writes the buttons run, now. Chrome lets a focused document write
+  // the clipboard without a gesture, and this tab has focus as it opens. A
+  // failure is said on screen with the key that does it by hand - never
+  // silent, since the user is about to paste expecting an image.
+  if (meta.autoCopyImage && (meta.kind === 'bundle' || meta.kind === 'page')) {
+    void (async () => {
+      if (meta.kind === 'bundle' && meta.markdown) await copyImageAndReport(captureId, meta);
+      else await copyImage(captureId);
+      if (statusEl.classList.contains('error')) {
+        setStatus(
+          `Could not copy automatically - press ${shortcutLabel(meta.kind === 'bundle' && !!meta.markdown)} to copy`,
+          true,
+        );
+      }
+    })();
   }
 
   // Fit is the default view: a 12,000px capture opening at 100% shows a

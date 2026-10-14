@@ -92,6 +92,12 @@ export interface CaptureResult {
   segments: number;
   /** Elements still computed-hidden after the reveal scroll pass that were force-revealed. */
   revealForced: number;
+  /**
+   * Elements whose viewport-unit lengths the segmented path's virtual viewport
+   * would have resized, held at their real-viewport values instead. Absent or
+   * 0 on single-shot, where no viewport override happens.
+   */
+  heightHeld?: number;
   /** Present only when the URL footer was composited onto this image. */
   stamp?: StampInfo;
 }

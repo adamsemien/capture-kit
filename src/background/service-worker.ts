@@ -607,6 +607,7 @@ async function captureReport(
     imageFilename,
     captureMode: result.mode,
     revealForced: result.revealForced,
+    heightHeld: result.heightHeld,
     segments: result.segments,
     imageSize: result.imageSize,
     trigger,
@@ -760,7 +761,7 @@ async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> 
       await openResultTab(
         {
           kind: 'bundle',
-          captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments),
+          captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments, result.heightHeld),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
           images: [
@@ -775,6 +776,7 @@ async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> 
             },
           ],
           markdown,
+          autoCopyImage: settings.autoCopyImage,
           createdAt: capturedAt.getTime(),
         },
         [{ mime: imageMime, base64: result.imageBase64 }],
@@ -821,7 +823,7 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
       await openResultTab(
         {
           kind: 'page',
-          captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments),
+          captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments, result.heightHeld),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
           images: [
@@ -833,6 +835,7 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
               downloadId: written.downloadId,
             },
           ],
+          autoCopyImage: settings.autoCopyImage,
           createdAt: capturedAt.getTime(),
         },
         [{ mime, base64: result.imageBase64 }],
@@ -882,6 +885,12 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
 
     const basename = captureBasename(tab.title || '', tab.url, capturedAt);
     const downloadIds: (number | null)[] = [];
+    // The name each image actually landed under. writeBundleFile uniquifies a
+    // taken name (" (1)"), so the requested name is not evidence of the file:
+    // a second sweep of the same page in the same minute used to point its
+    // report and result tab at the FIRST sweep's images. Same fix the bundle
+    // and page paths already have.
+    const writtenNames: string[] = [];
     for (const capture of outcome.captures) {
       const written = await writeBundleFile(
         `${basename}_w${capture.width}.jpg`,
@@ -889,6 +898,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
         capture.result.imageBase64,
       );
       downloadIds.push(written.downloadId);
+      writtenNames.push(written.filename);
     }
 
     if (outcome.captures.length === 0) {
@@ -909,15 +919,16 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
       capturedAt,
       viewport: sweepMeta.viewport,
       stamp: outcome.captures[0]?.result.stamp,
-      widths: outcome.captures.map((capture) => ({
+      widths: outcome.captures.map((capture, index) => ({
         width: capture.width,
-        filename: `${basename}_w${capture.width}.jpg`,
+        filename: writtenNames[index],
         fullSize: capture.result.fullSize,
         contentSize: capture.result.contentSize,
         imageSize: capture.result.imageSize,
         truncated: capture.result.truncated,
         captureMode: capture.result.mode,
         revealForced: capture.result.revealForced,
+        heightHeld: capture.result.heightHeld,
         segments: capture.result.segments,
       })),
       failures: outcome.failures,
@@ -933,11 +944,11 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
       await openResultTab(
         {
           kind: 'sweep',
-          captureModeLabel: captureModeLabel(first.mode, first.revealForced, first.segments),
+          captureModeLabel: captureModeLabel(first.mode, first.revealForced, first.segments, first.heightHeld),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
           images: outcome.captures.map((capture, index) => ({
-            filename: `${basename}_w${capture.width}.jpg`,
+            filename: writtenNames[index],
             label: `${capture.width} px`,
             width: capture.result.imageSize.width,
             height: capture.result.imageSize.height,
