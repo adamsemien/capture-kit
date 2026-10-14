@@ -18,7 +18,8 @@ export { bandHeight, stampCaptureResult, stampLabel } from './stamp';
 
 /**
  * Per-capture strategy picker. Pages where the document barely scrolls but a
- * dominant inner scroller holds the content (Notion, Linear, Airtable) get
+ * inner scrollers hold the content (Notion, Linear, Airtable, multi-column app
+ * shells) get
  * the expansion strategy; everything else gets the plain CDP pipeline.
  */
 export async function getCaptureStrategy(tabId: number): Promise<CaptureStrategy> {

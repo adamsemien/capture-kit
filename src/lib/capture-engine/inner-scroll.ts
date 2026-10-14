@@ -5,7 +5,8 @@ import { CdpFullPageStrategy } from './cdp-fullpage';
  * Inner-scrollable-container capture (the Notion/Linear/Airtable shape): the
  * document itself is one viewport tall and the real content lives inside an
  * overflow:auto|scroll container, so a plain full-page capture shows a
- * cut-off window. This strategy expands the dominant inner scroller (and the
+ * cut-off window. This strategy expands every inner scroller holding hidden
+ * content - one column or several side by side - (and the
  * ancestors that clip it) to its natural size, then delegates to the
  * existing CDP pipeline, which re-measures and picks single-shot vs
  * segmented as usual. All style changes are restored in a finally.
@@ -19,7 +20,7 @@ type PageAction = 'detect' | 'expand' | 'restore';
 
 // Runs IN THE PAGE via chrome.scripting.executeScript — must stay fully
 // self-contained (no outer-scope references survive serialization).
-function innerScrollPage(action: PageAction): { shouldExpand: boolean } {
+function innerScrollPage(action: PageAction): { shouldExpand: boolean; count: number } {
   const STYLE_ID = '__capture_kit_expand__';
   const ATTR = 'data-capture-kit-expand';
   const ATTR_H = 'data-capture-kit-expand-h';
@@ -33,21 +34,62 @@ function innerScrollPage(action: PageAction): { shouldExpand: boolean } {
   };
   if (action === 'restore') {
     restore();
-    return { shouldExpand: false };
+    return { shouldExpand: false, count: 0 };
   }
 
   // Tiny scrollboxes (code snippets, dropdowns) are never the page's content.
   const MIN_SIZE = 200;
   // Hidden-content threshold: less than this much overflow isn't worth expanding.
   const THRESHOLD = 32;
+  // A column of the page, not a widget: each scroller must show at least this
+  // share of the viewport. The old rule was one scroller at 40% or nothing,
+  // which a three-column app shell can never meet - on a 2000px screen the
+  // NoBC OS event builder's settings pane is about 28% and its preview about
+  // 36%, so neither was unrolled and the capture came back one screen tall.
+  // 8% keeps a 300x250 chat widget (about 6% of a 1300x900 screen) out.
+  const MIN_SHARE = 0.08;
+  // Sideways expansion only for a scroller that dominates the screen. Widening
+  // a carousel or a table inside one column of a multi-column app would push
+  // every column beside it out of place.
+  const DOMINANT_SHARE = 0.4;
   const viewportW = window.innerWidth;
   const viewportH = window.innerHeight;
+  const viewportArea = viewportW * viewportH;
   const docEl = document.scrollingElement || document.documentElement;
   // "Barely scrolls" = less than one extra viewport of document scroll. If
   // the document scrolls normally, the standard paths already handle it.
   const docBarelyScrolls = docEl.scrollHeight - viewportH < viewportH;
 
-  let best: { el: Element; horizontal: boolean; score: number } | null = null;
+  // The page saying, in its own words, that this is shut - the same markers
+  // UNSTICK and FORCE_REVEAL veto on. A closed drawer can scroll and can sit
+  // partly on screen; unrolling it would paint it open.
+  const collapsedIds = new Set<string>();
+  for (const control of Array.from(
+    document.querySelectorAll('[aria-controls][aria-expanded="false"]'),
+  )) {
+    for (const id of (control.getAttribute('aria-controls') || '').split(/\s+/)) {
+      if (id) collapsedIds.add(id);
+    }
+  }
+  const closedByPage = (el: Element): boolean => {
+    for (let node: Element | null = el; node; node = node.parentElement) {
+      if (
+        node.getAttribute('aria-hidden') === 'true' ||
+        node.hasAttribute('hidden') ||
+        node.hasAttribute('inert') ||
+        (node.tagName === 'DIALOG' && !node.hasAttribute('open')) ||
+        (node.id && collapsedIds.has(node.id))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // Every scroller that holds hidden content, not one winner: a page split
+  // into columns that each scroll on their own needs every column unrolled to
+  // its own length.
+  const picked: { el: Element; horizontal: boolean }[] = [];
   const scrollable = /^(auto|scroll|overlay)$/;
   for (const el of Array.from(document.querySelectorAll('*'))) {
     if (el.clientHeight < MIN_SIZE || el.clientWidth < MIN_SIZE) continue;
@@ -60,34 +102,39 @@ function innerScrollPage(action: PageAction): { shouldExpand: boolean } {
     } catch {
       continue;
     }
-    const vertical = vHidden > THRESHOLD && scrollable.test(style.overflowY);
-    const horizontal = hHidden > THRESHOLD && scrollable.test(style.overflowX);
-    if (!vertical && !horizontal) continue;
     const rect = el.getBoundingClientRect();
     const visW = Math.max(0, Math.min(rect.right, viewportW) - Math.max(rect.left, 0));
     const visH = Math.max(0, Math.min(rect.bottom, viewportH) - Math.max(rect.top, 0));
     const visibleArea = visW * visH;
-    // The scroller must dominate the viewport — a sidebar or chat widget
-    // being scrollable is not the Notion shape.
-    if (visibleArea < 0.4 * viewportW * viewportH) continue;
-    const score = visibleArea + vHidden + hHidden;
-    if (!best || score > best.score) best = { el, horizontal, score };
+    if (visibleArea < MIN_SHARE * viewportArea) continue;
+    const vertical = vHidden > THRESHOLD && scrollable.test(style.overflowY);
+    const horizontal =
+      hHidden > THRESHOLD &&
+      scrollable.test(style.overflowX) &&
+      visibleArea >= DOMINANT_SHARE * viewportArea;
+    if (!vertical && !horizontal) continue;
+    // Named apart from FORCE_REVEAL's declaredClosed: CHECK A11 finds that
+    // script's veto line by its exact text and needs it to be unique.
+    if (closedByPage(el)) continue;
+    picked.push({ el, horizontal });
   }
 
-  const shouldExpand = Boolean(best) && docBarelyScrolls;
-  if (action === 'detect' || !shouldExpand || !best) return { shouldExpand };
+  const shouldExpand = picked.length > 0 && docBarelyScrolls;
+  if (action === 'detect' || !shouldExpand) return { shouldExpand, count: picked.length };
 
   restore(); // idempotency if a previous capture died before restoring
-  best.el.setAttribute(ATTR, 'scroller');
-  if (best.horizontal) best.el.setAttribute(ATTR_H, '');
+  for (const { el } of picked) el.setAttribute(ATTR, 'scroller');
   // Every ancestor that clips (or could clip) the expanded content must
-  // open up too — app shells chain height:100% + overflow:hidden from <html>
-  // down to the scroller.
-  let node: Element | null = best.el.parentElement;
-  while (node) {
-    node.setAttribute(ATTR, 'ancestor');
-    if (best.horizontal) node.setAttribute(ATTR_H, '');
-    node = node.parentElement;
+  // open up too - app shells chain height:100% + overflow:hidden from <html>
+  // down to each scroller. A scroller nested in another keeps its own role.
+  for (const { el, horizontal } of picked) {
+    if (horizontal) el.setAttribute(ATTR_H, '');
+    let node: Element | null = el.parentElement;
+    while (node) {
+      if (!node.hasAttribute(ATTR)) node.setAttribute(ATTR, 'ancestor');
+      if (horizontal) node.setAttribute(ATTR_H, '');
+      node = node.parentElement;
+    }
   }
   const styleEl = document.createElement('style');
   styleEl.id = STYLE_ID;
@@ -112,22 +159,30 @@ function innerScrollPage(action: PageAction): { shouldExpand: boolean } {
     `[${ATTR}="ancestor"]{height:auto !important;max-height:none !important;}` +
     `[${ATTR_H}]{width:auto !important;max-width:none !important;}`;
   document.documentElement.appendChild(styleEl);
-  return { shouldExpand: true };
+  return { shouldExpand: true, count: picked.length };
+}
+
+interface InnerScrollOutcome {
+  shouldExpand: boolean;
+  /** Scrollers unrolled (expand) or that would be (detect). */
+  count: number;
 }
 
 async function runInnerScrollScript(
   tabId: number,
   action: PageAction,
-): Promise<{ shouldExpand: boolean }> {
+): Promise<InnerScrollOutcome> {
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: innerScrollPage,
     args: [action],
   });
-  return (results[0]?.result as { shouldExpand: boolean } | undefined) ?? { shouldExpand: false };
+  return (
+    (results[0]?.result as InnerScrollOutcome | undefined) ?? { shouldExpand: false, count: 0 }
+  );
 }
 
-/** True when the page has the Notion shape: static document, dominant inner scroller. */
+/** True when the document barely scrolls and at least one inner scroller holds the content. */
 export async function detectInnerScroll(tabId: number): Promise<boolean> {
   try {
     return (await runInnerScrollScript(tabId, 'detect')).shouldExpand;
@@ -137,8 +192,9 @@ export async function detectInnerScroll(tabId: number): Promise<boolean> {
   }
 }
 
-export async function applyInnerScrollExpansion(tabId: number): Promise<void> {
-  await runInnerScrollScript(tabId, 'expand');
+/** Unrolls every qualifying scroller; returns how many it unrolled. */
+export async function applyInnerScrollExpansion(tabId: number): Promise<number> {
+  return (await runInnerScrollScript(tabId, 'expand')).count;
 }
 
 export async function restoreInnerScrollExpansion(tabId: number): Promise<void> {
@@ -154,10 +210,10 @@ export class InnerScrollExpansionStrategy implements CaptureStrategy {
   private readonly inner = new CdpFullPageStrategy();
 
   async capture(request: CaptureRequest): Promise<CaptureResult> {
-    await applyInnerScrollExpansion(request.tabId);
+    const innerScrollers = await applyInnerScrollExpansion(request.tabId);
     try {
       const result = await this.inner.capture(request);
-      return { ...result, mode: 'expanded-inner-scroll' };
+      return { ...result, mode: 'expanded-inner-scroll', innerScrollers };
     } finally {
       await restoreInnerScrollExpansion(request.tabId);
     }

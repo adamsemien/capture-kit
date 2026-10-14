@@ -608,6 +608,7 @@ async function captureReport(
     captureMode: result.mode,
     revealForced: result.revealForced,
     heightHeld: result.heightHeld,
+    innerScrollers: result.innerScrollers,
     segments: result.segments,
     imageSize: result.imageSize,
     trigger,
@@ -761,7 +762,13 @@ async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> 
       await openResultTab(
         {
           kind: 'bundle',
-          captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments, result.heightHeld),
+          captureModeLabel: captureModeLabel(
+            result.mode,
+            result.revealForced,
+            result.segments,
+            result.heightHeld,
+            result.innerScrollers,
+          ),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
           images: [
@@ -823,7 +830,13 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
       await openResultTab(
         {
           kind: 'page',
-          captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments, result.heightHeld),
+          captureModeLabel: captureModeLabel(
+            result.mode,
+            result.revealForced,
+            result.segments,
+            result.heightHeld,
+            result.innerScrollers,
+          ),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
           images: [

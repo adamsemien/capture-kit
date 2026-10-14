@@ -30,6 +30,8 @@ export interface BundleInput {
   revealForced: number;
   /** Elements whose viewport-unit lengths were held at the real viewport (segmented only). */
   heightHeld?: number;
+  /** Inner scrollers unrolled (expanded-inner-scroll mode only). */
+  innerScrollers?: number;
   /** Segments stitched for the image (1 = true single-shot). */
   segments: number;
   /** Dimensions of the file on disk, footer included. */
@@ -92,8 +94,16 @@ export function captureModeLabel(
   revealForced: number,
   segments: number,
   heightHeld = 0,
+  innerScrollers = 0,
 ): string {
-  const strategy = mode === 'expanded-inner-scroll' ? 'expanded inner scroll' : 'standard';
+  // The count says how many columns were unrolled - a reader comparing a
+  // three-column app to its capture needs to know whether all three were.
+  const strategy =
+    mode === 'expanded-inner-scroll'
+      ? innerScrollers > 1
+        ? `expanded inner scroll (${innerScrollers} scrollers)`
+        : 'expanded inner scroll'
+      : 'standard';
   const path = segments > 1 ? `segmented, ${segments} segments` : 'single-shot';
   const reveal = revealForced > 0 ? ` + reveal-forced (${revealForced} elements)` : '';
   // Says the page was altered for the capture, and how: viewport-unit lengths
@@ -304,7 +314,13 @@ export function buildBundleMarkdown(input: BundleInput): string {
         viewport: meta.viewport,
         contentSize: input.contentSize,
         imageSize: input.imageSize,
-        captureMode: captureModeLabel(input.captureMode, input.revealForced, input.segments, input.heightHeld),
+        captureMode: captureModeLabel(
+          input.captureMode,
+          input.revealForced,
+          input.segments,
+          input.heightHeld,
+          input.innerScrollers,
+        ),
         trigger: input.trigger,
         recorderActive: input.recorderActive,
         stamp: input.stamp,
