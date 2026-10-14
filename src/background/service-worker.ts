@@ -885,6 +885,12 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
 
     const basename = captureBasename(tab.title || '', tab.url, capturedAt);
     const downloadIds: (number | null)[] = [];
+    // The name each image actually landed under. writeBundleFile uniquifies a
+    // taken name (" (1)"), so the requested name is not evidence of the file:
+    // a second sweep of the same page in the same minute used to point its
+    // report and result tab at the FIRST sweep's images. Same fix the bundle
+    // and page paths already have.
+    const writtenNames: string[] = [];
     for (const capture of outcome.captures) {
       const written = await writeBundleFile(
         `${basename}_w${capture.width}.jpg`,
@@ -892,6 +898,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
         capture.result.imageBase64,
       );
       downloadIds.push(written.downloadId);
+      writtenNames.push(written.filename);
     }
 
     if (outcome.captures.length === 0) {
@@ -912,9 +919,9 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
       capturedAt,
       viewport: sweepMeta.viewport,
       stamp: outcome.captures[0]?.result.stamp,
-      widths: outcome.captures.map((capture) => ({
+      widths: outcome.captures.map((capture, index) => ({
         width: capture.width,
-        filename: `${basename}_w${capture.width}.jpg`,
+        filename: writtenNames[index],
         fullSize: capture.result.fullSize,
         contentSize: capture.result.contentSize,
         imageSize: capture.result.imageSize,
@@ -941,7 +948,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
           images: outcome.captures.map((capture, index) => ({
-            filename: `${basename}_w${capture.width}.jpg`,
+            filename: writtenNames[index],
             label: `${capture.width} px`,
             width: capture.result.imageSize.width,
             height: capture.result.imageSize.height,
