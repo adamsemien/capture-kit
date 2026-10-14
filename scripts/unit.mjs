@@ -23,7 +23,7 @@ const ENTRY = `
 export { classifyEnvironment } from '${ROOT}/src/lib/env-marker.ts';
 export { bandHeight, stampLabel } from '${ROOT}/src/lib/capture-engine/stamp.ts';
 export { readEncodedImageSize } from '${ROOT}/src/lib/capture-engine/image-size.ts';
-export { contextBlock, buildBundleMarkdown, withLatestNotice, LATEST_NOTICE, OUTPUT_README } from '${ROOT}/src/lib/bundle/markdown.ts';
+export { contextBlock, buildBundleMarkdown, captureModeLabel, withLatestNotice, LATEST_NOTICE, OUTPUT_README } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { planScrollOffsets } from '${ROOT}/src/lib/capture-engine/segments.ts';
 export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 `;
@@ -441,6 +441,28 @@ test('the horizontal rule releases width for both roles', () => {
   // Unscoped by role on purpose: a horizontal scroller and its ancestors both
   // need the width release, and neither needs an overflow change to get it.
   assert.ok(!/="(scroller|ancestor)"/.test(rule), `horizontal rule must stay role-agnostic: ${rule}`);
+});
+
+heading('captureModeLabel - viewport heights held');
+
+test('names the hold with its count on a segmented capture', () => {
+  assert.equal(
+    mod.captureModeLabel('standard', 0, 2, 6),
+    'standard, segmented, 2 segments + viewport heights held (6 elements)',
+  );
+});
+
+test('says nothing about the hold when nothing was held', () => {
+  assert.equal(mod.captureModeLabel('standard', 0, 1, 0), 'standard, single-shot');
+  assert.equal(mod.captureModeLabel('standard', 0, 1), 'standard, single-shot');
+});
+
+test('keeps reveal-forced ahead of the hold', () => {
+  assert.equal(
+    mod.captureModeLabel('expanded-inner-scroll', 17, 3, 2),
+    'expanded inner scroll, segmented, 3 segments + reveal-forced (17 elements)' +
+      ' + viewport heights held (2 elements)',
+  );
 });
 
 rmSync(dir, { recursive: true, force: true });

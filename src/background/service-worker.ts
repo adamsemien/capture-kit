@@ -607,6 +607,7 @@ async function captureReport(
     imageFilename,
     captureMode: result.mode,
     revealForced: result.revealForced,
+    heightHeld: result.heightHeld,
     segments: result.segments,
     imageSize: result.imageSize,
     trigger,
@@ -760,7 +761,7 @@ async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> 
       await openResultTab(
         {
           kind: 'bundle',
-          captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments),
+          captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments, result.heightHeld),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
           images: [
@@ -821,7 +822,7 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
       await openResultTab(
         {
           kind: 'page',
-          captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments),
+          captureModeLabel: captureModeLabel(result.mode, result.revealForced, result.segments, result.heightHeld),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
           images: [
@@ -918,6 +919,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
         truncated: capture.result.truncated,
         captureMode: capture.result.mode,
         revealForced: capture.result.revealForced,
+        heightHeld: capture.result.heightHeld,
         segments: capture.result.segments,
       })),
       failures: outcome.failures,
@@ -933,7 +935,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
       await openResultTab(
         {
           kind: 'sweep',
-          captureModeLabel: captureModeLabel(first.mode, first.revealForced, first.segments),
+          captureModeLabel: captureModeLabel(first.mode, first.revealForced, first.segments, first.heightHeld),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
           images: outcome.captures.map((capture, index) => ({
