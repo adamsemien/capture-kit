@@ -6,6 +6,10 @@
 //
 // CHECK A13 - viewport-sized sections keep their real height in a segmented
 // capture.
+// CHECK A14 - "Copy to clipboard after capture".
+// CHECK A15 - a chosen-folder write that fails partway leaves nothing behind.
+// CHECK A16 - every scrolling column of a multi-column app shell is unrolled
+// (NOBC-151).
 //
 // The defect: the segmented path overrides the viewport to as much as
 // segmentSize tall, so every viewport-unit length resolves against that
@@ -45,7 +49,9 @@ if (!CHROME || !existsSync(CHROME)) {
   process.exit(2);
 }
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
-const DIST = `${ROOT}/dist`;
+// CK_DIST points the checks at another build, e.g. an older commit, to show
+// a verdict fails without the change under test.
+const DIST = process.env.CK_DIST ?? `${ROOT}/dist`;
 const WORK = process.env.CK_ROUND_WORK ?? '/tmp/ck-round-checks';
 const DOWNLOADS = `${WORK}/downloads`;
 const PORT = Number(process.env.CK_CDP_PORT ?? 9431);
@@ -202,6 +208,134 @@ const A15_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>a15</t
   document.title = 'RESULT ' + JSON.stringify(out);
 </script></body></html>`;
 
+// CHECK A16's fixture: the NoBC OS event builder's shape. A document that does
+// not scroll, three columns side by side, two of which scroll on their own,
+// and neither of those covers 40% of the screen - the old single-winner rule's
+// floor. Each scrolling column ends in a sentinel colour that paints only if
+// that column was unrolled to its end. The settings column carries a sticky
+// tab bar that must paint once, not once per screen. A small fixed chat widget
+// scrolls too, and its hidden content must stay hidden. ?shell=fixed puts the
+// whole app in a position:fixed inset:0 shell, the other common app shape.
+const A16 = {
+  sentinelPreview: [0, 180, 90],
+  sentinelSettings: [230, 120, 0],
+  stickyTabs: [120, 0, 160],
+  widgetHidden: [250, 0, 120],
+  // The hero of the page inside the preview iframe: height:100vh, so it is
+  // exactly as tall as the frame. A frame that grew with its column makes
+  // the hero grow with it.
+  frameHero: [20, 90, 220],
+  // At a 1300px window each scrolling column is 500 / 1300 = 38% of the
+  // screen, under the old 40% floor - the builder's shape. A settings column
+  // that reached 40% would be unrolled by the old rule too, and the preview
+  // would stretch beside it, so the check would prove nothing.
+  columns: { nav: 150, preview: 300 + 250, settings: 800 + 250 },
+};
+const rgb = (c) => `rgb(${c.join(',')})`;
+// ?shell=app is the NoBC OS operator shell, measured on the live builder on
+// 2026-10-14: a min-h-dvh flex row, a flex-1 flex-col <main> with a header,
+// and the builder row as a flex:1 1 0px, min-height:0, overflow:hidden child
+// of that column. A flex-basis of 0 means the row's size never comes from its
+// content, so unrolled columns cannot push it taller and its overflow:hidden
+// clips them - the capture stayed one screen tall with two scrollers expanded.
+// The settings column also holds a <textarea> that scrolls; form controls are
+// never unrolled.
+// ?frame=1 swaps the preview column for the builder's live preview: a pane
+// whose child is an iframe filling it (h-full), the page inside sized in vh.
+const FRAME_DOC = `<!doctype html><html><head><style>html,body{margin:0}
+.hero{height:100vh;background:rgb(${A16.frameHero.join(',')})}.rest{height:2000px;background:#222}</style></head>
+<body><div class="hero"></div><div class="rest"></div></body></html>`;
+const appShellPage = (withFrame = false) => `<!doctype html>
+<html><head><meta charset="utf-8"><title>ready</title><style>
+html,body{margin:0;font:14px sans-serif}
+.app{display:flex;min-height:100dvh}
+.side{width:300px;flex:none;background:#3a3a3a}
+main{display:flex;flex-direction:column;flex:1 1 0%;min-width:0;min-height:100dvh}
+header{height:48px;flex:none;background:#ddd}
+.row{display:flex;flex:1 1 0px;min-height:0;overflow:hidden}
+.preview{flex:1 1 0%;min-height:0;overflow:auto;background:#111}
+.settings{flex:1 1 0%;overflow-y:auto;background:#f6f3ee}
+.tabs{position:sticky;top:0;height:56px;background:${rgb(A16.stickyTabs)}}
+.r{height:120px;border-bottom:1px solid #ccc}
+.sentinel-preview{height:160px;background:${rgb(A16.sentinelPreview)}}
+.sentinel-settings{height:160px;background:${rgb(A16.sentinelSettings)}}
+textarea{display:block;width:90%;height:220px;margin:12px}
+</style></head><body>
+<div class="app"><div class="side"></div><main><header></header><div class="row">
+  ${withFrame
+    ? `<div class="preview" style="overflow:hidden;display:flex;flex-direction:column"><iframe style="border:0;width:100%;flex:1 1 0%;min-height:0" srcdoc="${FRAME_DOC.replace(/"/g, '&quot;')}"></iframe></div>`
+    : `<div class="preview">${'<div class="r"></div>'.repeat(18)}<div class="sentinel-preview"></div></div>`}
+  <div class="settings"><div class="tabs"></div><textarea>${'line\n'.repeat(60)}</textarea>${'<div class="r"></div>'.repeat(26)}<div class="sentinel-settings"></div></div>
+</div></main></div>
+<script>
+  document.addEventListener('capture-kit:capture-complete', (e) => {
+    document.title = 'RESULT ' + JSON.stringify({ detail: e.detail, innerHeight, innerWidth });
+  });
+  addEventListener('load', () => setTimeout(() => {
+    document.dispatchEvent(new CustomEvent('capture-kit:capture'));
+  }, 800));
+</script></body></html>`;
+
+const multiColumnPage = (fixedShell) => `<!doctype html>
+<html><head><meta charset="utf-8"><title>ready</title><style>
+html,body{margin:0;height:100%;overflow:hidden;font:14px sans-serif}
+.shell{display:flex;height:100vh;${fixedShell ? 'position:fixed;inset:0;height:auto;' : ''}}
+nav{flex:1;min-width:0;background:#3a3a3a;color:#ddd;padding:16px;box-sizing:border-box}
+.preview{width:500px;flex:none;overflow-y:auto;background:#111}
+.settings{width:500px;flex:none;overflow-y:auto;background:#f6f3ee}
+.tabs{position:sticky;top:0;height:56px;background:${rgb(A16.stickyTabs)}}
+.row{height:120px;border-bottom:1px solid #ddd}
+.preview .row{border-color:#222}
+.sentinel-preview{height:160px;background:${rgb(A16.sentinelPreview)}}
+.sentinel-settings{height:160px;background:${rgb(A16.sentinelSettings)}}
+.widget{position:fixed;right:16px;bottom:16px;width:280px;height:240px;overflow-y:auto;background:#fff;box-shadow:0 2px 12px #0004}
+.widget .top{height:240px;background:#fafafa}
+.widget .hidden{height:600px;background:${rgb(A16.widgetHidden)}}
+</style></head><body>
+<div class="shell">
+  <nav>Dashboard<br>Events<br>Members</nav>
+  <div class="preview">${'<div class="row"></div>'.repeat(18)}<div class="sentinel-preview"></div></div>
+  <div class="settings"><div class="tabs"></div>${'<div class="row"></div>'.repeat(26)}<div class="sentinel-settings"></div></div>
+</div>
+<div class="widget"><div class="top"></div><div class="hidden"></div></div>
+<script>
+  document.addEventListener('capture-kit:capture-complete', (e) => {
+    document.title = 'RESULT ' + JSON.stringify({ detail: e.detail, innerHeight, innerWidth });
+  });
+  addEventListener('load', () => setTimeout(() => {
+    document.dispatchEvent(new CustomEvent('capture-kit:capture'));
+  }, 800));
+</script></body></html>`;
+
+// Counts each named colour down one column of the image: total pixels and
+// the number of separate runs (a sticky bar painted per screen is many runs).
+const INSPECT_COLUMNS = `<!doctype html><html><head><meta charset="utf-8"><title>inspecting</title></head><body><script>
+  const q = new URLSearchParams(location.search);
+  const spec = JSON.parse(q.get('spec'));
+  const img = new Image();
+  img.onerror = () => { document.title = 'RESULT ' + JSON.stringify({ error: 'decode failed' }); };
+  img.onload = () => {
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const out = { width: c.width, height: c.height, colours: {} };
+    for (const s of spec) {
+      const x = Math.min(c.width - 1, s.x);
+      const col = ctx.getImageData(x, 0, 1, c.height).data;
+      let pixels = 0, runs = 0, inRun = false;
+      for (let y = 0; y < c.height; y++) {
+        const hit = Math.abs(col[y*4] - s.rgb[0]) < 24 && Math.abs(col[y*4+1] - s.rgb[1]) < 24 && Math.abs(col[y*4+2] - s.rgb[2]) < 24;
+        if (hit) { pixels++; if (!inRun) runs++; }
+        inRun = hit;
+      }
+      out.colours[s.name] = { pixels, runs };
+    }
+    document.title = 'RESULT ' + JSON.stringify(out);
+  };
+  img.src = '/image?file=' + encodeURIComponent(q.get('file'));
+</script></body></html>`;
+
 // Decodes the capture in a Chrome tab (no image decoder in Node, no
 // dependencies here) and reports run lengths of each fixture colour down the
 // middle column.
@@ -243,6 +377,17 @@ const server = createServer((req, res) => {
   if (url.pathname === '/fixture') {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(FIXTURE);
+  } else if (url.pathname === '/multi-column') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    const shell = url.searchParams.get('shell');
+    res.end(
+      shell === 'app'
+        ? appShellPage(url.searchParams.get('frame') === '1')
+        : multiColumnPage(shell === 'fixed'),
+    );
+  } else if (url.pathname === '/inspect-columns') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(INSPECT_COLUMNS);
   } else if (url.pathname === '/a15') {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(A15_PAGE);
@@ -442,8 +587,8 @@ function newest(dir, ext) {
   return found.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0] ?? null;
 }
 
-async function captureFixture() {
-  const url = `http://127.0.0.1:${HTTP_PORT}/fixture?n=${Date.now()}`;
+async function captureFixture(path = '/fixture', inspect = (image) => `/inspect?file=${encodeURIComponent(image)}`) {
+  const url = `http://127.0.0.1:${HTTP_PORT}${path}${path.includes('?') ? '&' : '?'}n=${Date.now()}`;
   await cdp(`/json/new?${encodeURIComponent(url)}`, 'PUT');
   await sleep(500);
   const tab = (await cdp('/json/list')).find((t) => t.url === url);
@@ -458,7 +603,7 @@ async function captureFixture() {
     if (!(image && report)) await sleep(300);
   }
   if (!image) return { page, error: 'no image written' };
-  const inspectUrl = `http://127.0.0.1:${HTTP_PORT}/inspect?file=${encodeURIComponent(image)}`;
+  const inspectUrl = `http://127.0.0.1:${HTTP_PORT}${inspect(image)}`;
   await cdp(`/json/new?${encodeURIComponent(inspectUrl)}`, 'PUT');
   await sleep(500);
   const itab = (await cdp('/json/list')).find((t) => t.url === inspectUrl);
@@ -675,6 +820,94 @@ async function clipboardAfterCapture(id) {
     r.control?.threw === true && r.control?.left === '',
     `threw ${r.control?.threw}, left ${JSON.stringify(r.control?.left)}`,
   );
+}
+
+// --- CHECK A16 - every scrolling column is unrolled (NOBC-151) -------------
+// The control is a real older build, not a neutered copy: CK_CONTROL_DIST
+// points at main's dist from before this change, which unrolled one scroller
+// at 40% of the screen or nothing.
+{
+  const spec = [
+    { name: 'previewEnd', rgb: A16.sentinelPreview, x: A16.columns.preview },
+    { name: 'settingsEnd', rgb: A16.sentinelSettings, x: A16.columns.settings },
+    { name: 'stickyTabs', rgb: A16.stickyTabs, x: A16.columns.settings },
+    // The widget sits bottom-right; its hidden content would land in the
+    // settings column if it were unrolled.
+    { name: 'widgetHidden', rgb: A16.widgetHidden, x: A16.columns.settings + 80 },
+  ];
+  const inspect = (image) => `/inspect-columns?file=${encodeURIComponent(image)}&spec=${encodeURIComponent(JSON.stringify(spec))}`;
+  const runA16 = async (label, shell) => {
+    const r = await captureFixture(`/multi-column${shell === 'flex' ? '' : `?shell=${shell}`}`, inspect);
+    console.log(`\n--- ${label} ---`);
+    if (r.error) {
+      console.log('error: ' + r.error);
+      return null;
+    }
+    console.log('report: ' + r.modeLine.trim());
+    console.log('image: ' + JSON.stringify(r.px));
+    return r;
+  };
+  await launch(DIST);
+  for (const shell of ['flex', 'fixed', 'app']) {
+    const r = await runA16(`A16 real build, ${shell} shell`, shell);
+    if (!r) {
+      verdict(`A16 ${shell} capture ran`, false, 'no capture');
+      continue;
+    }
+    const c = r.px.colours;
+    verdict(`A16 ${shell} preview column unrolled to its end`, c.previewEnd.pixels >= 140, `sentinel ${c.previewEnd.pixels}px`);
+    verdict(`A16 ${shell} settings column unrolled to its end`, c.settingsEnd.pixels >= 140, `sentinel ${c.settingsEnd.pixels}px`);
+    verdict(`A16 ${shell} sticky tab bar paints once`, c.stickyTabs.runs === 1, `${c.stickyTabs.runs} run(s), ${c.stickyTabs.pixels}px`);
+    verdict(`A16 ${shell} chat widget stays closed`, c.widgetHidden.pixels === 0, `${c.widgetHidden.pixels}px of its hidden content`);
+    // Exactly two: the textarea in the app shell scrolls too and must not count.
+    verdict(`A16 ${shell} report counts both columns`, /expanded inner scroll \(2 scrollers\)/.test(r.modeLine), r.modeLine.trim());
+  }
+  // The builder's preview: the settings column unrolls, the embedded page
+  // keeps its on-screen height (757 - 48 header = 709px of hero).
+  {
+    const fspec = [
+      { name: 'frameHero', rgb: A16.frameHero, x: A16.columns.preview },
+      { name: 'settingsEnd', rgb: A16.sentinelSettings, x: A16.columns.settings },
+    ];
+    const r = await captureFixture(
+      '/multi-column?shell=app&frame=1',
+      (image) => `/inspect-columns?file=${encodeURIComponent(image)}&spec=${encodeURIComponent(JSON.stringify(fspec))}`,
+    );
+    console.log('\n--- A16 real build, app shell with a preview iframe ---');
+    if (r.error) {
+      verdict('A16 frame capture ran', false, r.error);
+    } else {
+      console.log('report: ' + r.modeLine.trim());
+      console.log('image: ' + JSON.stringify(r.px));
+      const c = r.px.colours;
+      const onScreen = r.page.innerHeight - 48;
+      verdict('A16 frame settings column still unrolled', c.settingsEnd.pixels >= 140, `sentinel ${c.settingsEnd.pixels}px`);
+      verdict(
+        'A16 frame embedded page keeps its screen height',
+        Math.abs(c.frameHero.pixels - onScreen) <= 4 && c.frameHero.runs === 1,
+        `hero ${c.frameHero.pixels}px in ${c.frameHero.runs} run(s), on screen ${onScreen}px`,
+      );
+      verdict(
+        'A16 frame report says the frame was kept',
+        /1 embedded frame kept at screen height/.test(r.modeLine),
+        r.modeLine.trim(),
+      );
+    }
+  }
+
+  const control = process.env.CK_CONTROL_DIST;
+  if (!control || !existsSync(control)) {
+    console.log('\nA16 falsifiability skipped: set CK_CONTROL_DIST to a dist built from main before this change');
+  } else {
+    await launch(control);
+    const r = await runA16('A16 falsifiability - control build (one scroller at 40% or nothing)', 'flex');
+    const c = r?.px?.colours;
+    verdict(
+      'A16 is falsifiable',
+      !!c && c.previewEnd.pixels === 0 && c.settingsEnd.pixels === 0,
+      c ? `control: preview sentinel ${c.previewEnd.pixels}px, settings sentinel ${c.settingsEnd.pixels}px` : 'control capture failed',
+    );
+  }
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : `${failures} FAIL`}`);
