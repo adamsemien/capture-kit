@@ -136,12 +136,12 @@ async function save(): Promise<void> {
 }
 
 /**
- * The copy happens in the result tab, the one document that has focus when a
- * capture finishes. With that tab off there is nothing to write from, so the
- * option is shown disabled rather than left on and silently doing nothing.
+ * Both combinations work now: with the result tab on, the tab copies as it
+ * opens; with it off, the captured page copies and no tab opens. Kept as a
+ * hook so the two fields can be linked again if that ever changes.
  */
 function syncAutoCopy(): void {
-  autoCopyInput.disabled = !openResultInput.checked;
+  autoCopyInput.disabled = false;
 }
 
 function flashStatus(text: string): void {

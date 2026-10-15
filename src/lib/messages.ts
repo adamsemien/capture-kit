@@ -165,10 +165,12 @@ export type TabMessage =
   | { type: 'GET_SNAPSHOT' }
   | { type: 'GET_STATS' }
   | { type: 'COPY_TEXT'; text: string }
+  /** Image (always PNG) plus optional report text, written by the focused page. */
+  | { type: 'COPY_IMAGE'; pngBase64: string; text?: string }
   | { type: 'AGENT_CAPTURE_COMPLETE'; detail: AgentCaptureDetail };
 
 export type CaptureResponse =
-  | { ok: true; imageFilename: string; markdown?: string }
+  | { ok: true; imageFilename: string; markdown?: string; copied?: boolean }
   | { ok: false; reason: string };
 
 export type SweepResponse =

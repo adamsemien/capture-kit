@@ -7,6 +7,8 @@
 // variables — if the worker dies mid-capture, the capture fails cleanly and
 // nothing is corrupted.
 
+import { copiesFromPage, opensResultTab } from '../lib/clipboard-only';
+import { toClipboardPng } from '../lib/clipboard-png';
 import { captureFullPage } from '../lib/capture-engine';
 import { captureSweep } from '../lib/capture-engine/sweep';
 import {
@@ -696,6 +698,41 @@ async function captureReport(
  * used to gate is now `trigger !== 'popup'` — identical behaviour, since the
  * popup shows its own status and is the only path that never flashed a badge.
  */
+/**
+ * Re-encode the capture as PNG here (the clipboard takes image/png only) and
+ * hand it to the captured tab's content script to write, report alongside.
+ * False on any failure - no recorder in the tab, the page lost focus, a
+ * permissions policy that blocks the clipboard - and the caller opens the
+ * result tab instead, so a capture never ends with nothing to paste.
+ */
+async function copyImageThroughPage(
+  tabId: number,
+  mime: string,
+  base64: string,
+  text: string,
+): Promise<boolean> {
+  try {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const png = await toClipboardPng(new Blob([bytes], { type: mime }));
+    const pngBytes = new Uint8Array(await png.arrayBuffer());
+    let pngBinary = '';
+    for (let i = 0; i < pngBytes.length; i += 0x8000) {
+      pngBinary += String.fromCharCode(...pngBytes.subarray(i, i + 0x8000));
+    }
+    const response = (await chrome.tabs.sendMessage(tabId, {
+      type: 'COPY_IMAGE',
+      pngBase64: btoa(pngBinary),
+      text,
+    })) as { ok?: boolean } | undefined;
+    return response?.ok === true;
+  } catch (error) {
+    console.error('[capture-kit] clipboard copy through the page failed:', error);
+    return false;
+  }
+}
+
 async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> {
   const announce = trigger !== 'popup';
   try {
@@ -749,17 +786,24 @@ async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> 
       /* best-effort */
     }
 
-    // Best-effort page-side clipboard write. On the keyboard-shortcut path
-    // the page is the focused document, so this is the write that lands; when
-    // the popup is open instead, this quietly fails and the popup (which has
-    // focus) writes the clipboard from the response below.
-    try {
-      await chrome.tabs.sendMessage(tabId, { type: 'COPY_TEXT', text: clipboardMarkdown });
-    } catch {
-      /* no recorder to copy through */
+    // "Copy to clipboard after capture" with no result tab: image and report
+    // go straight to the clipboard through the page that was just captured.
+    let copied = false;
+    if (copiesFromPage(settings, trigger)) {
+      copied = await copyImageThroughPage(tabId, imageMime, result.imageBase64, clipboardMarkdown);
+    } else {
+      // Best-effort page-side clipboard write. On the keyboard-shortcut path
+      // the page is the focused document, so this is the write that lands;
+      // when the popup is open instead, this quietly fails and the popup
+      // (which has focus) writes the clipboard from the response below.
+      try {
+        await chrome.tabs.sendMessage(tabId, { type: 'COPY_TEXT', text: clipboardMarkdown });
+      } catch {
+        /* no recorder to copy through */
+      }
     }
 
-    if (settings.openResult) {
+    if (opensResultTab(settings, copied)) {
       await openResultTab(
         {
           kind: 'bundle',
@@ -793,7 +837,7 @@ async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> 
     }
 
     await endIndicator(true, announce);
-    return { ok: true, imageFilename, markdown: clipboardMarkdown };
+    return { ok: true, imageFilename, markdown: clipboardMarkdown, copied };
   } catch (error) {
     const reason = describeError(error);
     console.error('[capture-kit] bundle capture failed:', error);

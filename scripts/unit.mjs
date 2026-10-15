@@ -26,6 +26,7 @@ export { readEncodedImageSize } from '${ROOT}/src/lib/capture-engine/image-size.
 export { contextBlock, buildBundleMarkdown, captureModeLabel, withLatestNotice, LATEST_NOTICE, OUTPUT_README } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { planScrollOffsets } from '${ROOT}/src/lib/capture-engine/segments.ts';
 export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
+export { copiesFromPage, opensResultTab } from '${ROOT}/src/lib/clipboard-only.ts';
 `;
 
 const entryPath = join(dir, 'entry.ts');
@@ -500,6 +501,42 @@ test('keeps reveal-forced ahead of the hold', () => {
     'expanded inner scroll, segmented, 3 segments + reveal-forced (17 elements)' +
       ' + viewport heights held (2 elements)',
   );
+});
+
+heading('straight to clipboard - when the page copies and when a tab opens');
+
+const ON = { autoCopyImage: true, openResult: false };
+test('shortcut and icon copy from the page when the tab is off', () => {
+  assert.equal(mod.copiesFromPage(ON, 'shortcut'), true);
+  assert.equal(mod.copiesFromPage(ON, 'icon'), true);
+});
+
+test('popup, agent, session and sweep never copy from the page', () => {
+  for (const trigger of ['popup', 'agent', 'session', 'sweep']) {
+    assert.equal(mod.copiesFromPage(ON, trigger), false, trigger);
+  }
+});
+
+test('nothing copies from the page unless both settings ask for it', () => {
+  assert.equal(mod.copiesFromPage({ autoCopyImage: false, openResult: false }, 'shortcut'), false);
+  assert.equal(mod.copiesFromPage({ autoCopyImage: true, openResult: true }, 'shortcut'), false);
+});
+
+test('no tab opens after a page copy that landed', () => {
+  assert.equal(mod.opensResultTab(ON, true), false);
+});
+
+test('a failed page copy opens the tab so the capture is not lost', () => {
+  assert.equal(mod.opensResultTab(ON, false), true);
+});
+
+test('with both settings off, no tab and no copy - as before', () => {
+  assert.equal(mod.opensResultTab({ autoCopyImage: false, openResult: false }, false), false);
+});
+
+test('the tab always opens when asked for', () => {
+  assert.equal(mod.opensResultTab({ autoCopyImage: false, openResult: true }, false), true);
+  assert.equal(mod.opensResultTab({ autoCopyImage: true, openResult: true }, true), true);
 });
 
 rmSync(dir, { recursive: true, force: true });
