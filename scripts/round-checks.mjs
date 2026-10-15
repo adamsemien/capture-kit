@@ -791,6 +791,94 @@ async function clipboardAfterCapture(id) {
   );
 }
 
+// --- CHECK A17 - straight to clipboard, no tab ------------------------------
+// The keyboard shortcut and toolbar icon cannot be pressed by automation, so
+// this drives the two halves that can be: the content script's COPY_IMAGE
+// write into a focused page, read back from that page's own origin; and the
+// popup path with the same settings, which must fall back to the result tab
+// rather than leave nothing to paste. The decision rule itself is in the unit
+// tests. A real shortcut capture is Adam's check.
+{
+  const run = await launch(DIST, { openResult: false, autoCopyImage: true, bundleFormat: 'jpeg' });
+  console.log(`\n--- A17 straight to clipboard (extension ${run.id}) ---`);
+  const pageUrl = `http://127.0.0.1:${HTTP_PORT}/inspect-blank?a17=${Date.now()}`;
+  await cdp(`/json/new?${encodeURIComponent(pageUrl)}`, 'PUT');
+  await sleep(800);
+  const page = (await cdp('/json/list')).find((t) => t.url === pageUrl);
+  const b = new Session((await cdp('/json/version')).webSocketDebuggerUrl);
+  await b.open();
+  for (const name of ['clipboard-read', 'clipboard-write']) {
+    await b.send('Browser.setPermission', { permission: { name }, setting: 'granted', origin: `http://127.0.0.1:${HTTP_PORT}` });
+  }
+  const ps = new Session(page.webSocketDebuggerUrl);
+  await ps.open();
+  await ps.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+  // Send COPY_IMAGE from an extension page, the way the service worker does.
+  await cdp(`/json/new?${encodeURIComponent(`chrome-extension://${run.id}/options/options.html`)}`, 'PUT');
+  await sleep(800);
+  const opt = (await cdp('/json/list')).find((t) => t.url.startsWith(`chrome-extension://${run.id}/options`));
+  const os = new Session(opt.webSocketDebuggerUrl);
+  await os.open();
+  const sent = await os.eval(`(async () => {
+    const c = new OffscreenCanvas(40, 30); const x = c.getContext('2d');
+    x.fillStyle = 'rgb(10,200,120)'; x.fillRect(0, 0, 40, 30);
+    const blob = await c.convertToBlob({ type: 'image/png' });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let bin = ''; for (const b of bytes) bin += String.fromCharCode(b);
+    const [tab] = await chrome.tabs.query({ url: ${JSON.stringify(pageUrl)} });
+    return await chrome.tabs.sendMessage(tab.id, { type: 'COPY_IMAGE', pngBase64: btoa(bin), text: 'A17 report text' });
+  })()`);
+  console.log('COPY_IMAGE response: ' + JSON.stringify(sent));
+  const clip = await ps.eval(`(async () => {
+    try {
+      const out = [];
+      for (const item of await navigator.clipboard.read()) {
+        for (const type of item.types) {
+          const blob = await item.getType(type);
+          out.push({ type, bytes: blob.size, text: type.startsWith('text/') ? await blob.text() : null });
+        }
+      }
+      return out;
+    } catch (error) { return { error: String(error) }; }
+  })()`);
+  console.log('clipboard: ' + JSON.stringify(clip));
+  const types = Array.isArray(clip) ? clip.map((c) => c.type) : [];
+  verdict('A17 the page writes image and report', sent?.ok === true && types.includes('image/png') && types.includes('text/plain'), `response ${JSON.stringify(sent)}, types ${JSON.stringify(types)}`);
+  verdict('A17 the report text is the one sent', Array.isArray(clip) && clip.some((c) => c.text === 'A17 report text'), JSON.stringify(clip));
+  // A page that is not focused cannot take the write, and says so.
+  await ps.send('Emulation.setFocusEmulationEnabled', { enabled: false });
+  ps.close();
+  os.close();
+  b.close();
+  for (const t of await cdp('/json/list')) {
+    if (t.type === 'page' && t.url !== 'about:blank') await cdp(`/json/close/${t.id}`);
+  }
+
+  // Popup path, same settings: the popup holds focus, so the tab opens.
+  const url = `http://127.0.0.1:${HTTP_PORT}/inspect-blank?a17pop=${Date.now()}`;
+  await cdp(`/json/new?${encodeURIComponent(url)}`, 'PUT');
+  await sleep(800);
+  await cdp(`/json/new?${encodeURIComponent(`chrome-extension://${run.id}/options/options.html`)}`, 'PUT');
+  await sleep(800);
+  const opt2 = (await cdp('/json/list')).find((t) => t.url.startsWith(`chrome-extension://${run.id}/options`));
+  const os2 = new Session(opt2.webSocketDebuggerUrl);
+  await os2.open();
+  const resp = await os2.eval(`(async () => {
+    const [tab] = await chrome.tabs.query({ url: ${JSON.stringify(url)} });
+    await chrome.tabs.update(tab.id, { active: true });
+    await new Promise((r) => setTimeout(r, 400));
+    return await chrome.runtime.sendMessage({ type: 'CAPTURE_BUNDLE' });
+  })()`);
+  os2.close();
+  let opened = false;
+  for (let i = 0; i < 20 && !opened; i++) {
+    opened = (await cdp('/json/list')).some((t) => t.url.startsWith(`chrome-extension://${run.id}/result/`));
+    if (!opened) await sleep(400);
+  }
+  console.log('popup-path capture: ' + JSON.stringify(resp));
+  verdict('A17 the popup path falls back to the result tab', resp?.ok === true && resp?.copied === false && opened, `copied ${resp?.copied}, result tab ${opened}`);
+}
+
 // --- CHECK A15 - a write that fails partway leaves nothing behind ----------
 {
   await launch(DIST);

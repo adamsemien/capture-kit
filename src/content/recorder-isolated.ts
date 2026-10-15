@@ -134,6 +134,24 @@ import {
     }
   }
 
+  // "Copy to clipboard after capture" with no result tab: this page is the
+  // focused document right after a shortcut or toolbar-icon capture, so the
+  // write lands here. Image and report as one ClipboardItem - one item per
+  // write is what Chrome accepts, several types inside it is supported.
+  async function copyImage(pngBase64: string, text?: string): Promise<boolean> {
+    try {
+      const binary = atob(pngBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const items: Record<string, Blob> = { 'image/png': new Blob([bytes], { type: 'image/png' }) };
+      if (text) items['text/plain'] = new Blob([text], { type: 'text/plain' });
+      await navigator.clipboard.write([new ClipboardItem(items)]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   chrome.runtime.onMessage.addListener((message: TabMessage, _sender, sendResponse) => {
     if (message?.type === 'GET_SNAPSHOT') {
       const snapshot: BufferSnapshot = {
@@ -163,6 +181,10 @@ import {
       dispatchComplete(message.detail);
       sendResponse({ ok: true });
       return false;
+    }
+    if (message?.type === 'COPY_IMAGE') {
+      void copyImage(message.pngBase64, message.text).then((ok) => sendResponse({ ok }));
+      return true; // async response
     }
     if (message?.type === 'COPY_TEXT') {
       void copyText(message.text).then((ok) => sendResponse({ ok }));

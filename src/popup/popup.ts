@@ -114,7 +114,11 @@ captureBundleBtn.addEventListener('click', () => {
       type: 'CAPTURE_BUNDLE',
     })) as CaptureResponse;
     if (response.ok) {
-      const copied = response.markdown ? await copyToClipboard(response.markdown) : false;
+      // The page already wrote image and report; a text write here would
+      // replace them with the report alone.
+      const copied =
+        response.copied === true ||
+        (response.markdown ? await copyToClipboard(response.markdown) : false);
       // Name the format actually written — this used to always say PNG.
       const imageKind = response.imageFilename.endsWith('.png') ? 'PNG' : 'JPEG';
       setStatus(
