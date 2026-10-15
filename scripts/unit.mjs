@@ -27,6 +27,8 @@ export { contextBlock, buildBundleMarkdown, captureModeLabel, withLatestNotice, 
 export { planScrollOffsets } from '${ROOT}/src/lib/capture-engine/segments.ts';
 export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab } from '${ROOT}/src/lib/clipboard-only.ts';
+export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
+export { buildSessionIndex } from '${ROOT}/src/lib/session/manifest.ts';
 `;
 
 const entryPath = join(dir, 'entry.ts');
@@ -537,6 +539,145 @@ test('with both settings off, no tab and no copy - as before', () => {
 test('the tab always opens when asked for', () => {
   assert.equal(mod.opensResultTab({ autoCopyImage: false, openResult: true }, false), true);
   assert.equal(mod.opensResultTab({ autoCopyImage: true, openResult: true }, true), true);
+});
+
+
+// ------------------------------------------------------------- redact --
+// Fake secrets are assembled at runtime so no credential-shaped literal sits
+// in the repo for a secret scanner to flag. The AWS id is AWS's own
+// documentation example.
+
+const b64url = (o) => btoa(JSON.stringify(o)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+const FAKE = {
+  jwt: `${b64url({ alg: 'HS256', typ: 'JWT' })}.${b64url({ sub: 'adam', iat: 1760000000 })}.c2lnbmF0dXJlLXRoYXQtaXMtZmFrZQ`,
+  aws: 'AKIA' + 'IOSFODNN7EXAMPLE',
+  bearer: 'Bearer ' + 'abc123DEF456ghi789JKL0',
+  stripe: ['sk', 'live', '4eC39HqLyjWDarjtT1zdp7dc'].join('_'),
+};
+
+heading('redact - the four the ticket names');
+test('a JWT is replaced', () => {
+  const r = mod.redactText(`token was ${FAKE.jwt} ok`);
+  assert.equal(r.text, `token was ${mod.REDACTED} ok`);
+  assert.equal(r.count, 1);
+});
+test('a JWT cut off by the message cap is still caught', () => {
+  const cut = FAKE.jwt.split('.')[0] + '.' + FAKE.jwt.split('.')[1].slice(0, 6);
+  assert.equal(mod.redactText(cut).count, 1);
+});
+test('base64 JSON that is not a JWT survives', () => {
+  const imageParams = b64url({ width: 400, height: 300, fit: 'crop', src: 'avatar.png' });
+  const url = `https://img.clerk.com/${imageParams}`;
+  assert.equal(mod.redactText(url).text, url);
+});
+test('an AWS access key id is replaced', () => {
+  assert.equal(mod.redactText(`key ${FAKE.aws} loaded`).text, `key ${mod.REDACTED} loaded`);
+});
+test('a Bearer header keeps its scheme and loses its value', () => {
+  assert.equal(mod.redactText(`Authorization: ${FAKE.bearer}`).text, `Authorization: Bearer ${mod.REDACTED}`);
+});
+test('a Stripe-style live key is replaced', () => {
+  assert.equal(mod.redactText(`stripe init ${FAKE.stripe}`).text, `stripe init ${mod.REDACTED}`);
+});
+test('all four in one message count as four', () => {
+  const r = mod.redactText(`${FAKE.jwt} ${FAKE.aws} Authorization: ${FAKE.bearer} ${FAKE.stripe}`);
+  assert.equal(r.count, 4);
+  for (const value of [FAKE.jwt, FAKE.aws, FAKE.bearer.split(' ')[1], FAKE.stripe]) {
+    assert.ok(!r.text.includes(value), `survived: ${value}`);
+  }
+});
+
+heading('redact - by name');
+test('a credential query value goes, the rest of the URL stays', () => {
+  const r = mod.redactText('https://app.example.com/cb?access_token=abc123xyz&state=home#id_token=zzz999');
+  assert.equal(r.text, `https://app.example.com/cb?access_token=${mod.REDACTED}&state=home#id_token=${mod.REDACTED}`);
+  assert.equal(r.count, 2);
+});
+test('S3 signed URLs lose their signature and credential', () => {
+  const r = mod.redactText('https://b.s3.amazonaws.com/f.png?X-Amz-Credential=ABC%2F2026&X-Amz-Signature=deadbeef&X-Amz-Expires=300');
+  assert.match(r.text, /X-Amz-Credential=\[REDACTED\]&X-Amz-Signature=\[REDACTED\]&X-Amz-Expires=300/);
+});
+test('JSON password goes, author stays', () => {
+  const r = mod.redactText('{"email":"a@b.co","password":"hunter2","author":"Adam"}');
+  assert.equal(r.text, `{"email":"a@b.co","password":"${mod.REDACTED}","author":"Adam"}`);
+});
+test('a pasted cookie header goes as one value', () => {
+  const r = mod.redactText('Cookie: sid=abc; theme=dark');
+  assert.equal(r.text, `Cookie: ${mod.REDACTED}`);
+  assert.equal(r.count, 1);
+});
+test('a pasted API key header goes', () => {
+  assert.equal(mod.redactText('X-Api-Key: 9f8e7d6c5b4a3210').text, `X-Api-Key: ${mod.REDACTED}`);
+});
+test('a private key cut off before its END line goes', () => {
+  const r = mod.redactText('loaded -----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC');
+  assert.equal(r.text, `loaded ${mod.REDACTED}`);
+});
+
+heading('redact - ordinary text survives');
+for (const text of [
+  "TypeError: Cannot read properties of undefined (reading 'map')",
+  'session_initializedSuccessfully',
+  'Failed to set cookie: SameSite attribute missing',
+  'GET https://api.example.com/v1/users?page=2&sort=name 500',
+  'Token expired, refreshing',
+  '{"author":"Adam","title":"Dinner"}',
+  'https://app.thenobadcompany.com/operator/events/cmv8aygpl000006jke5kp3xxd/builder#rail-look',
+]) {
+  test(`untouched: ${text.slice(0, 50)}`, () => {
+    const r = mod.redactText(text);
+    assert.equal(r.text, text);
+    assert.equal(r.count, 0);
+  });
+}
+test('text that already says [REDACTED] is not counted again', () => {
+  const once = mod.redactText(`a ${FAKE.stripe} b`).text;
+  assert.equal(mod.redactText(once).count, 0);
+});
+
+heading('redactPage - one seam for every field');
+test('URL, title, console message, call site and request URL are all scrubbed and counted', () => {
+  const r = mod.redactPage({
+    meta: { url: 'https://x.co/?token=aaa111', title: `Reset ${FAKE.aws}`, viewport: { width: 1, height: 1 }, userAgent: 'UA' },
+    console: [{ level: 'error', message: `boom ${FAKE.jwt}`, source: 'https://x.co/app.js?sig=bbb222:1:2', timestamp: 1 }],
+    network: [{ method: 'GET', url: `https://x.co/api?api_key=ccc333`, status: 401, durationMs: 5, timestamp: 2 }],
+  });
+  assert.equal(r.redacted, 5);
+  assert.equal(r.meta.url, `https://x.co/?token=${mod.REDACTED}`);
+  assert.equal(r.meta.userAgent, 'UA');
+  assert.equal(r.console[0].level, 'error');
+  assert.equal(r.network[0].status, 401);
+  assert.ok(!JSON.stringify(r).includes('aaa111') && !JSON.stringify(r).includes('ccc333'));
+});
+test('the input record is not modified', () => {
+  const console = [{ level: 'log', message: FAKE.stripe, timestamp: 1 }];
+  mod.redactPage({ meta: { url: '', title: '', viewport: { width: 1, height: 1 }, userAgent: '' }, console, network: [] });
+  assert.equal(console[0].message, FAKE.stripe);
+});
+
+heading('the Redacted line');
+test('plural, singular and none, each with the screenshot caveat', () => {
+  assert.match(mod.redactedLabel(3), /^3 values that looked like passwords, tokens or keys, shown as \[REDACTED\]\./);
+  assert.match(mod.redactedLabel(1), /^1 value that/);
+  assert.match(mod.redactedLabel(0), /^none found\./);
+  for (const n of [0, 1, 3]) assert.match(mod.redactedLabel(n), /still in the screenshot/);
+});
+test('a page report prints it after the user agent', () => {
+  const lines = mod.buildBundleMarkdown({ ...BUNDLE_INPUT, redacted: 2 }).split('\n');
+  const ua = lines.findIndex((l) => l.startsWith('- **User agent:**'));
+  assert.match(lines[ua + 1], /^- \*\*Redacted:\*\* 2 values/);
+});
+test('a report built without a count prints no line', () => {
+  assert.ok(!mod.buildBundleMarkdown(BUNDLE_INPUT).includes('**Redacted:**'));
+});
+test('the session index states the total across pages', () => {
+  const page = (redacted) => ({
+    title: 't', url: 'https://x.co', contents: 'Contents: full-page image', imageFilename: 'a.jpg', markdownFilename: 'a.md',
+    mirrorImageFilename: '01.jpg', mirrorMarkdownFilename: '01.md', errors: [], thirdPartyErrors: [], networkFailures: [],
+    thirdPartyFailures: [], warningCount: 0, recorderActive: true, redacted,
+  });
+  const text = mod.buildSessionIndex({ capturedAt: new Date(), pages: [page(2), page(3)], failures: [], timings: [], totalMs: 1, cancelled: false });
+  assert.match(text, /Redacted: 5 values/);
 });
 
 rmSync(dir, { recursive: true, force: true });

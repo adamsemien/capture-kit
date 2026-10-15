@@ -1,5 +1,6 @@
 import type { ConsoleEntry, NetworkFailure } from '../messages';
 import { collapseFailures, formatFailureLine } from '../net-classify';
+import { redactedLabel } from '../redact';
 
 /**
  * The session index is a TRIAGE document, not an archive. A real browser
@@ -30,6 +31,8 @@ export interface SessionPage {
   thirdPartyFailures: NetworkFailure[];
   warningCount: number;
   recorderActive: boolean;
+  /** Values scrubbed from this page's report. */
+  redacted: number;
 }
 
 export interface SessionFailure {
@@ -111,6 +114,7 @@ export function buildSessionIndex(input: SessionIndexInput): string {
   if (input.cancelled) {
     intro.push('This run was cancelled — pages below are the ones captured before it stopped.');
   }
+  intro.push(`Redacted: ${redactedLabel(input.pages.reduce((sum, p) => sum + p.redacted, 0))}`);
   parts.push(intro.join('\n\n'));
 
   ordered.forEach((page, index) => {

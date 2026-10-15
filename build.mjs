@@ -35,6 +35,8 @@ await esbuild.build({
 });
 
 cpSync('manifest.json', `${outdir}/manifest.json`);
+// MIT requires the license notice to travel with the adapted code.
+cpSync('THIRD_PARTY_NOTICES.md', `${outdir}/THIRD_PARTY_NOTICES.md`);
 // Shared design tokens — every page links ../tokens.css before its own.
 cpSync('src/tokens.css', `${outdir}/tokens.css`);
 cpSync('icons', `${outdir}/icons`, { recursive: true });
