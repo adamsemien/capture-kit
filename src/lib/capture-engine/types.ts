@@ -92,6 +92,11 @@ export interface CaptureResult {
   segments: number;
   /** Inner scrollers unrolled for this capture (expanded-inner-scroll mode only). */
   innerScrollers?: number;
+  /**
+   * Embedded frames kept at their on-screen height while the columns around
+   * them unrolled. Their own content is not unrolled, and the report says so.
+   */
+  framesHeld?: number;
   /** Elements still computed-hidden after the reveal scroll pass that were force-revealed. */
   revealForced: number;
   /**

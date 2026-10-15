@@ -401,8 +401,16 @@ const injectedCss = new Function(
   'ATTR',
   'ATTR_H',
   'ATTR_FB',
+  'ATTR_IF',
+  'FRAME_VAR',
   `return ${assignment[1]};`,
-)('data-capture-kit-expand', 'data-capture-kit-expand-h', 'data-capture-kit-expand-fb');
+)(
+  'data-capture-kit-expand',
+  'data-capture-kit-expand-h',
+  'data-capture-kit-expand-fb',
+  'data-capture-kit-expand-frame',
+  '--capture-kit-frame-h',
+);
 
 /** One rule body by selector substring, e.g. `="ancestor"`. */
 function ruleFor(selectorPart) {
@@ -452,7 +460,19 @@ test('the column-item rule releases flex-basis and nothing else', () => {
   assert.ok(!/(^|[;{])\s*(width|height|overflow)/.test(rule), `fb rule must not touch other properties: ${rule}`);
 });
 
+test('embedded frames are held at their recorded height', () => {
+  const rule = ruleFor('data-capture-kit-expand-frame]');
+  assert.match(rule, /height:var\(--capture-kit-frame-h\) !important/);
+});
+
 heading('captureModeLabel - viewport heights held');
+
+test('says when embedded frames were kept at screen height', () => {
+  assert.equal(
+    mod.captureModeLabel('expanded-inner-scroll', 0, 1, 0, 2, 1),
+    'expanded inner scroll (2 scrollers, 1 embedded frame kept at screen height), single-shot',
+  );
+});
 
 test('counts unrolled scrollers when there are several', () => {
   assert.equal(

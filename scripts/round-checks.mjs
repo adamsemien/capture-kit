@@ -49,7 +49,9 @@ if (!CHROME || !existsSync(CHROME)) {
   process.exit(2);
 }
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
-const DIST = `${ROOT}/dist`;
+// CK_DIST points the checks at another build, e.g. an older commit, to show
+// a verdict fails without the change under test.
+const DIST = process.env.CK_DIST ?? `${ROOT}/dist`;
 const WORK = process.env.CK_ROUND_WORK ?? '/tmp/ck-round-checks';
 const DOWNLOADS = `${WORK}/downloads`;
 const PORT = Number(process.env.CK_CDP_PORT ?? 9431);
@@ -219,6 +221,10 @@ const A16 = {
   sentinelSettings: [230, 120, 0],
   stickyTabs: [120, 0, 160],
   widgetHidden: [250, 0, 120],
+  // The hero of the page inside the preview iframe: height:100vh, so it is
+  // exactly as tall as the frame. A frame that grew with its column makes
+  // the hero grow with it.
+  frameHero: [20, 90, 220],
   // At a 1300px window each scrolling column is 500 / 1300 = 38% of the
   // screen, under the old 40% floor - the builder's shape. A settings column
   // that reached 40% would be unrolled by the old rule too, and the preview
@@ -234,7 +240,12 @@ const rgb = (c) => `rgb(${c.join(',')})`;
 // clips them - the capture stayed one screen tall with two scrollers expanded.
 // The settings column also holds a <textarea> that scrolls; form controls are
 // never unrolled.
-const appShellPage = () => `<!doctype html>
+// ?frame=1 swaps the preview column for the builder's live preview: a pane
+// whose child is an iframe filling it (h-full), the page inside sized in vh.
+const FRAME_DOC = `<!doctype html><html><head><style>html,body{margin:0}
+.hero{height:100vh;background:rgb(${A16.frameHero.join(',')})}.rest{height:2000px;background:#222}</style></head>
+<body><div class="hero"></div><div class="rest"></div></body></html>`;
+const appShellPage = (withFrame = false) => `<!doctype html>
 <html><head><meta charset="utf-8"><title>ready</title><style>
 html,body{margin:0;font:14px sans-serif}
 .app{display:flex;min-height:100dvh}
@@ -251,7 +262,9 @@ header{height:48px;flex:none;background:#ddd}
 textarea{display:block;width:90%;height:220px;margin:12px}
 </style></head><body>
 <div class="app"><div class="side"></div><main><header></header><div class="row">
-  <div class="preview">${'<div class="r"></div>'.repeat(18)}<div class="sentinel-preview"></div></div>
+  ${withFrame
+    ? `<div class="preview" style="overflow:hidden;display:flex;flex-direction:column"><iframe style="border:0;width:100%;flex:1 1 0%;min-height:0" srcdoc="${FRAME_DOC.replace(/"/g, '&quot;')}"></iframe></div>`
+    : `<div class="preview">${'<div class="r"></div>'.repeat(18)}<div class="sentinel-preview"></div></div>`}
   <div class="settings"><div class="tabs"></div><textarea>${'line\n'.repeat(60)}</textarea>${'<div class="r"></div>'.repeat(26)}<div class="sentinel-settings"></div></div>
 </div></main></div>
 <script>
@@ -367,7 +380,11 @@ const server = createServer((req, res) => {
   } else if (url.pathname === '/multi-column') {
     res.writeHead(200, { 'content-type': 'text/html' });
     const shell = url.searchParams.get('shell');
-    res.end(shell === 'app' ? appShellPage() : multiColumnPage(shell === 'fixed'));
+    res.end(
+      shell === 'app'
+        ? appShellPage(url.searchParams.get('frame') === '1')
+        : multiColumnPage(shell === 'fixed'),
+    );
   } else if (url.pathname === '/inspect-columns') {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(INSPECT_COLUMNS);
@@ -845,6 +862,39 @@ async function clipboardAfterCapture(id) {
     // Exactly two: the textarea in the app shell scrolls too and must not count.
     verdict(`A16 ${shell} report counts both columns`, /expanded inner scroll \(2 scrollers\)/.test(r.modeLine), r.modeLine.trim());
   }
+  // The builder's preview: the settings column unrolls, the embedded page
+  // keeps its on-screen height (757 - 48 header = 709px of hero).
+  {
+    const fspec = [
+      { name: 'frameHero', rgb: A16.frameHero, x: A16.columns.preview },
+      { name: 'settingsEnd', rgb: A16.sentinelSettings, x: A16.columns.settings },
+    ];
+    const r = await captureFixture(
+      '/multi-column?shell=app&frame=1',
+      (image) => `/inspect-columns?file=${encodeURIComponent(image)}&spec=${encodeURIComponent(JSON.stringify(fspec))}`,
+    );
+    console.log('\n--- A16 real build, app shell with a preview iframe ---');
+    if (r.error) {
+      verdict('A16 frame capture ran', false, r.error);
+    } else {
+      console.log('report: ' + r.modeLine.trim());
+      console.log('image: ' + JSON.stringify(r.px));
+      const c = r.px.colours;
+      const onScreen = r.page.innerHeight - 48;
+      verdict('A16 frame settings column still unrolled', c.settingsEnd.pixels >= 140, `sentinel ${c.settingsEnd.pixels}px`);
+      verdict(
+        'A16 frame embedded page keeps its screen height',
+        Math.abs(c.frameHero.pixels - onScreen) <= 4 && c.frameHero.runs === 1,
+        `hero ${c.frameHero.pixels}px in ${c.frameHero.runs} run(s), on screen ${onScreen}px`,
+      );
+      verdict(
+        'A16 frame report says the frame was kept',
+        /1 embedded frame kept at screen height/.test(r.modeLine),
+        r.modeLine.trim(),
+      );
+    }
+  }
+
   const control = process.env.CK_CONTROL_DIST;
   if (!control || !existsSync(control)) {
     console.log('\nA16 falsifiability skipped: set CK_CONTROL_DIST to a dist built from main before this change');

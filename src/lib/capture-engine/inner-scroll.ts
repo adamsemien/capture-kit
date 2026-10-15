@@ -20,25 +20,38 @@ type PageAction = 'detect' | 'expand' | 'restore';
 
 // Runs IN THE PAGE via chrome.scripting.executeScript — must stay fully
 // self-contained (no outer-scope references survive serialization).
-function innerScrollPage(action: PageAction): { shouldExpand: boolean; count: number } {
+function innerScrollPage(
+  action: PageAction,
+): { shouldExpand: boolean; count: number; framesHeld: number } {
   const STYLE_ID = '__capture_kit_expand__';
   const ATTR = 'data-capture-kit-expand';
   const ATTR_H = 'data-capture-kit-expand-h';
   const ATTR_FB = 'data-capture-kit-expand-fb';
+  const ATTR_IF = 'data-capture-kit-expand-frame';
+  const ATTR_IF_NOSTYLE = 'data-capture-kit-expand-frame-nostyle';
+  const FRAME_VAR = '--capture-kit-frame-h';
 
   const restore = () => {
     document.getElementById(STYLE_ID)?.remove();
     for (const el of Array.from(
-      document.querySelectorAll(`[${ATTR}], [${ATTR_H}], [${ATTR_FB}]`),
+      document.querySelectorAll(`[${ATTR}], [${ATTR_H}], [${ATTR_FB}], [${ATTR_IF}]`),
     )) {
       el.removeAttribute(ATTR);
       el.removeAttribute(ATTR_H);
       el.removeAttribute(ATTR_FB);
+      if (el.hasAttribute(ATTR_IF)) {
+        el.removeAttribute(ATTR_IF);
+        (el as HTMLElement).style.removeProperty(FRAME_VAR);
+        if (el.hasAttribute(ATTR_IF_NOSTYLE)) {
+          el.removeAttribute(ATTR_IF_NOSTYLE);
+          if (!el.getAttribute('style')) el.removeAttribute('style');
+        }
+      }
     }
   };
   if (action === 'restore') {
     restore();
-    return { shouldExpand: false, count: 0 };
+    return { shouldExpand: false, count: 0, framesHeld: 0 };
   }
 
   // Tiny scrollboxes (code snippets, dropdowns) are never the page's content.
@@ -128,9 +141,44 @@ function innerScrollPage(action: PageAction): { shouldExpand: boolean; count: nu
   }
 
   const shouldExpand = picked.length > 0 && docBarelyScrolls;
-  if (action === 'detect' || !shouldExpand) return { shouldExpand, count: picked.length };
+  if (action === 'detect' || !shouldExpand) {
+    return { shouldExpand, count: picked.length, framesHeld: 0 };
+  }
 
   restore(); // idempotency if a previous capture died before restoring
+
+  // Embedded pages keep the height they have on screen. An iframe sized to
+  // fill its pane grows with the pane once the columns beside it unroll, and
+  // the page inside re-lays out against that taller frame - its viewport is
+  // the frame. On the NoBC OS builder the live preview's poster slid to the
+  // middle of a mostly black column. Measured now, before anything moves;
+  // held through a stylesheet !important rule reading a custom property, the
+  // same way the viewport-height hold works. Unrolling an iframe's own
+  // content is separate work.
+  const frames: { el: HTMLElement; height: number; column: boolean }[] = [];
+  for (const frame of Array.from(document.querySelectorAll('iframe'))) {
+    const rect = frame.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) continue;
+    let column = false;
+    const parent = frame.parentElement;
+    if (parent) {
+      try {
+        const pcs = getComputedStyle(parent);
+        column = /flex/.test(pcs.display) && /column/.test(pcs.flexDirection);
+      } catch {
+        /* judge it a plain block */
+      }
+    }
+    frames.push({ el: frame, height: rect.height, column });
+  }
+  for (const { el, height, column } of frames) {
+    if (!el.hasAttribute('style')) el.setAttribute(ATTR_IF_NOSTYLE, '');
+    el.style.setProperty(FRAME_VAR, height + 'px');
+    // flex-grow only matters on a column's vertical axis; in a row it is the
+    // width, which must not change.
+    el.setAttribute(ATTR_IF, column ? 'column' : '');
+  }
+
   for (const { el } of picked) el.setAttribute(ATTR, 'scroller');
   // Every ancestor that clips (or could clip) the expanded content must
   // open up too - app shells chain height:100% + overflow:hidden from <html>
@@ -189,15 +237,20 @@ function innerScrollPage(action: PageAction): { shouldExpand: boolean; count: nu
     `overflow:visible !important;}` +
     `[${ATTR}="ancestor"]{height:auto !important;max-height:none !important;}` +
     `[${ATTR_H}]{width:auto !important;max-width:none !important;}` +
-    `[${ATTR_FB}]{flex-basis:auto !important;}`;
+    `[${ATTR_FB}]{flex-basis:auto !important;}` +
+    `[${ATTR_IF}]{height:var(${FRAME_VAR}) !important;min-height:0 !important;` +
+    `max-height:none !important;}` +
+    `[${ATTR_IF}="column"]{flex-grow:0 !important;flex-basis:auto !important;}`;
   document.documentElement.appendChild(styleEl);
-  return { shouldExpand: true, count: picked.length };
+  return { shouldExpand: true, count: picked.length, framesHeld: frames.length };
 }
 
 interface InnerScrollOutcome {
   shouldExpand: boolean;
   /** Scrollers unrolled (expand) or that would be (detect). */
   count: number;
+  /** Embedded frames held at their on-screen height (expand only). */
+  framesHeld: number;
 }
 
 async function runInnerScrollScript(
@@ -210,7 +263,11 @@ async function runInnerScrollScript(
     args: [action],
   });
   return (
-    (results[0]?.result as InnerScrollOutcome | undefined) ?? { shouldExpand: false, count: 0 }
+    (results[0]?.result as InnerScrollOutcome | undefined) ?? {
+      shouldExpand: false,
+      count: 0,
+      framesHeld: 0,
+    }
   );
 }
 
@@ -224,9 +281,12 @@ export async function detectInnerScroll(tabId: number): Promise<boolean> {
   }
 }
 
-/** Unrolls every qualifying scroller; returns how many it unrolled. */
-export async function applyInnerScrollExpansion(tabId: number): Promise<number> {
-  return (await runInnerScrollScript(tabId, 'expand')).count;
+/** Unrolls every qualifying scroller; returns how many, and how many frames it held. */
+export async function applyInnerScrollExpansion(
+  tabId: number,
+): Promise<{ count: number; framesHeld: number }> {
+  const { count, framesHeld } = await runInnerScrollScript(tabId, 'expand');
+  return { count, framesHeld };
 }
 
 export async function restoreInnerScrollExpansion(tabId: number): Promise<void> {
@@ -242,10 +302,10 @@ export class InnerScrollExpansionStrategy implements CaptureStrategy {
   private readonly inner = new CdpFullPageStrategy();
 
   async capture(request: CaptureRequest): Promise<CaptureResult> {
-    const innerScrollers = await applyInnerScrollExpansion(request.tabId);
+    const { count: innerScrollers, framesHeld } = await applyInnerScrollExpansion(request.tabId);
     try {
       const result = await this.inner.capture(request);
-      return { ...result, mode: 'expanded-inner-scroll', innerScrollers };
+      return { ...result, mode: 'expanded-inner-scroll', innerScrollers, framesHeld };
     } finally {
       await restoreInnerScrollExpansion(request.tabId);
     }

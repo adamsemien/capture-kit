@@ -32,6 +32,8 @@ export interface BundleInput {
   heightHeld?: number;
   /** Inner scrollers unrolled (expanded-inner-scroll mode only). */
   innerScrollers?: number;
+  /** Embedded frames kept at their on-screen height (expanded-inner-scroll mode only). */
+  framesHeld?: number;
   /** Segments stitched for the image (1 = true single-shot). */
   segments: number;
   /** Dimensions of the file on disk, footer included. */
@@ -95,13 +97,20 @@ export function captureModeLabel(
   segments: number,
   heightHeld = 0,
   innerScrollers = 0,
+  framesHeld = 0,
 ): string {
-  // The count says how many columns were unrolled - a reader comparing a
-  // three-column app to its capture needs to know whether all three were.
+  // The counts say how many columns were unrolled and how many embedded
+  // pages were not - a reader comparing a three-column app to its capture
+  // needs to know which parts are whole.
+  const parts: string[] = [];
+  if (innerScrollers > 1) parts.push(`${innerScrollers} scrollers`);
+  if (framesHeld > 0) {
+    parts.push(`${framesHeld} embedded ${framesHeld === 1 ? 'frame' : 'frames'} kept at screen height`);
+  }
   const strategy =
     mode === 'expanded-inner-scroll'
-      ? innerScrollers > 1
-        ? `expanded inner scroll (${innerScrollers} scrollers)`
+      ? parts.length > 0
+        ? `expanded inner scroll (${parts.join(', ')})`
         : 'expanded inner scroll'
       : 'standard';
   const path = segments > 1 ? `segmented, ${segments} segments` : 'single-shot';
@@ -320,6 +329,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
           input.segments,
           input.heightHeld,
           input.innerScrollers,
+          input.framesHeld,
         ),
         trigger: input.trigger,
         recorderActive: input.recorderActive,
