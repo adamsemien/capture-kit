@@ -29,6 +29,7 @@ export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
 export { buildSessionIndex } from '${ROOT}/src/lib/session/manifest.ts';
+export { frameDifference, selectFrames, sheetLayout, offsetLabel, eventsDuringClip, buildClipMarkdown, clampClipSeconds, THUMB_W, THUMB_H } from '${ROOT}/src/lib/clip/frames.ts';
 export { decodeMappings, SourceMapIndex, parseSourceMap, cleanSourcePath, findSourceMapUrl, dataUrlText, parseFrame, formatFrame, FrameMapper, mapPageSources, sourceMapLabel } from '${ROOT}/src/lib/source-map.ts';
 `;
 
@@ -890,6 +891,110 @@ test('the context block prints it after Redacted, and only when there were frame
   const r = withFrames.findIndex((l) => l.startsWith('- **Redacted:**'));
   assert.match(withFrames[r + 1], /^- \*\*Source maps:\*\* 1 of 2 frames mapped/);
   assert.ok(!mod.buildBundleMarkdown({ ...BUNDLE_INPUT, sourceMaps: { frames: 0, mapped: 0 } }).includes('**Source maps:**'));
+});
+
+
+// --------------------------------------------------------- clips (NOBC-158) --
+
+const thumb = (value) => new Uint8Array(mod.THUMB_W * mod.THUMB_H).fill(value);
+const frame = (at, value) => ({ at, luma: thumb(value) });
+
+heading('clips - which frames make the sheet');
+test('frame difference is the mean absolute pixel change', () => {
+  assert.equal(mod.frameDifference(thumb(10), thumb(10)), 0);
+  assert.equal(mod.frameDifference(thumb(10), thumb(14)), 4);
+  assert.equal(mod.frameDifference(new Uint8Array(0), new Uint8Array(0)), 0);
+});
+test('a page that sits still gives first and last only', () => {
+  const frames = [frame(0, 50), frame(125, 50), frame(250, 51), frame(375, 50), frame(500, 50)];
+  assert.deepEqual(mod.selectFrames(frames), [0, 4]);
+});
+test('the moments it moved are kept, in time order', () => {
+  const frames = [frame(0, 0), frame(125, 0), frame(250, 60), frame(375, 60), frame(500, 120), frame(625, 120), frame(750, 120)];
+  assert.deepEqual(mod.selectFrames(frames), [0, 2, 4, 6]);
+});
+test('past the cap the biggest changes win, still in time order', () => {
+  const frames = [frame(0, 0), frame(100, 5), frame(200, 100), frame(300, 110), frame(400, 200), frame(500, 200)];
+  // candidates: 1 (5), 2 (95), 3 (10), 4 (90) - cap of 4 leaves room for 2: indices 2 and 4
+  assert.deepEqual(mod.selectFrames(frames, { maxFrames: 4 }), [0, 2, 4, 5]);
+});
+test('one or zero frames do not break it', () => {
+  assert.deepEqual(mod.selectFrames([]), []);
+  assert.deepEqual(mod.selectFrames([frame(0, 1)]), [0]);
+});
+
+heading('clips - the sheet');
+test('three across by default, as many rows as needed, tiles keep the frame aspect', () => {
+  const layout = mod.sheetLayout(7, 1440, 900, { sheetWidth: 1800, gap: 16, labelHeight: 28 });
+  assert.equal(layout.columns, 3);
+  assert.equal(layout.rows, 3);
+  assert.equal(layout.tileWidth, Math.floor((1800 - 16 * 4) / 3));
+  assert.equal(layout.tileHeight, Math.round(layout.tileWidth * (900 / 1440)));
+  assert.equal(layout.tiles.length, 7);
+  assert.deepEqual(layout.tiles[0], { x: 16, y: 16 });
+  assert.equal(layout.tiles[3].x, 16, 'fourth tile starts a new row');
+  assert.equal(layout.tiles[3].y, 16 + layout.tileHeight + 28 + 16);
+  assert.equal(layout.height, 16 + 3 * (layout.tileHeight + 28 + 16));
+});
+test('fewer frames than columns shrinks the grid', () => {
+  assert.equal(mod.sheetLayout(2, 100, 100).columns, 2);
+  assert.equal(mod.sheetLayout(1, 100, 100).rows, 1);
+});
+
+heading('clips - the timeline');
+test('offsets are relative and two decimals', () => {
+  assert.equal(mod.offsetLabel(0), '+0.00s');
+  assert.equal(mod.offsetLabel(1204), '+1.20s');
+  assert.equal(mod.offsetLabel(-5), '+0.00s');
+});
+test('only events inside the clip, as offsets, sorted', () => {
+  const start = 1_000_000;
+  const events = mod.eventsDuringClip(
+    [
+      { level: 'error', message: 'late', timestamp: start + 9000 },
+      { level: 'warn', message: 'mid', source: 'src/a.ts:1:2', timestamp: start + 1500 },
+      { level: 'log', message: 'early', timestamp: start - 10 },
+    ],
+    [{ method: 'GET', url: 'https://x.co/api', status: 500, durationMs: 40, timestamp: start + 700 }],
+    start,
+    5000,
+  );
+  assert.deepEqual(events.map((e) => [e.offsetMs, e.kind]), [[700, 'network'], [1500, 'console']]);
+  assert.match(events[0].text, /GET https:\/\/x\.co\/api - HTTP 500 \(40 ms\)/);
+  assert.match(events[1].text, /mid\n    at src\/a\.ts:1:2/);
+});
+test('the report names each tile and stamps each event', () => {
+  const md = mod.buildClipMarkdown({
+    url: 'https://x.co/page', title: 'Page', viewport: { width: 1440, height: 900 }, userAgent: 'UA',
+    startedAt: new Date('2026-10-16T21:00:00Z'), durationMs: 5020, triggerLabel: 'popup Record clip button',
+    recorderActive: true, frameOffsetsMs: [0, 1250, 5020], sampledFrames: 41,
+    sheetFilename: 'page_frames.jpg', videoFilename: 'page_clip.webm',
+    events: [{ offsetMs: 1500, kind: 'console', level: 'error', text: 'boom' }],
+    redacted: 'none found.', sourceMaps: 'all 1 frame mapped to the original file and line.',
+  });
+  assert.match(md, /^# Clip — Page/);
+  assert.match(md, /\*\*Length:\*\* 5\.0 s/);
+  assert.match(md, /3 of 41 sampled frames/);
+  assert.match(md, /1\. \+0\.00s\n2\. \+1\.25s\n3\. \+5\.02s/);
+  assert.match(md, /\+1\.50s \[error\] boom/);
+  assert.match(md, /\*\*Redacted:\*\* none found/);
+  assert.match(md, /\*\*Source maps:\*\* all 1 frame/);
+});
+test('an inactive recorder is said plainly, not shown as a quiet clip', () => {
+  const md = mod.buildClipMarkdown({
+    url: '', title: '', viewport: { width: 1, height: 1 }, userAgent: '', startedAt: new Date(0), durationMs: 1000,
+    triggerLabel: 't', recorderActive: false, frameOffsetsMs: [0, 1000], sampledFrames: 9,
+    sheetFilename: 'a', videoFilename: 'b', events: [],
+  });
+  assert.match(md, /NOT ACTIVE/);
+  assert.match(md, /reload the tab, reproduce, and record again/);
+  assert.ok(!md.includes('No console output'));
+});
+test('clip length is clamped to 2-10 seconds', () => {
+  assert.equal(mod.clampClipSeconds(1), 2);
+  assert.equal(mod.clampClipSeconds(99), 10);
+  assert.equal(mod.clampClipSeconds(4.6), 5);
+  assert.equal(mod.clampClipSeconds(NaN), 5);
 });
 
 rmSync(dir, { recursive: true, force: true });

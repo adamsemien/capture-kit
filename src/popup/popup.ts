@@ -4,6 +4,7 @@ import type {
   LastBundle,
   LastError,
   SweepResponse,
+  ClipResponse,
 } from '../lib/messages';
 import { CAPTURE_PROGRESS_KEY, SESSION_SEED_TAB_KEY } from '../lib/messages';
 import type { CaptureProgressState } from '../lib/messages';
@@ -18,6 +19,7 @@ const responsiveSweepBtn = document.getElementById('responsive-sweep') as HTMLBu
 const imageOnlyPngInput = document.getElementById('image-only-png') as HTMLInputElement;
 const captureSessionBtn = document.getElementById('capture-session') as HTMLButtonElement;
 const copyLastBtn = document.getElementById('copy-last') as HTMLButtonElement;
+const recordClipBtn = document.getElementById('record-clip') as HTMLButtonElement;
 
 function setStatus(text: string, kind: '' | 'ok' | 'error' = ''): void {
   statusEl.textContent = text;
@@ -31,6 +33,7 @@ function setBusy(busy: boolean): void {
     responsiveSweepBtn,
     copyLastBtn,
     captureSessionBtn,
+    recordClipBtn,
   ]) {
     button.disabled = busy;
   }
@@ -173,6 +176,26 @@ responsiveSweepBtn.addEventListener('click', () => {
       setStatus(response.reason, 'error');
     }
     setBusy(false);
+  })();
+});
+
+recordClipBtn.addEventListener('click', () => {
+  void (async () => {
+    setBusy(true);
+    setStatus('Recording… keep the tab in front.');
+    const response = (await chrome.runtime.sendMessage({ type: 'RECORD_CLIP' })) as ClipResponse;
+    if (response.ok) {
+      setStatus(
+        `Saved the clip, ${response.frames} frames on a sheet, and the report${
+          response.copied ? ' — sheet is on your clipboard.' : '.'
+        }`,
+        'ok',
+      );
+    } else {
+      setStatus(response.reason, 'error');
+    }
+    setBusy(false);
+    void refreshStats();
   })();
 });
 

@@ -57,6 +57,8 @@ export type RecorderEventDetail =
 /** Page-level trigger for agents driving the browser. */
 export const AGENT_CAPTURE_EVENT = 'capture-kit:capture';
 export const AGENT_COMPLETE_EVENT = 'capture-kit:capture-complete';
+/** Same gate, same completion event: a page asks for a clip instead of a still. */
+export const AGENT_RECORD_EVENT = 'capture-kit:record';
 
 /**
  * Detail of the completion event. JSON-safe primitives only: it crosses into
@@ -80,7 +82,7 @@ export interface AgentCaptureDetail {
  * This replaced a bare `viaCommand: boolean` whose only consumer was the badge
  * flash; `trigger !== 'popup'` reproduces that exactly.
  */
-export type CaptureTrigger = 'popup' | 'shortcut' | 'icon' | 'agent' | 'session' | 'sweep';
+export type CaptureTrigger = 'popup' | 'shortcut' | 'icon' | 'agent' | 'session' | 'sweep' | 'clip' | 'agent-clip';
 
 export const CAPTURE_TRIGGER_LABEL: Record<CaptureTrigger, string> = {
   popup: 'popup Capture + Report button',
@@ -89,12 +91,16 @@ export const CAPTURE_TRIGGER_LABEL: Record<CaptureTrigger, string> = {
   agent: 'in-page agent trigger (capture-kit:capture)',
   session: 'session capture (multiple tabs)',
   sweep: 'responsive sweep',
+  clip: 'popup Record clip button',
+  'agent-clip': 'in-page agent trigger (capture-kit:record)',
 };
 
 /** Popup / result page / content script → service worker. */
 export type RuntimeMessage =
   | { type: 'CAPTURE_BUNDLE' }
   | { type: 'AGENT_CAPTURE' }
+  | { type: 'AGENT_RECORD' }
+  | { type: 'RECORD_CLIP' }
   | { type: 'CAPTURE_PAGE'; png?: boolean }
   | { type: 'CAPTURE_SWEEP' }
   | { type: 'GET_RESULT_IMAGE'; captureId: string; index: number }
@@ -168,6 +174,38 @@ export type TabMessage =
   /** Image (always PNG) plus optional report text, written by the focused page. */
   | { type: 'COPY_IMAGE'; pngBase64: string; text?: string }
   | { type: 'AGENT_CAPTURE_COMPLETE'; detail: AgentCaptureDetail };
+
+/** Worker → offscreen document: record this tab stream. */
+export interface ClipRecordRequest {
+  target: 'offscreen';
+  type: 'CLIP_RECORD';
+  streamId: string;
+  seconds: number;
+  fps: number;
+  maxFrames: number;
+}
+
+/** Offscreen document → worker. Base64 so it crosses the message boundary. */
+export type ClipRecordResponse =
+  | {
+      ok: true;
+      video: string;
+      videoMime: string;
+      sheet: string;
+      sheetWidth: number;
+      sheetHeight: number;
+      frameWidth: number;
+      frameHeight: number;
+      /** Offsets of the frames on the sheet, in order. */
+      frameOffsetsMs: number[];
+      sampledFrames: number;
+      durationMs: number;
+    }
+  | { ok: false; reason: string };
+
+export type ClipResponse =
+  | { ok: true; sheetFilename: string; videoFilename: string; markdownFilename: string; frames: number; copied: boolean }
+  | { ok: false; reason: string };
 
 export type CaptureResponse =
   | { ok: true; imageFilename: string; markdown?: string; copied?: boolean }
