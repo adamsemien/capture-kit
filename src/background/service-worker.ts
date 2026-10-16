@@ -1448,7 +1448,6 @@ async function recordClip(
       events,
       redacted: redactedLabel(page.redacted),
       sourceMaps: sourceMapLabel(page.frames, page.mappedFrames) ?? undefined,
-      debug: recorded.debug,
     });
 
     const sheetWrite = await writeBundleFile(sheetFilename, 'image/jpeg', recorded.sheet);

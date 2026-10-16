@@ -95,7 +95,6 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
   const picker = new FramePicker({ maxFrames: request.maxFrames });
   const held = new Map<number, OffscreenCanvas>();
   const spare: OffscreenCanvas[] = [];
-  const timing = { copy: 0, luma: 0, samples: 0, read: 0, maxGap: 0, maxSampleGap: 0, finish: 0 };
 
   const mimeType = pickMimeType();
   const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
@@ -116,14 +115,12 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
   let durationMs = 0;
 
   const sample = (frame: VideoFrame, at: number): void => {
-    const t0 = performance.now();
     thumbCtx.drawImage(frame, 0, 0, THUMB_W, THUMB_H);
     const rgba = thumbCtx.getImageData(0, 0, THUMB_W, THUMB_H).data;
     const luma = new Uint8Array(THUMB_W * THUMB_H);
     for (let i = 0, p = 0; i < luma.length; i++, p += 4) {
       luma[i] = (rgba[p] * 299 + rgba[p + 1] * 587 + rgba[p + 2] * 114) / 1000;
     }
-    const t1 = performance.now();
     const index = picker.frames.length;
     for (const released of picker.push({ at, luma })) {
       const canvas = held.get(released);
@@ -135,11 +132,6 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
     if (!ctx) throw new Error('no canvas context');
     ctx.drawImage(frame, 0, 0, frameWidth, frameHeight);
     held.set(index, canvas);
-    const t2 = performance.now();
-    timing.luma += t1 - t0;
-    timing.copy += t2 - t1;
-    timing.samples += 1;
-    if (lastSampleAt > -Infinity) timing.maxSampleGap = Math.max(timing.maxSampleGap, at - lastSampleAt);
     lastSampleAt = at;
   };
 
@@ -159,8 +151,6 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
           frameHeight = frame.displayHeight;
         }
         const at = Math.round(now - startedAt);
-        timing.read += 1;
-        timing.maxGap = Math.max(timing.maxGap, at - durationMs);
         durationMs = at;
         if (at >= lengthMs) {
           if (at > lastSampleAt) sample(frame, at);
@@ -183,7 +173,6 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
   for (const t of stream.getTracks()) t.stop();
   if (picker.frames.length === 0) throw new Error('the tab delivered no frames - is it in front?');
 
-  const finishStart = performance.now();
   const frames = picker.frames;
   const chosen = selectFrames(frames, { maxFrames: request.maxFrames });
   const chosenCanvases = chosen.map((i) => {
@@ -229,11 +218,9 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
     blobToBase64(sheetBlob),
     ...frameBlobs.map(blobToBase64),
   ]);
-  timing.finish = performance.now() - finishStart;
   held.clear();
   spare.length = 0;
 
-  const per = (ms: number) => (timing.samples ? (ms / timing.samples).toFixed(0) : '0');
   return {
     ok: true,
     video,
@@ -247,7 +234,6 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
     frames: frameBase64,
     sampledFrames: frames.length,
     durationMs,
-    debug: `${timing.read} frames read, ${timing.samples} sampled; per sample luma ${per(timing.luma)} ms, copy ${per(timing.copy)} ms; longest gap between samples ${timing.maxSampleGap} ms, between frames ${timing.maxGap} ms; encoding after stop ${timing.finish.toFixed(0)} ms`,
   };
 }
 
