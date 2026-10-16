@@ -35,6 +35,7 @@ import type { Settings } from '../lib/settings';
 import { outputDirHasFile, outputDirStatus, writeToOutputDir } from '../lib/output-dir';
 import { redactPage, redactText } from '../lib/redact';
 import type { RedactedPage } from '../lib/redact';
+import { FrameMapper, mapPageSources } from '../lib/source-map';
 import {
   CAPTURE_PROGRESS_KEY,
   CONSOLE_LOGS_IN_BUNDLE,
@@ -102,13 +103,17 @@ interface SnapshotLookup {
 }
 
 /**
- * Everything a report says about a page, scrubbed of passwords, tokens and
- * keys before any report, index, clipboard block or result tab is built from
- * it. Tab fields fill in only what the recorder could not supply, and go
- * through the same scrub - a token in a tab's URL is still a token.
+ * Everything a report says about a page, in the order the report needs it:
+ * first the frames are mapped back to their original file and line where the
+ * site publishes source maps (NOBC-153), then the whole record is scrubbed of
+ * passwords, tokens and keys (NOBC-152) before any report, index, clipboard
+ * block or result tab is built from it. Mapping runs on the raw record so a
+ * script URL with a token in it can still be fetched; the scrub runs last so
+ * nothing the mapper adds escapes it. Tab fields fill in only what the
+ * recorder could not supply and go through the same scrub.
  */
-function scrubbedPage(tab: chrome.tabs.Tab, snapshot: BufferSnapshot | null): RedactedPage {
-  return redactPage({
+async function preparedPage(tab: chrome.tabs.Tab, snapshot: BufferSnapshot | null): Promise<PreparedPage> {
+  const raw = {
     meta: {
       url: snapshot?.meta.url || tab.url || '',
       title: snapshot?.meta.title || tab.title || '',
@@ -117,7 +122,31 @@ function scrubbedPage(tab: chrome.tabs.Tab, snapshot: BufferSnapshot | null): Re
     },
     console: snapshot?.console ?? [],
     network: snapshot?.network ?? [],
-  });
+  };
+  const mapped = await mapPageSources(raw, new FrameMapper({ fetch: fetchForSourceMap }));
+  return { ...redactPage(mapped), frames: mapped.frames, mappedFrames: mapped.mappedFrames };
+}
+
+interface PreparedPage extends RedactedPage {
+  frames: number;
+  mappedFrames: number;
+}
+
+// Source-map fetches are best effort and must never hold a capture: each one
+// gets a few seconds, then the frame is printed raw. Credentials ride along
+// so a protected preview deployment resolves the same as a public site.
+const SOURCE_MAP_FETCH_MS = 4000;
+
+async function fetchForSourceMap(url: string): Promise<Response | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SOURCE_MAP_FETCH_MS);
+  try {
+    return await fetch(url, { credentials: 'include', signal: controller.signal });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function getSnapshot(tabId: number): Promise<SnapshotLookup> {
@@ -590,7 +619,7 @@ async function captureReport(
 ): Promise<ReportArtifacts> {
   const tabId = tab.id as number;
   const { snapshot, recorderActive } = await getSnapshot(tabId);
-  const page = scrubbedPage(tab, snapshot);
+  const page = await preparedPage(tab, snapshot);
   // The timestamp is taken before the capture so the footer and the report's
   // "Captured at" are the same instant — a segmented capture takes seconds,
   // and two clocks a few seconds apart in one bundle reads as a bug.
@@ -620,6 +649,7 @@ async function captureReport(
     networkFailures,
     recorderActive,
     redacted: page.redacted,
+    sourceMaps: { frames: page.frames, mapped: page.mappedFrames },
     includeLogs: settings.includeConsoleLogs,
     capturedAt,
     imageFilename,
@@ -949,7 +979,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
     // A sweep is one page at three widths, so console/network state is read
     // once and stated once in the report.
     const { snapshot, recorderActive } = await getSnapshot(tabId);
-    const page = scrubbedPage(tab, snapshot);
+    const page = await preparedPage(tab, snapshot);
 
     // Inner-scroll expansion applies once for the whole sweep, restored at
     // the end — same detection the single captures run.
@@ -1017,6 +1047,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
       networkFailures: page.network,
       recorderActive,
       redacted: page.redacted,
+      sourceMaps: { frames: page.frames, mapped: page.mappedFrames },
       includeLogs: settings.includeConsoleLogs,
     });
     await writeBundleFile(`${basename}_sweep.md`, 'text/markdown', textToBase64(sweepMarkdown));

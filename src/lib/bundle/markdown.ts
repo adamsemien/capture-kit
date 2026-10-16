@@ -4,6 +4,7 @@ import type { CaptureMode, PageDimensions, StampInfo } from '../capture-engine/t
 import { classifyEnvironment } from '../env-marker';
 import { stampLabel } from '../capture-engine/stamp';
 import { redactedLabel } from '../redact';
+import { sourceMapLabel } from '../source-map';
 import {
   collapseFailures,
   formatDemotedHost,
@@ -49,6 +50,13 @@ export interface BundleInput {
   browserZoom?: number;
   /** Values scrubbed from the page record this report was built from. */
   redacted?: number;
+  /** Frames the source-map pass looked at, and how many it rewrote. */
+  sourceMaps?: SourceMapCounts;
+}
+
+export interface SourceMapCounts {
+  frames: number;
+  mapped: number;
 }
 
 function pad(value: number): string {
@@ -64,6 +72,13 @@ function timeOfDay(timestamp: number): string {
 // tildes. Any embedded fence-closer is defused.
 function fence(text: string): string {
   return '~~~\n' + text.replace(/~~~/g, '~ ~ ~') + '\n~~~';
+}
+
+/** The "Source maps:" context line, or nothing when there were no frames to look at. */
+function sourceMapLine(counts: SourceMapCounts | undefined): string[] {
+  if (!counts) return [];
+  const label = sourceMapLabel(counts.frames, counts.mapped);
+  return label ? [`- **Source maps:** ${label}`] : [];
 }
 
 function consoleBlock(entry: ConsoleEntry): string {
@@ -228,6 +243,8 @@ export interface ContextBlockInput {
   browserZoom?: number;
   /** Values scrubbed from the page record. Absent = the caller did not scrub, and no line is printed. */
   redacted?: number;
+  /** Frames the source-map pass looked at. Absent, or no frames = no line. */
+  sourceMaps?: SourceMapCounts;
 }
 
 /** True when the captured layout is not the layout the user was looking at. */
@@ -301,6 +318,7 @@ export function contextBlock(input: ContextBlockInput): string[] {
     `- **Title:** ${input.title || '(untitled)'}`,
     `- **User agent:** ${input.userAgent}`,
     ...(input.redacted !== undefined ? [`- **Redacted:** ${redactedLabel(input.redacted)}`] : []),
+    ...sourceMapLine(input.sourceMaps),
   ];
   return lines;
 }
@@ -344,6 +362,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
         browserZoom: input.browserZoom,
         userAgent: meta.userAgent,
         redacted: input.redacted,
+        sourceMaps: input.sourceMaps,
       }),
     ].join('\n'),
   );
@@ -489,6 +508,8 @@ export interface SweepMarkdownInput {
   stamp?: StampInfo;
   /** Values scrubbed from the page record this report was built from. */
   redacted?: number;
+  /** Frames the source-map pass looked at, and how many it rewrote. */
+  sourceMaps?: SourceMapCounts;
 }
 
 /**
@@ -524,6 +545,7 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
       `- **Title:** ${meta.title || '(untitled)'}`,
       `- **User agent:** ${meta.userAgent}`,
       ...(input.redacted !== undefined ? [`- **Redacted:** ${redactedLabel(input.redacted)}`] : []),
+      ...sourceMapLine(input.sourceMaps),
     ].join('\n'),
   );
 

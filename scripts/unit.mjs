@@ -29,6 +29,7 @@ export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
 export { buildSessionIndex } from '${ROOT}/src/lib/session/manifest.ts';
+export { decodeMappings, SourceMapIndex, parseSourceMap, cleanSourcePath, findSourceMapUrl, dataUrlText, parseFrame, formatFrame, FrameMapper, mapPageSources, sourceMapLabel } from '${ROOT}/src/lib/source-map.ts';
 `;
 
 const entryPath = join(dir, 'entry.ts');
@@ -56,6 +57,17 @@ function test(name, fn) {
     failed += 1;
     console.log(`FAIL  ${name}`);
     console.log(`      ${error.message.split('\n').join('\n      ')}`);
+  }
+}
+
+async function atest(name, fn) {
+  try {
+    await fn();
+    passed += 1;
+    console.log(`  ok  ${name}`);
+  } catch (error) {
+    failed += 1;
+    console.log(`  FAIL ${name}\n       ${error.message}`);
   }
 }
 
@@ -695,6 +707,189 @@ test('the session index states the total across pages', () => {
   });
   const text = mod.buildSessionIndex({ capturedAt: new Date(), pages: [page(2), page(3)], failures: [], timings: [], totalMs: 1, cancelled: false });
   assert.match(text, /Redacted: 5 values/);
+});
+
+
+// ---------------------------------------------------- source maps (NOBC-153) --
+
+heading('source maps - decoding');
+test('a hand-made mappings string decodes to sorted segments per line', () => {
+  // "AAAA,CAAC;AACD": line 0 -> (0 -> src0 L0 C0), (1 -> src0 L0 C1);
+  // line 1 -> (0 -> src0 L1 C0). Only the generated column resets per line;
+  // source index, original line and original column stay relative across lines.
+  assert.deepEqual(mod.decodeMappings('AAAA,CAAC;AACD'), [
+    [[0, 0, 0, 0], [1, 0, 0, 1]],
+    [[0, 0, 1, 0]],
+  ]);
+});
+test('segments without a source are dropped, names are skipped', () => {
+  // "A" = generated column only; "AAAAA" carries a name index too.
+  assert.deepEqual(mod.decodeMappings('A,CAAAA'), [[[1, 0, 0, 0]]]);
+});
+test('lookup takes the nearest segment at or before the column, 1-based in and out', () => {
+  const index = new mod.SourceMapIndex({ sources: ['src/a.ts'], mappings: 'AAAA,KACE' });
+  assert.deepEqual(index.lookup(1, 1), { file: 'src/a.ts', line: 1, column: 1 });
+  assert.deepEqual(index.lookup(1, 5), { file: 'src/a.ts', line: 1, column: 1 });
+  assert.deepEqual(index.lookup(1, 6), { file: 'src/a.ts', line: 2, column: 3 });
+  assert.deepEqual(index.lookup(1, 99), { file: 'src/a.ts', line: 2, column: 3 });
+  assert.equal(index.lookup(2, 1), null);
+});
+test('maps this module does not understand come back null', () => {
+  assert.equal(mod.parseSourceMap('not json'), null);
+  assert.equal(mod.parseSourceMap('{"version":3,"sections":[]}'), null);
+  assert.equal(mod.parseSourceMap('{"version":3,"sources":[],"mappings":5}'), null);
+  assert.ok(mod.parseSourceMap('{"version":3,"sources":["a.ts"],"mappings":"AAAA"}'));
+});
+
+heading('source maps - the real thing, built by esbuild');
+const SRC = [
+  "export function save(form) {",
+  "  if (!form.title) {",
+  "    throw new Error('boom');",
+  "  }",
+  "  return form;",
+  "}",
+].join('\n');
+const built = await esbuild.build({
+  stdin: { contents: SRC, sourcefile: 'src/components/EventForm.tsx', loader: 'ts', resolveDir: dir },
+  bundle: true,
+  minify: true,
+  format: 'esm',
+  sourcemap: 'external',
+  write: false,
+  outfile: join(dir, 'chunk-8f3a.js'),
+});
+const chunkJs = built.outputFiles.find((f) => f.path.endsWith('.js')).text;
+const chunkMap = built.outputFiles.find((f) => f.path.endsWith('.map')).text;
+test('a minified throw maps back to EventForm.tsx and the throw line', () => {
+  const at = chunkJs.indexOf('Error(');
+  assert.ok(at > 0, 'minified output has the throw');
+  const before = chunkJs.slice(0, at);
+  const line = before.split('\n').length;
+  const column = at - before.lastIndexOf('\n');
+  const index = mod.parseSourceMap(chunkMap);
+  const hit = index.lookup(line, column);
+  assert.ok(hit, 'mapped');
+  assert.match(hit.file, /src\/components\/EventForm\.tsx$/);
+  assert.equal(hit.line, 3);
+});
+
+heading('source maps - finding the map');
+const noHeaders = { get: () => null };
+test('the SourceMap header wins over the comment', () => {
+  const headers = { get: (n) => (n === 'SourceMap' ? 'maps/chunk.js.map' : null) };
+  assert.equal(
+    mod.findSourceMapUrl('https://x.co/static/chunk.js', headers, '//# sourceMappingURL=other.map'),
+    'https://x.co/static/maps/chunk.js.map',
+  );
+});
+test('a relative comment resolves against the script URL', () => {
+  assert.equal(
+    mod.findSourceMapUrl('https://x.co/static/chunk.js', noHeaders, 'var a=1;\n//# sourceMappingURL=chunk.js.map\n'),
+    'https://x.co/static/chunk.js.map',
+  );
+});
+test('a data: map is handed back as is', () => {
+  const url = 'data:application/json;base64,eyJ2ZXJzaW9uIjozfQ==';
+  assert.equal(mod.findSourceMapUrl('https://x.co/a.js', noHeaders, `//# sourceMappingURL=${url}`), url);
+  assert.equal(mod.dataUrlText(url), '{"version":3}');
+});
+test('no header and no comment means no map', () => {
+  assert.equal(mod.findSourceMapUrl('https://x.co/a.js', noHeaders, 'var a=1;'), null);
+});
+test('the comment is only read from the tail of a big script', () => {
+  const big = '//# sourceMappingURL=early.map\n' + 'x'.repeat(10000);
+  assert.equal(mod.findSourceMapUrl('https://x.co/a.js', noHeaders, big), null);
+});
+
+heading('source maps - paths and frames');
+test('bundler prefixes and climbs are stripped from source paths', () => {
+  assert.equal(mod.cleanSourcePath('webpack://_N_E/./src/app/page.tsx'), 'src/app/page.tsx');
+  assert.equal(mod.cleanSourcePath('webpack:///./src/x.ts'), 'src/x.ts');
+  assert.equal(mod.cleanSourcePath('../../src/lib/a.ts'), 'src/lib/a.ts');
+  assert.equal(mod.cleanSourcePath('lib/a.ts', '../src/'), 'src/lib/a.ts');
+  assert.equal(mod.cleanSourcePath('node_modules/react/index.js'), 'node_modules/react/index.js');
+});
+test('only http(s) url:line:col is a frame', () => {
+  assert.deepEqual(mod.parseFrame('https://x.co/a.js?v=2:12:34'), { url: 'https://x.co/a.js?v=2', line: 12, column: 34 });
+  assert.equal(mod.parseFrame('chrome-extension://abc/x.js:1:1'), null);
+  assert.equal(mod.parseFrame('just text'), null);
+});
+test('a frame prints its verdict either way', () => {
+  assert.equal(mod.formatFrame('https://x.co/static/chunk-8f3a.js:1:48213', null), 'https://x.co/static/chunk-8f3a.js:1:48213 (no source map)');
+  assert.equal(
+    mod.formatFrame('https://x.co/static/chunk-8f3a.js?v=9:1:48213', { file: 'src/EventForm.tsx', line: 84, column: 12 }),
+    'src/EventForm.tsx:84:12 (mapped from chunk-8f3a.js:1:48213)',
+  );
+});
+
+heading('source maps - the pass over a page record');
+const SCRIPT_URL = 'https://preview.example.com/_next/static/chunks/chunk-8f3a.js';
+const makeFetch = (log) => async (url) => {
+  log.push(url);
+  if (url === SCRIPT_URL) return { ok: true, headers: noHeaders, text: async () => chunkJs + '\n//# sourceMappingURL=chunk-8f3a.js.map\n' };
+  if (url === SCRIPT_URL + '.map') return { ok: true, headers: noHeaders, text: async () => chunkMap };
+  return { ok: false, headers: noHeaders, text: async () => '' };
+};
+const throwAt = (() => {
+  const at = chunkJs.indexOf('Error(');
+  const before = chunkJs.slice(0, at);
+  return `${SCRIPT_URL}:${before.split('\n').length}:${at - before.lastIndexOf('\n')}`;
+})();
+const PAGE = (sources) => ({
+  meta: { url: 'https://preview.example.com/events', title: 'Events', viewport: { width: 1, height: 1 }, userAgent: 'UA' },
+  console: [
+    { level: 'error', message: `Uncaught Error: boom\n    at save (${throwAt})\n    at https://cdn.other.com/lib.js:3:4`, source: throwAt, timestamp: 1 },
+    { level: 'warn', message: 'plain warning', source: 'chrome-extension://abc/x.js:1:1', timestamp: 2 },
+  ],
+  network: [{ method: 'GET', url: `${SCRIPT_URL}:1:1`, status: 404, durationMs: 1, timestamp: 3 }],
+});
+await atest('call sites and stack lines are mapped, tagged and counted; one fetch per script', async () => {
+  const log = [];
+  const out = await mod.mapPageSources(PAGE(), new mod.FrameMapper({ fetch: makeFetch(log) }));
+  assert.equal(out.frames, 3);
+  assert.equal(out.mappedFrames, 2);
+  assert.match(out.console[0].source, /^src\/components\/EventForm\.tsx:3:\d+ \(mapped from chunk-8f3a\.js:\d+:\d+\)$/);
+  assert.match(out.console[0].message, /at save \(src\/components\/EventForm\.tsx:3:\d+ \(mapped from chunk-8f3a\.js:\d+:\d+\)\)/);
+  assert.match(out.console[0].message, /at https:\/\/cdn\.other\.com\/lib\.js:3:4 \(no source map\)/);
+  assert.equal(out.console[1].source, 'chrome-extension://abc/x.js:1:1');
+  assert.equal(out.console[1].message, 'plain warning');
+  assert.deepEqual(out.network, PAGE().network);
+  assert.equal(log.filter((u) => u === SCRIPT_URL).length, 1, 'script fetched once');
+  assert.equal(log.filter((u) => u === SCRIPT_URL + '.map').length, 1, 'map fetched once');
+});
+await atest('a fetch that throws leaves every frame raw and the capture alive', async () => {
+  const mapper = new mod.FrameMapper({ fetch: async () => { throw new Error('offline'); } });
+  const out = await mod.mapPageSources(PAGE(), mapper);
+  assert.equal(out.frames, 3);
+  assert.equal(out.mappedFrames, 0);
+  assert.equal(out.console[0].source, `${throwAt} (no source map)`);
+});
+await atest('the script cap leaves later scripts raw', async () => {
+  const mapper = new mod.FrameMapper({ fetch: makeFetch([]), maxScripts: 0 });
+  const out = await mod.mapPageSources(PAGE(), mapper);
+  assert.equal(out.mappedFrames, 0);
+});
+await atest('the input record is not modified', async () => {
+  const page = PAGE();
+  const before = JSON.stringify(page);
+  await mod.mapPageSources(page, new mod.FrameMapper({ fetch: makeFetch([]) }));
+  assert.equal(JSON.stringify(page), before);
+});
+
+heading('source maps - the report line');
+test('no frames, no line; otherwise the count and what happened to the rest', () => {
+  assert.equal(mod.sourceMapLabel(0, 0), null);
+  assert.match(mod.sourceMapLabel(3, 0), /^none of 3 frames had a source map/);
+  assert.match(mod.sourceMapLabel(1, 1), /^all 1 frame mapped to the original file and line\.$/);
+  assert.match(mod.sourceMapLabel(3, 3), /^all 3 frames mapped/);
+  assert.match(mod.sourceMapLabel(5, 2), /^2 of 5 frames mapped to the original file and line; the rest/);
+});
+test('the context block prints it after Redacted, and only when there were frames', () => {
+  const withFrames = mod.buildBundleMarkdown({ ...BUNDLE_INPUT, redacted: 0, sourceMaps: { frames: 2, mapped: 1 } }).split('\n');
+  const r = withFrames.findIndex((l) => l.startsWith('- **Redacted:**'));
+  assert.match(withFrames[r + 1], /^- \*\*Source maps:\*\* 1 of 2 frames mapped/);
+  assert.ok(!mod.buildBundleMarkdown({ ...BUNDLE_INPUT, sourceMaps: { frames: 0, mapped: 0 } }).includes('**Source maps:**'));
 });
 
 rmSync(dir, { recursive: true, force: true });
