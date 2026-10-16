@@ -29,7 +29,7 @@ export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
 export { buildSessionIndex } from '${ROOT}/src/lib/session/manifest.ts';
-export { frameDifference, selectFrames, sheetLayout, offsetLabel, eventsDuringClip, buildClipMarkdown, clampClipSeconds, frameFilename, THUMB_W, THUMB_H } from '${ROOT}/src/lib/clip/frames.ts';
+export { frameDifference, selectFrames, sheetLayout, offsetLabel, eventsDuringClip, buildClipMarkdown, clampClipSeconds, clampClipDelay, frameFilename, THUMB_W, THUMB_H } from '${ROOT}/src/lib/clip/frames.ts';
 export { decodeMappings, SourceMapIndex, parseSourceMap, cleanSourcePath, findSourceMapUrl, dataUrlText, parseFrame, formatFrame, FrameMapper, mapPageSources, sourceMapLabel } from '${ROOT}/src/lib/source-map.ts';
 `;
 
@@ -1008,6 +1008,11 @@ test('an inactive recorder is said plainly, not shown as a quiet clip', () => {
 test('kept frames are named by their place and offset', () => {
   assert.equal(mod.frameFilename(0, 0), '01_+0.00s.jpg');
   assert.equal(mod.frameFilename(11, 4504), '12_+4.50s.jpg');
+});
+test('the count-in is clamped to 0-5 seconds', () => {
+  assert.equal(mod.clampClipDelay(-1), 0);
+  assert.equal(mod.clampClipDelay(9), 5);
+  assert.equal(mod.clampClipDelay(NaN), 2);
 });
 test('clip length is clamped to 2-10 seconds', () => {
   assert.equal(mod.clampClipSeconds(1), 2);

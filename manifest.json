@@ -51,6 +51,10 @@
     "capture-bundle": {
       "suggested_key": { "default": "Ctrl+Shift+9", "mac": "Command+Shift+9" },
       "description": "Capture + Report (image + markdown, copied to clipboard)"
+    },
+    "record-clip": {
+      "suggested_key": { "default": "Ctrl+Shift+8", "mac": "Command+Shift+8" },
+      "description": "Record clip (a few seconds of the tab; frames that changed go to the clipboard)"
     }
   }
 }

@@ -1,5 +1,5 @@
 import type { CaptureFormat } from './capture-engine/types';
-import { CLIP_SECONDS_DEFAULT, clampClipSeconds } from './clip/frames';
+import { CLIP_DELAY_DEFAULT, CLIP_SECONDS_DEFAULT, clampClipDelay, clampClipSeconds } from './clip/frames';
 
 export interface Settings {
   /** Max capture dimension per segment, px. Pages larger than this per axis are captured in segments. */
@@ -71,6 +71,8 @@ export interface Settings {
   clipboardImageOnly: boolean;
   /** How long "Record clip" records, in seconds. Capped in clip/frames.ts. */
   clipSeconds: number;
+  /** Seconds between the trigger and the recording starting. */
+  clipDelaySeconds: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -86,6 +88,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoCopyImage: false,
   clipboardImageOnly: false,
   clipSeconds: CLIP_SECONDS_DEFAULT,
+  clipDelaySeconds: CLIP_DELAY_DEFAULT,
 };
 
 export function normalizeBundleFormat(value: unknown): CaptureFormat {
@@ -117,6 +120,7 @@ export async function getSettings(): Promise<Settings> {
     autoCopyImage: stored.autoCopyImage === true,
     clipboardImageOnly: stored.clipboardImageOnly === true,
     clipSeconds: clampClipSeconds(Number(stored.clipSeconds)),
+    clipDelaySeconds: clampClipDelay(Number(stored.clipDelaySeconds)),
   };
 }
 
@@ -134,6 +138,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     autoCopyImage: settings.autoCopyImage === true,
     clipboardImageOnly: settings.clipboardImageOnly === true,
     clipSeconds: clampClipSeconds(settings.clipSeconds),
+    clipDelaySeconds: clampClipDelay(settings.clipDelaySeconds),
   });
 }
 

@@ -82,7 +82,16 @@ export interface AgentCaptureDetail {
  * This replaced a bare `viaCommand: boolean` whose only consumer was the badge
  * flash; `trigger !== 'popup'` reproduces that exactly.
  */
-export type CaptureTrigger = 'popup' | 'shortcut' | 'icon' | 'agent' | 'session' | 'sweep' | 'clip' | 'agent-clip';
+export type CaptureTrigger =
+  | 'popup'
+  | 'shortcut'
+  | 'icon'
+  | 'agent'
+  | 'session'
+  | 'sweep'
+  | 'clip'
+  | 'clip-shortcut'
+  | 'agent-clip';
 
 export const CAPTURE_TRIGGER_LABEL: Record<CaptureTrigger, string> = {
   popup: 'popup Capture + Report button',
@@ -92,6 +101,7 @@ export const CAPTURE_TRIGGER_LABEL: Record<CaptureTrigger, string> = {
   session: 'session capture (multiple tabs)',
   sweep: 'responsive sweep',
   clip: 'Record clip (popup button or icon menu)',
+  'clip-shortcut': 'keyboard shortcut (Ctrl/Cmd+Shift+8)',
   'agent-clip': 'in-page agent trigger (capture-kit:record)',
 };
 

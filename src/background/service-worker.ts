@@ -1362,7 +1362,10 @@ async function closeOffscreenDocument(): Promise<void> {
 /** One clip at a time: a MediaRecorder per tab stream is plenty, and the offscreen document is shared. */
 let clipRunning = false;
 
-async function recordClip(trigger: 'clip' | 'agent-clip', tabIdOverride?: number): Promise<ClipResponse> {
+async function recordClip(
+  trigger: 'clip' | 'clip-shortcut' | 'agent-clip',
+  tabIdOverride?: number,
+): Promise<ClipResponse> {
   const announce = trigger !== 'clip';
   if (clipRunning) return { ok: false, reason: 'A clip is already recording.' };
   clipRunning = true;
@@ -1377,6 +1380,12 @@ async function recordClip(trigger: 'clip' | 'agent-clip', tabIdOverride?: number
     const settings = await getSettings();
     await ensureOutputReadme();
 
+    // The count-in, on the badge in amber. The stream id is taken after it:
+    // Chrome expires an unused id after a few seconds.
+    for (let left = settings.clipDelaySeconds; left > 0; left--) {
+      await setBadge(`${left}`, BADGE_RUNNING, `capture-kit — recording in ${left}s`);
+      await new Promise((r) => setTimeout(r, 1000));
+    }
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
     await ensureOffscreenDocument();
     // A countdown on the badge is the only sign a recording is running: the
@@ -1661,6 +1670,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
 
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'capture-bundle') void captureBundle('shortcut');
+  if (command === 'record-clip') void recordClip('clip-shortcut');
 });
 
 // ------------------------------------------------------- one-click capture --

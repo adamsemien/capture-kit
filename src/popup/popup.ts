@@ -182,7 +182,7 @@ responsiveSweepBtn.addEventListener('click', () => {
 recordClipBtn.addEventListener('click', () => {
   void (async () => {
     setBusy(true);
-    setStatus('Recording… keep the tab in front.');
+    setStatus('Recording after the count-in… keep the tab in front.');
     const response = (await chrome.runtime.sendMessage({ type: 'RECORD_CLIP' })) as ClipResponse;
     if (response.ok) {
       setStatus(

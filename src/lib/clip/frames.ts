@@ -287,6 +287,16 @@ export const CLIP_SECONDS_MIN = 2;
 export const CLIP_SECONDS_MAX = 10;
 export const CLIP_SECONDS_DEFAULT = 5;
 
+/** Count-in before recording starts, so the hand that pressed the key can get to the thing. */
+export const CLIP_DELAY_MIN = 0;
+export const CLIP_DELAY_MAX = 5;
+export const CLIP_DELAY_DEFAULT = 2;
+
+export function clampClipDelay(value: number): number {
+  if (!Number.isFinite(value)) return CLIP_DELAY_DEFAULT;
+  return Math.min(CLIP_DELAY_MAX, Math.max(CLIP_DELAY_MIN, Math.round(value)));
+}
+
 export function clampClipSeconds(value: number): number {
   if (!Number.isFinite(value)) return CLIP_SECONDS_DEFAULT;
   return Math.min(CLIP_SECONDS_MAX, Math.max(CLIP_SECONDS_MIN, Math.round(value)));
