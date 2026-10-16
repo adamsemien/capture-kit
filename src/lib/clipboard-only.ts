@@ -24,6 +24,22 @@ export function copiesFromPage(
 }
 
 /**
+ * The text half of an automatic clipboard write, or nothing.
+ *
+ * "Image only" drops the report text from every automatic write - the page
+ * path and the result tab alike - so a paste into any app is the picture.
+ * The buttons and shortcuts on the result tab are explicit asks and are not
+ * gated here. An empty report never goes on the clipboard either way.
+ */
+export function clipboardText(
+  settings: Pick<Settings, 'clipboardImageOnly'>,
+  text: string | undefined,
+): string | undefined {
+  if (settings.clipboardImageOnly || !text) return undefined;
+  return text;
+}
+
+/**
  * Whether the result tab opens. It always does when the person asked for it;
  * with auto-copy on it also opens whenever the page could not take the copy,
  * so a capture is never left with neither a tab nor a clipboard.

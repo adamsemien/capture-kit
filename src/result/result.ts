@@ -410,11 +410,14 @@ async function main(): Promise<void> {
   // silent, since the user is about to paste expecting an image.
   if (meta.autoCopyImage && (meta.kind === 'bundle' || meta.kind === 'page')) {
     void (async () => {
-      if (meta.kind === 'bundle' && meta.markdown) await copyImageAndReport(captureId, meta);
+      // "Image only" leaves the report off the automatic write; the buttons
+      // and shortcuts above still offer it on a click.
+      const withReport = meta.kind === 'bundle' && !!meta.markdown && !meta.clipboardImageOnly;
+      if (withReport) await copyImageAndReport(captureId, meta);
       else await copyImage(captureId);
       if (statusEl.classList.contains('error')) {
         setStatus(
-          `Could not copy automatically - press ${shortcutLabel(meta.kind === 'bundle' && !!meta.markdown)} to copy`,
+          `Could not copy automatically - press ${shortcutLabel(withReport)} to copy`,
           true,
         );
       }

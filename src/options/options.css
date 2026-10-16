@@ -50,6 +50,17 @@ h2 {
   padding-top: 0;
 }
 
+/* A sub-option: indented under the field it depends on, dimmed while that field is off. */
+.field-sub {
+  padding-left: var(--space-5);
+  border-top: 0;
+  padding-top: 0;
+}
+
+.field-sub:has(input:disabled) {
+  opacity: 0.5;
+}
+
 .field-text {
   display: flex;
   flex-direction: column;
