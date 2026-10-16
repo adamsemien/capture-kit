@@ -17,6 +17,7 @@ const triggerInput = document.getElementById('allow-in-page-trigger') as HTMLInp
 const iconCapturesInput = document.getElementById('icon-captures') as HTMLInputElement;
 const stampUrlInput = document.getElementById('stamp-url') as HTMLInputElement;
 const autoCopyInput = document.getElementById('auto-copy-image') as HTMLInputElement;
+const imageOnlyInput = document.getElementById('clipboard-image-only') as HTMLInputElement;
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
 const dirNameEl = document.getElementById('output-dir-name') as HTMLElement;
 const dirChooseBtn = document.getElementById('output-dir-choose') as HTMLButtonElement;
@@ -35,6 +36,7 @@ async function load(): Promise<void> {
   iconCapturesInput.checked = settings.iconCapturesImmediately;
   stampUrlInput.checked = settings.stampUrlOnImage;
   autoCopyInput.checked = settings.autoCopyImage;
+  imageOnlyInput.checked = settings.clipboardImageOnly;
   syncAutoCopy();
   for (const input of formatInputs) {
     input.checked = input.value === settings.bundleFormat;
@@ -129,6 +131,7 @@ async function save(): Promise<void> {
     iconCapturesImmediately: iconCapturesInput.checked,
     stampUrlOnImage: stampUrlInput.checked,
     autoCopyImage: autoCopyInput.checked,
+    clipboardImageOnly: imageOnlyInput.checked,
   });
   syncAutoCopy();
   segmentInput.value = String(segmentSize);
@@ -136,12 +139,15 @@ async function save(): Promise<void> {
 }
 
 /**
- * Both combinations work now: with the result tab on, the tab copies as it
- * opens; with it off, the captured page copies and no tab opens. Kept as a
- * hook so the two fields can be linked again if that ever changes.
+ * Both combinations of auto-copy and the result tab work: with the tab on,
+ * the tab copies as it opens; with it off, the captured page copies and no
+ * tab opens. "Image only" is a modifier of the automatic copy, so it is only
+ * live while that is on - the value is kept either way, so switching the
+ * copy off and on again brings the choice back.
  */
 function syncAutoCopy(): void {
   autoCopyInput.disabled = false;
+  imageOnlyInput.disabled = !autoCopyInput.checked;
 }
 
 function flashStatus(text: string): void {
@@ -160,6 +166,7 @@ triggerInput.addEventListener('change', () => void save());
 iconCapturesInput.addEventListener('change', () => void save());
 stampUrlInput.addEventListener('change', () => void save());
 autoCopyInput.addEventListener('change', () => void save());
+imageOnlyInput.addEventListener('change', () => void save());
 for (const input of formatInputs) {
   input.addEventListener('change', () => void save());
 }

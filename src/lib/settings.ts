@@ -57,6 +57,17 @@ export interface Settings {
    * the one that has focus when the capture finishes.
    */
   autoCopyImage: boolean;
+  /**
+   * With "Copy to clipboard after capture" on, leave the report text off the
+   * clipboard and put only the image there.
+   *
+   * Which half an app pastes first is the app's decision, not ours: ChatGPT
+   * takes the text, Claude takes the image. For someone who always wants the
+   * picture, the fix is to not offer the text at all. The .md file and
+   * latest.md are still written - this changes the clipboard only. Default
+   * OFF, so anyone who relied on the report riding along keeps it.
+   */
+  clipboardImageOnly: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -70,6 +81,7 @@ export const DEFAULT_SETTINGS: Settings = {
   iconCapturesImmediately: false,
   stampUrlOnImage: false,
   autoCopyImage: false,
+  clipboardImageOnly: false,
 };
 
 export function normalizeBundleFormat(value: unknown): CaptureFormat {
@@ -99,6 +111,7 @@ export async function getSettings(): Promise<Settings> {
     iconCapturesImmediately: stored.iconCapturesImmediately === true,
     stampUrlOnImage: stored.stampUrlOnImage === true,
     autoCopyImage: stored.autoCopyImage === true,
+    clipboardImageOnly: stored.clipboardImageOnly === true,
   };
 }
 
@@ -114,6 +127,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     iconCapturesImmediately: settings.iconCapturesImmediately === true,
     stampUrlOnImage: settings.stampUrlOnImage === true,
     autoCopyImage: settings.autoCopyImage === true,
+    clipboardImageOnly: settings.clipboardImageOnly === true,
   });
 }
 

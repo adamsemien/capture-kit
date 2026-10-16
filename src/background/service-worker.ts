@@ -7,7 +7,7 @@
 // variables — if the worker dies mid-capture, the capture fails cleanly and
 // nothing is corrupted.
 
-import { copiesFromPage, opensResultTab } from '../lib/clipboard-only';
+import { clipboardText, copiesFromPage, opensResultTab } from '../lib/clipboard-only';
 import { toClipboardPng } from '../lib/clipboard-png';
 import { captureFullPage } from '../lib/capture-engine';
 import { captureSweep } from '../lib/capture-engine/sweep';
@@ -726,7 +726,7 @@ async function copyImageThroughPage(
   tabId: number,
   mime: string,
   base64: string,
-  text: string,
+  text: string | undefined,
 ): Promise<boolean> {
   try {
     const binary = atob(base64);
@@ -804,10 +804,16 @@ async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> 
     }
 
     // "Copy to clipboard after capture" with no result tab: image and report
-    // go straight to the clipboard through the page that was just captured.
+    // go straight to the clipboard through the page that was just captured -
+    // the image alone when "Image only" is on.
     let copied = false;
     if (copiesFromPage(settings, trigger)) {
-      copied = await copyImageThroughPage(tabId, imageMime, result.imageBase64, clipboardMarkdown);
+      copied = await copyImageThroughPage(
+        tabId,
+        imageMime,
+        result.imageBase64,
+        clipboardText(settings, clipboardMarkdown),
+      );
     } else {
       // Best-effort page-side clipboard write. On the keyboard-shortcut path
       // the page is the focused document, so this is the write that lands;
@@ -847,6 +853,7 @@ async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> 
           ],
           markdown,
           autoCopyImage: settings.autoCopyImage,
+          clipboardImageOnly: settings.clipboardImageOnly,
           createdAt: capturedAt.getTime(),
         },
         [{ mime: imageMime, base64: result.imageBase64 }],

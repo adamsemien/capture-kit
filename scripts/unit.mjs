@@ -26,7 +26,7 @@ export { readEncodedImageSize } from '${ROOT}/src/lib/capture-engine/image-size.
 export { contextBlock, buildBundleMarkdown, captureModeLabel, withLatestNotice, LATEST_NOTICE, OUTPUT_README } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { planScrollOffsets } from '${ROOT}/src/lib/capture-engine/segments.ts';
 export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
-export { copiesFromPage, opensResultTab } from '${ROOT}/src/lib/clipboard-only.ts';
+export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
 export { buildSessionIndex } from '${ROOT}/src/lib/session/manifest.ts';
 `;
@@ -530,6 +530,23 @@ test('no tab opens after a page copy that landed', () => {
 
 test('a failed page copy opens the tab so the capture is not lost', () => {
   assert.equal(mod.opensResultTab(ON, false), true);
+});
+
+heading('clipboard - image only (NOBC-156)');
+test('off: the report rides along with the image', () => {
+  assert.equal(mod.clipboardText({ clipboardImageOnly: false }, '# report'), '# report');
+});
+test('on: the report stays off the clipboard', () => {
+  assert.equal(mod.clipboardText({ clipboardImageOnly: true }, '# report'), undefined);
+});
+test('an empty report never goes on the clipboard either way', () => {
+  assert.equal(mod.clipboardText({ clipboardImageOnly: false }, ''), undefined);
+  assert.equal(mod.clipboardText({ clipboardImageOnly: false }, undefined), undefined);
+});
+test('image only never changes whether a copy happens or a tab opens', () => {
+  const on = { autoCopyImage: true, openResult: false, clipboardImageOnly: true };
+  assert.equal(mod.copiesFromPage(on, 'icon'), true);
+  assert.equal(mod.opensResultTab(on, true), false);
 });
 
 test('with both settings off, no tab and no copy - as before', () => {

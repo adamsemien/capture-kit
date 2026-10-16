@@ -227,6 +227,8 @@ export interface CaptureResultMeta {
    * (and the report, for a bundle) as soon as it opens.
    */
   autoCopyImage?: boolean;
+  /** With autoCopyImage: the automatic write carries the image alone, no report text. */
+  clipboardImageOnly?: boolean;
   createdAt: number;
 }
 
