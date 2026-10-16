@@ -183,6 +183,9 @@ export interface ClipRecordRequest {
   seconds: number;
   fps: number;
   maxFrames: number;
+  /** The tab's size, so the stream is shaped like the tab and not the screen. */
+  width: number;
+  height: number;
 }
 
 /** Offscreen document → worker. Base64 so it crosses the message boundary. */

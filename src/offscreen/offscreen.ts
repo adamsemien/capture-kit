@@ -64,6 +64,10 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
       mandatory: {
         chromeMediaSource: 'tab',
         chromeMediaSourceId: request.streamId,
+        // The tab's own size. Without this Chrome sizes the stream to the
+        // screen and letterboxes the tab into it - black bars on every frame.
+        maxWidth: request.width,
+        maxHeight: request.height,
       },
     },
   } as unknown as MediaStreamConstraints;

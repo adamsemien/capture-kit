@@ -900,10 +900,25 @@ const thumb = (value) => new Uint8Array(mod.THUMB_W * mod.THUMB_H).fill(value);
 const frame = (at, value) => ({ at, luma: thumb(value) });
 
 heading('clips - which frames make the sheet');
-test('frame difference is the mean absolute pixel change', () => {
+test('frame difference is the percent of pixels that moved past the noise floor', () => {
   assert.equal(mod.frameDifference(thumb(10), thumb(10)), 0);
-  assert.equal(mod.frameDifference(thumb(10), thumb(14)), 4);
+  assert.equal(mod.frameDifference(thumb(10), thumb(14)), 0, 'a 4-step wobble everywhere is noise');
+  assert.equal(mod.frameDifference(thumb(10), thumb(200)), 100);
+  const half = thumb(0);
+  half.fill(255, 0, half.length / 2);
+  assert.equal(mod.frameDifference(thumb(0), half), 50);
   assert.equal(mod.frameDifference(new Uint8Array(0), new Uint8Array(0)), 0);
+});
+test('a small element moving across a big page is kept', () => {
+  // A box 2% of the thumbnail moves one slot per frame on an otherwise still page.
+  const size = Math.round(mod.THUMB_W * mod.THUMB_H * 0.02);
+  const withBox = (at, offset) => {
+    const luma = thumb(255);
+    luma.fill(0, offset, offset + size);
+    return { at, luma };
+  };
+  const frames = [withBox(0, 0), withBox(125, size), withBox(250, size * 2), withBox(375, size * 3), withBox(500, size * 3)];
+  assert.deepEqual(mod.selectFrames(frames), [0, 1, 2, 3, 4]);
 });
 test('a page that sits still gives first and last only', () => {
   const frames = [frame(0, 50), frame(125, 50), frame(250, 51), frame(375, 50), frame(500, 50)];

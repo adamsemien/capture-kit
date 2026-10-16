@@ -1390,6 +1390,8 @@ async function recordClip(trigger: 'clip' | 'agent-clip', tabIdOverride?: number
         seconds: settings.clipSeconds,
         fps: CLIP_SAMPLE_FPS,
         maxFrames: CLIP_MAX_FRAMES,
+        width: tab.width ?? 1280,
+        height: tab.height ?? 800,
       };
       recorded = (await chrome.runtime.sendMessage(request)) as ClipRecordResponse;
     } finally {

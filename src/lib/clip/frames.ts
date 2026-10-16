@@ -20,27 +20,36 @@ export interface SampledFrame {
 }
 
 /** Thumbnail size used for the change score. Small on purpose - this is "did it change", not "what changed". */
-export const THUMB_W = 64;
-export const THUMB_H = 40;
+export const THUMB_W = 96;
+export const THUMB_H = 60;
 
-/** Mean absolute pixel difference between two thumbnails, 0..255. */
+/** A pixel whose luma moved by more than this counts as changed; below it is noise. */
+const PIXEL_CHANGE_FLOOR = 20;
+
+/**
+ * How much of the picture changed between two thumbnails, as a percentage of
+ * pixels that moved past the noise floor. A percentage, not a mean: a small
+ * element crossing a big page is exactly the change worth keeping, and a
+ * mean over the whole frame buries it.
+ */
 export function frameDifference(a: Uint8Array, b: Uint8Array): number {
   const n = Math.min(a.length, b.length);
   if (n === 0) return 0;
-  let sum = 0;
-  for (let i = 0; i < n; i++) sum += Math.abs(a[i] - b[i]);
-  return sum / n;
+  let changed = 0;
+  for (let i = 0; i < n; i++) if (Math.abs(a[i] - b[i]) > PIXEL_CHANGE_FLOOR) changed++;
+  return (changed * 100) / n;
 }
 
 export interface SelectOptions {
   /** Frames kept at most, first and last included. */
   maxFrames?: number;
-  /** A frame scoring under this against the last kept one is "the same picture". */
+  /** Percent of pixels; a frame under this against the last kept one is "the same picture". */
   minChange?: number;
 }
 
 const DEFAULT_MAX_FRAMES = 12;
-const DEFAULT_MIN_CHANGE = 2;
+/** Percent of pixels. 0.3% of a 96x60 thumbnail is about 17 pixels - a 160 px box on a 2560 px page is ~40. */
+const DEFAULT_MIN_CHANGE = 0.3;
 
 /**
  * Which sampled frames go on the sheet. The first and last always do - they
