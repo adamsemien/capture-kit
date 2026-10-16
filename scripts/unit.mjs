@@ -928,10 +928,32 @@ test('the moments it moved are kept, in time order', () => {
   const frames = [frame(0, 0), frame(125, 0), frame(250, 60), frame(375, 60), frame(500, 120), frame(625, 120), frame(750, 120)];
   assert.deepEqual(mod.selectFrames(frames), [0, 2, 4, 6]);
 });
-test('past the cap the biggest changes win, still in time order', () => {
-  const frames = [frame(0, 0), frame(100, 5), frame(200, 100), frame(300, 110), frame(400, 200), frame(500, 200)];
-  // candidates: 1 (5), 2 (95), 3 (10), 4 (90) - cap of 4 leaves room for 2: indices 2 and 4
-  assert.deepEqual(mod.selectFrames(frames, { maxFrames: 4 }), [0, 2, 4, 5]);
+test('past the cap the kept frames spread across the clip, not into one burst', () => {
+  // Every frame changes, but the change is biggest in two short bursts - the
+  // fast moments of an eased animation. A biggest-change rule put all the
+  // frames in the bursts; the sheet should cover the whole clip.
+  const frames = [];
+  for (let i = 0; i < 40; i++) {
+    const fast = (i >= 8 && i <= 11) || (i >= 28 && i <= 31);
+    // Fast: a big block toggles (about half the picture). Slow: a small one (under 2%).
+    const luma = thumb(0);
+    if (i % 2) luma.fill(255, 0, fast ? 3000 : 100);
+    frames.push({ at: i * 125, luma });
+  }
+  const chosen = mod.selectFrames(frames, { maxFrames: 12 });
+  assert.equal(chosen.length, 12);
+  assert.equal(chosen[0], 0);
+  assert.equal(chosen[11], 39);
+  const gaps = chosen.slice(1).map((v, i) => frames[v].at - frames[chosen[i]].at);
+  const ideal = (39 * 125) / 11;
+  assert.ok(Math.max(...gaps) <= ideal * 1.6, `largest gap ${Math.max(...gaps)} ms vs ideal ${ideal.toFixed(0)}`);
+});
+test('past the cap only the moments that moved are thinned - a still stretch adds nothing', () => {
+  // Moves for the first second, sits still for three: the frames stay where the motion was.
+  const frames = Array.from({ length: 32 }, (_, i) => frame(i * 125, i < 8 ? (i % 2) * 200 : 200));
+  const chosen = mod.selectFrames(frames, { maxFrames: 6 });
+  assert.equal(chosen[chosen.length - 1], 31);
+  for (const i of chosen.slice(0, -1)) assert.ok(i < 8, `frame ${i} is from the still stretch`);
 });
 test('one or zero frames do not break it', () => {
   assert.deepEqual(mod.selectFrames([]), []);
@@ -956,7 +978,7 @@ const runPicker = (frames, options) => {
   assert.deepEqual([...held].sort((a, b) => a - b), picker.held(), 'release list and held() agree');
   return { held: picker.held(), peak };
 };
-test('it always still holds every frame selectFrames would pick', () => {
+test('what it holds at the end is exactly what selectFrames picks', () => {
   for (let seed = 1; seed <= 200; seed++) {
     const rand = lcg(seed);
     const count = 1 + Math.floor(rand() * 90);
@@ -971,7 +993,7 @@ test('it always still holds every frame selectFrames would pick', () => {
     const maxFrames = 2 + Math.floor(rand() * 12);
     const { held, peak } = runPicker(frames, { maxFrames });
     const chosen = mod.selectFrames(frames, { maxFrames });
-    for (const i of chosen) assert.ok(held.includes(i), `seed ${seed}: chose ${i}, not held`);
+    assert.deepEqual(held, chosen, `seed ${seed}: what the recorder holds is what the sheet shows`);
     assert.ok(held.length <= maxFrames, `seed ${seed}: holds ${held.length} > ${maxFrames}`);
     assert.ok(peak <= maxFrames, `seed ${seed}: peak ${peak}`);
   }

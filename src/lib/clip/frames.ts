@@ -54,47 +54,33 @@ const DEFAULT_MIN_CHANGE = 0.3;
 /**
  * Which sampled frames go on the sheet. The first and last always do - they
  * are the before and after. In between, a frame is a candidate when it differs
- * from the previously kept frame by more than the floor, so a page that sits
+ * from the previous candidate by more than the floor, so a page that sits
  * still yields two frames and a page that animates yields the moments it
- * moved. Past the cap, the candidates with the biggest change win, and the
- * result is returned in time order. Indices into the input.
+ * moved. Past the cap, candidates are thinned so the survivors spread across
+ * the clip: the one sitting closest to its neighbours goes first. Picking the
+ * biggest changes instead bunched every frame into the fastest moments of a
+ * continuous animation and left the slow stretches empty. Indices into the
+ * input, in time order.
+ *
+ * Defined as the FramePicker run over the whole list, so what the recorder
+ * keeps while recording and what lands on the sheet are the same thing.
  */
 export function selectFrames(frames: SampledFrame[], options: SelectOptions = {}): number[] {
-  const maxFrames = Math.max(2, options.maxFrames ?? DEFAULT_MAX_FRAMES);
-  const minChange = options.minChange ?? DEFAULT_MIN_CHANGE;
-  if (frames.length === 0) return [];
-  if (frames.length === 1) return [0];
-  const last = frames.length - 1;
-  // Candidates with their change score against the previously kept frame.
-  const candidates: { index: number; score: number }[] = [];
-  let keptLuma = frames[0].luma;
-  for (let i = 1; i < last; i++) {
-    const score = frameDifference(frames[i].luma, keptLuma);
-    if (score >= minChange) {
-      candidates.push({ index: i, score });
-      keptLuma = frames[i].luma;
-    }
-  }
-  const room = maxFrames - 2;
-  const chosen = candidates
-    .sort((a, b) => b.score - a.score || a.index - b.index)
-    .slice(0, Math.max(0, room))
-    .map((c) => c.index)
-    .sort((a, b) => a - b);
-  return [0, ...chosen, last];
+  const picker = new FramePicker(options);
+  for (const frame of frames) picker.push(frame);
+  return picker.held();
 }
 
 /**
- * selectFrames, run as the frames arrive, so the recorder only has to hold
+ * Frame selection, run as the frames arrive, so the recorder only has to hold
  * full-size pixels for frames that can still end up on the sheet.
  *
  * Encoding a frame while recording costs about a second in the hidden
  * offscreen document, which starved the sampler down to one frame a second.
  * Instead every frame keeps only its thumbnail, and the picker says which
- * full-size frames can be let go: anything that is not the first frame, the
- * newest frame (it may turn out to be the last), or one of the best
- * candidates so far. At any moment it holds at most `maxFrames` indices, and
- * when the clip ends the indices selectFrames picks are all among them.
+ * full-size frames can be let go. It holds the first frame, the newest frame
+ * (it may turn out to be the last), and at most `maxFrames - 2` candidates in
+ * between - never more than `maxFrames` in all.
  */
 export class FramePicker {
   readonly frames: SampledFrame[] = [];
@@ -102,7 +88,7 @@ export class FramePicker {
   private readonly minChange: number;
   private keptLuma: Uint8Array | null = null;
   private pending = -1;
-  /** Candidates still in the running, best first. */
+  /** Candidates still in the running, in time order. */
   private candidates: { index: number; score: number }[] = [];
 
   constructor(options: SelectOptions = {}) {
@@ -123,7 +109,7 @@ export class FramePicker {
     const previous = this.pending;
     this.pending = index;
     // The first frame is always kept; any other previous frame is now a
-    // middle frame and is judged the way selectFrames judges it.
+    // middle frame and is judged against the last candidate.
     if (previous <= 0) return released;
     const score = frameDifference(this.frames[previous].luma, this.keptLuma!);
     if (score < this.minChange) {
@@ -132,9 +118,34 @@ export class FramePicker {
     }
     this.keptLuma = this.frames[previous].luma;
     this.candidates.push({ index: previous, score });
-    this.candidates.sort((a, b) => b.score - a.score || a.index - b.index);
-    while (this.candidates.length > this.room) released.push(this.candidates.pop()!.index);
+    while (this.candidates.length > this.room) released.push(this.thinOne());
     return released;
+  }
+
+  /**
+   * Drop the candidate whose removal leaves the smallest hole: the one with
+   * its neighbours closest together in time. Ties go to the smaller change,
+   * then to the later frame. Returns its index.
+   */
+  private thinOne(): number {
+    const c = this.candidates;
+    const at = (i: number) => this.frames[i].at;
+    let worst = 0;
+    let worstGap = Infinity;
+    for (let i = 0; i < c.length; i++) {
+      const before = i === 0 ? at(0) : at(c[i - 1].index);
+      const after = i === c.length - 1 ? at(this.pending) : at(c[i + 1].index);
+      const gap = after - before;
+      const w = c[worst];
+      if (
+        gap < worstGap ||
+        (gap === worstGap && (c[i].score < w.score || (c[i].score === w.score && c[i].index > w.index)))
+      ) {
+        worst = i;
+        worstGap = gap;
+      }
+    }
+    return c.splice(worst, 1)[0].index;
   }
 
   /** Indices whose full-size pixels must still be kept, in time order. */
