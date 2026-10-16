@@ -371,6 +371,8 @@ export async function mapPageSources(page: PageRecord, mapper: FrameMapper): Pro
 /** The report line. Printed only when the page had frames to look at. */
 export function sourceMapLabel(frames: number, mappedFrames: number): string | null {
   if (frames === 0) return null;
-  if (mappedFrames === 0) return `none of ${frames} ${frames === 1 ? 'frame' : 'frames'} had a source map - locations are as the browser reported them.`;
-  return `${mappedFrames} of ${frames} ${frames === 1 ? 'frame' : 'frames'} mapped to the original file and line; the rest are as the browser reported them.`;
+  const noun = frames === 1 ? 'frame' : 'frames';
+  if (mappedFrames === 0) return `none of ${frames} ${noun} had a source map - locations are as the browser reported them.`;
+  if (mappedFrames === frames) return `all ${frames} ${noun} mapped to the original file and line.`;
+  return `${mappedFrames} of ${frames} ${noun} mapped to the original file and line; the rest are as the browser reported them.`;
 }

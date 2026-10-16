@@ -881,7 +881,8 @@ heading('source maps - the report line');
 test('no frames, no line; otherwise the count and what happened to the rest', () => {
   assert.equal(mod.sourceMapLabel(0, 0), null);
   assert.match(mod.sourceMapLabel(3, 0), /^none of 3 frames had a source map/);
-  assert.match(mod.sourceMapLabel(1, 1), /^1 of 1 frame mapped/);
+  assert.match(mod.sourceMapLabel(1, 1), /^all 1 frame mapped to the original file and line\.$/);
+  assert.match(mod.sourceMapLabel(3, 3), /^all 3 frames mapped/);
   assert.match(mod.sourceMapLabel(5, 2), /^2 of 5 frames mapped to the original file and line; the rest/);
 });
 test('the context block prints it after Redacted, and only when there were frames', () => {
