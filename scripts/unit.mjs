@@ -29,7 +29,7 @@ export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
 export { buildSessionIndex } from '${ROOT}/src/lib/session/manifest.ts';
-export { frameDifference, selectFrames, sheetLayout, offsetLabel, eventsDuringClip, buildClipMarkdown, clampClipSeconds, clampClipDelay, frameFilename, THUMB_W, THUMB_H } from '${ROOT}/src/lib/clip/frames.ts';
+export { frameDifference, selectFrames, FramePicker, sheetLayout, offsetLabel, eventsDuringClip, buildClipMarkdown, clampClipSeconds, clampClipDelay, frameFilename, THUMB_W, THUMB_H } from '${ROOT}/src/lib/clip/frames.ts';
 export { decodeMappings, SourceMapIndex, parseSourceMap, cleanSourcePath, findSourceMapUrl, dataUrlText, parseFrame, formatFrame, FrameMapper, mapPageSources, sourceMapLabel } from '${ROOT}/src/lib/source-map.ts';
 `;
 
@@ -936,6 +936,54 @@ test('past the cap the biggest changes win, still in time order', () => {
 test('one or zero frames do not break it', () => {
   assert.deepEqual(mod.selectFrames([]), []);
   assert.deepEqual(mod.selectFrames([frame(0, 1)]), [0]);
+});
+
+heading('clips - picking frames as they arrive');
+// A seeded generator, so a failure reproduces.
+const lcg = (seed) => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+const runPicker = (frames, options) => {
+  const picker = new mod.FramePicker(options);
+  const held = new Set();
+  let peak = 0;
+  frames.forEach((f, i) => {
+    for (const r of picker.push(f)) {
+      assert.ok(held.has(r), `released ${r} which was not held`);
+      held.delete(r);
+    }
+    held.add(i);
+    peak = Math.max(peak, held.size);
+  });
+  assert.deepEqual([...held].sort((a, b) => a - b), picker.held(), 'release list and held() agree');
+  return { held: picker.held(), peak };
+};
+test('it always still holds every frame selectFrames would pick', () => {
+  for (let seed = 1; seed <= 200; seed++) {
+    const rand = lcg(seed);
+    const count = 1 + Math.floor(rand() * 90);
+    const frames = [];
+    let level = Math.floor(rand() * 256);
+    for (let i = 0; i < count; i++) {
+      if (rand() < 0.5) level = Math.floor(rand() * 256);
+      const luma = thumb(level);
+      if (rand() < 0.3) luma.fill(255 - level, 0, Math.floor(rand() * luma.length * 0.05));
+      frames.push({ at: i * 125, luma });
+    }
+    const maxFrames = 2 + Math.floor(rand() * 12);
+    const { held, peak } = runPicker(frames, { maxFrames });
+    const chosen = mod.selectFrames(frames, { maxFrames });
+    for (const i of chosen) assert.ok(held.includes(i), `seed ${seed}: chose ${i}, not held`);
+    assert.ok(held.length <= maxFrames, `seed ${seed}: holds ${held.length} > ${maxFrames}`);
+    assert.ok(peak <= maxFrames, `seed ${seed}: peak ${peak}`);
+  }
+});
+test('a constantly moving page keeps memory flat - 80 frames, at most 12 held', () => {
+  const frames = Array.from({ length: 80 }, (_, i) => frame(i * 125, (i * 37) % 256));
+  const { peak } = runPicker(frames, { maxFrames: 12 });
+  assert.ok(peak <= 12, `peak ${peak}`);
+});
+test('a still page holds just the first and the newest', () => {
+  const frames = Array.from({ length: 40 }, (_, i) => frame(i * 125, 50));
+  assert.deepEqual(runPicker(frames, { maxFrames: 12 }).held, [0, 39]);
 });
 
 heading('clips - the sheet');

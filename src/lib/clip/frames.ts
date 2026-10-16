@@ -84,6 +84,69 @@ export function selectFrames(frames: SampledFrame[], options: SelectOptions = {}
   return [0, ...chosen, last];
 }
 
+/**
+ * selectFrames, run as the frames arrive, so the recorder only has to hold
+ * full-size pixels for frames that can still end up on the sheet.
+ *
+ * Encoding a frame while recording costs about a second in the hidden
+ * offscreen document, which starved the sampler down to one frame a second.
+ * Instead every frame keeps only its thumbnail, and the picker says which
+ * full-size frames can be let go: anything that is not the first frame, the
+ * newest frame (it may turn out to be the last), or one of the best
+ * candidates so far. At any moment it holds at most `maxFrames` indices, and
+ * when the clip ends the indices selectFrames picks are all among them.
+ */
+export class FramePicker {
+  readonly frames: SampledFrame[] = [];
+  private readonly room: number;
+  private readonly minChange: number;
+  private keptLuma: Uint8Array | null = null;
+  private pending = -1;
+  /** Candidates still in the running, best first. */
+  private candidates: { index: number; score: number }[] = [];
+
+  constructor(options: SelectOptions = {}) {
+    this.room = Math.max(2, options.maxFrames ?? DEFAULT_MAX_FRAMES) - 2;
+    this.minChange = options.minChange ?? DEFAULT_MIN_CHANGE;
+  }
+
+  /** Add the next frame. Returns the indices whose full-size pixels are no longer needed. */
+  push(frame: SampledFrame): number[] {
+    const index = this.frames.length;
+    this.frames.push(frame);
+    if (index === 0) {
+      this.keptLuma = frame.luma;
+      this.pending = 0;
+      return [];
+    }
+    const released: number[] = [];
+    const previous = this.pending;
+    this.pending = index;
+    // The first frame is always kept; any other previous frame is now a
+    // middle frame and is judged the way selectFrames judges it.
+    if (previous <= 0) return released;
+    const score = frameDifference(this.frames[previous].luma, this.keptLuma!);
+    if (score < this.minChange) {
+      released.push(previous);
+      return released;
+    }
+    this.keptLuma = this.frames[previous].luma;
+    this.candidates.push({ index: previous, score });
+    this.candidates.sort((a, b) => b.score - a.score || a.index - b.index);
+    while (this.candidates.length > this.room) released.push(this.candidates.pop()!.index);
+    return released;
+  }
+
+  /** Indices whose full-size pixels must still be kept, in time order. */
+  held(): number[] {
+    const held = new Set<number>();
+    if (this.frames.length > 0) held.add(0);
+    for (const c of this.candidates) held.add(c.index);
+    if (this.pending >= 0) held.add(this.pending);
+    return [...held].sort((a, b) => a - b);
+  }
+}
+
 // ----------------------------------------------------------- the sheet --
 
 export interface SheetLayout {
