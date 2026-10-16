@@ -91,7 +91,7 @@ export const CAPTURE_TRIGGER_LABEL: Record<CaptureTrigger, string> = {
   agent: 'in-page agent trigger (capture-kit:capture)',
   session: 'session capture (multiple tabs)',
   sweep: 'responsive sweep',
-  clip: 'popup Record clip button',
+  clip: 'Record clip (popup button or icon menu)',
   'agent-clip': 'in-page agent trigger (capture-kit:record)',
 };
 
@@ -201,13 +201,15 @@ export type ClipRecordResponse =
       frameHeight: number;
       /** Offsets of the frames on the sheet, in order. */
       frameOffsetsMs: number[];
+      /** The same frames at full size, JPEG base64, in order - for a person looking closely. */
+      frames: string[];
       sampledFrames: number;
       durationMs: number;
     }
   | { ok: false; reason: string };
 
 export type ClipResponse =
-  | { ok: true; sheetFilename: string; videoFilename: string; markdownFilename: string; frames: number; copied: boolean }
+  | { ok: true; sheetFilename: string; videoFilename: string; markdownFilename: string; framesFolder: string; frames: number; copied: boolean }
   | { ok: false; reason: string };
 
 export type CaptureResponse =

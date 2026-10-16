@@ -37,7 +37,7 @@ import { redactPage, redactText } from '../lib/redact';
 import type { RedactedPage } from '../lib/redact';
 import { FrameMapper, mapPageSources, sourceMapLabel } from '../lib/source-map';
 import { redactedLabel } from '../lib/redact';
-import { buildClipMarkdown, eventsDuringClip } from '../lib/clip/frames';
+import { buildClipMarkdown, eventsDuringClip, frameFilename } from '../lib/clip/frames';
 import {
   CAPTURE_PROGRESS_KEY,
   CONSOLE_LOGS_IN_BUNDLE,
@@ -1379,8 +1379,15 @@ async function recordClip(trigger: 'clip' | 'agent-clip', tabIdOverride?: number
 
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
     await ensureOffscreenDocument();
-    await setBadge('REC', BADGE_ERROR, `capture-kit — recording ${settings.clipSeconds}s`);
+    // A countdown on the badge is the only sign a recording is running: the
+    // popup has closed and nothing may be drawn on the page itself.
     const startedAt = new Date();
+    let remaining = settings.clipSeconds;
+    await setBadge(`${remaining}s`, BADGE_ERROR, `capture-kit — recording ${settings.clipSeconds}s`);
+    const countdown = setInterval(() => {
+      remaining = Math.max(0, remaining - 1);
+      void setBadge(remaining > 0 ? `${remaining}s` : '…', BADGE_ERROR, 'capture-kit — recording');
+    }, 1000);
     let recorded: ClipRecordResponse;
     try {
       const request: ClipRecordRequest = {
@@ -1395,6 +1402,7 @@ async function recordClip(trigger: 'clip' | 'agent-clip', tabIdOverride?: number
       };
       recorded = (await chrome.runtime.sendMessage(request)) as ClipRecordResponse;
     } finally {
+      clearInterval(countdown);
       await closeOffscreenDocument();
     }
     if (!recorded || !recorded.ok) {
@@ -1413,6 +1421,7 @@ async function recordClip(trigger: 'clip' | 'agent-clip', tabIdOverride?: number
     const sheetFilename = `${basename}_frames.jpg`;
     const videoFilename = `${basename}_clip.webm`;
     const markdownFilename = `${basename}_clip.md`;
+    const framesFolder = `${basename}_frames`;
     const markdown = buildClipMarkdown({
       url: page.meta.url,
       title: page.meta.title,
@@ -1426,6 +1435,7 @@ async function recordClip(trigger: 'clip' | 'agent-clip', tabIdOverride?: number
       sampledFrames: recorded.sampledFrames,
       sheetFilename,
       videoFilename,
+      framesFolder,
       events,
       redacted: redactedLabel(page.redacted),
       sourceMaps: sourceMapLabel(page.frames, page.mappedFrames) ?? undefined,
@@ -1434,6 +1444,15 @@ async function recordClip(trigger: 'clip' | 'agent-clip', tabIdOverride?: number
     const sheetWrite = await writeBundleFile(sheetFilename, 'image/jpeg', recorded.sheet);
     await writeBundleFile(videoFilename, recorded.videoMime, recorded.video);
     await writeBundleFile(markdownFilename, 'text/markdown', textToBase64(markdown));
+    // The kept frames at full size, one file each, in a folder named after the
+    // clip - the sheet is the overview, these are for looking closely.
+    for (let i = 0; i < recorded.frames.length; i++) {
+      await writeBundleFile(
+        `${framesFolder}/${frameFilename(i, recorded.frameOffsetsMs[i])}`,
+        'image/jpeg',
+        recorded.frames[i],
+      );
+    }
     if (settings.maintainLatest) {
       await downloadLatestPointer('latest-frames.jpg', 'image/jpeg', recorded.sheet);
       await downloadLatestPointer('latest-clip.webm', recorded.videoMime, recorded.video);
@@ -1454,6 +1473,7 @@ async function recordClip(trigger: 'clip' | 'agent-clip', tabIdOverride?: number
       sheetFilename: sheetWrite.filename,
       videoFilename,
       markdownFilename,
+      framesFolder,
       frames: recorded.frameOffsetsMs.length,
       copied,
     };
@@ -1659,6 +1679,7 @@ chrome.commands.onCommand.addListener((command) => {
 
 const POPUP_PAGE = 'popup/popup.html';
 const PANEL_MENU_ID = 'capture-kit-open-panel';
+const CLIP_MENU_ID = 'capture-kit-record-clip';
 
 async function applyActionPopup(oneClick: boolean): Promise<void> {
   try {
@@ -1720,6 +1741,9 @@ chrome.action.onClicked.addListener(() => {
 
 chrome.contextMenus.onClicked.addListener((info) => {
   if (info.menuItemId === PANEL_MENU_ID) void openPanel();
+  // Always in the icon's menu: with one-click capture on, the popup is a
+  // right-click away and this saves the second click.
+  if (info.menuItemId === CLIP_MENU_ID) void recordClip('clip');
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -1733,6 +1757,11 @@ chrome.runtime.onInstalled.addListener(() => {
         title: 'Open capture-kit panel',
         contexts: ['action'],
         visible: false,
+      });
+      chrome.contextMenus.create({
+        id: CLIP_MENU_ID,
+        title: 'Record clip',
+        contexts: ['action'],
       });
     } catch (error) {
       console.error('[capture-kit] could not create the icon menu:', error);

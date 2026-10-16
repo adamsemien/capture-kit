@@ -137,8 +137,11 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
   const durationMs = Math.round(performance.now() - startedAt);
 
   const chosen = selectFrames(frames, { maxFrames: request.maxFrames });
+  // Two across, each tile about half the tab's width: readable by a person,
+  // and an assistant downscales anything larger anyway.
   const layout = sheetLayout(chosen.length, frameWidth, frameHeight, {
-    sheetWidth: Math.min(1800, Math.max(900, frameWidth)),
+    columns: 2,
+    sheetWidth: Math.min(2600, Math.max(1200, frameWidth)),
   });
   const sheet = document.createElement('canvas');
   sheet.width = layout.width;
@@ -178,6 +181,7 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
     frameWidth,
     frameHeight,
     frameOffsetsMs: chosen.map((i) => frames[i].at),
+    frames: await Promise.all(chosen.map((i) => blobToBase64(frames[i].blob))),
     sampledFrames: frames.length,
     durationMs,
   };

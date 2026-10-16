@@ -29,7 +29,7 @@ export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
 export { buildSessionIndex } from '${ROOT}/src/lib/session/manifest.ts';
-export { frameDifference, selectFrames, sheetLayout, offsetLabel, eventsDuringClip, buildClipMarkdown, clampClipSeconds, THUMB_W, THUMB_H } from '${ROOT}/src/lib/clip/frames.ts';
+export { frameDifference, selectFrames, sheetLayout, offsetLabel, eventsDuringClip, buildClipMarkdown, clampClipSeconds, frameFilename, THUMB_W, THUMB_H } from '${ROOT}/src/lib/clip/frames.ts';
 export { decodeMappings, SourceMapIndex, parseSourceMap, cleanSourcePath, findSourceMapUrl, dataUrlText, parseFrame, formatFrame, FrameMapper, mapPageSources, sourceMapLabel } from '${ROOT}/src/lib/source-map.ts';
 `;
 
@@ -983,13 +983,13 @@ test('the report names each tile and stamps each event', () => {
     url: 'https://x.co/page', title: 'Page', viewport: { width: 1440, height: 900 }, userAgent: 'UA',
     startedAt: new Date('2026-10-16T21:00:00Z'), durationMs: 5020, triggerLabel: 'popup Record clip button',
     recorderActive: true, frameOffsetsMs: [0, 1250, 5020], sampledFrames: 41,
-    sheetFilename: 'page_frames.jpg', videoFilename: 'page_clip.webm',
+    sheetFilename: 'page_frames.jpg', videoFilename: 'page_clip.webm', framesFolder: 'page_frames',
     events: [{ offsetMs: 1500, kind: 'console', level: 'error', text: 'boom' }],
     redacted: 'none found.', sourceMaps: 'all 1 frame mapped to the original file and line.',
   });
   assert.match(md, /^# Clip — Page/);
   assert.match(md, /\*\*Length:\*\* 5\.0 s/);
-  assert.match(md, /3 of 41 sampled frames/);
+  assert.match(md, /3 of 41 sampled frames, the ones where the picture changed; each at full size in page_frames\//);
   assert.match(md, /1\. \+0\.00s\n2\. \+1\.25s\n3\. \+5\.02s/);
   assert.match(md, /\+1\.50s \[error\] boom/);
   assert.match(md, /\*\*Redacted:\*\* none found/);
@@ -999,11 +999,15 @@ test('an inactive recorder is said plainly, not shown as a quiet clip', () => {
   const md = mod.buildClipMarkdown({
     url: '', title: '', viewport: { width: 1, height: 1 }, userAgent: '', startedAt: new Date(0), durationMs: 1000,
     triggerLabel: 't', recorderActive: false, frameOffsetsMs: [0, 1000], sampledFrames: 9,
-    sheetFilename: 'a', videoFilename: 'b', events: [],
+    sheetFilename: 'a', videoFilename: 'b', framesFolder: 'c', events: [],
   });
   assert.match(md, /NOT ACTIVE/);
   assert.match(md, /reload the tab, reproduce, and record again/);
   assert.ok(!md.includes('No console output'));
+});
+test('kept frames are named by their place and offset', () => {
+  assert.equal(mod.frameFilename(0, 0), '01_+0.00s.jpg');
+  assert.equal(mod.frameFilename(11, 4504), '12_+4.50s.jpg');
 });
 test('clip length is clamped to 2-10 seconds', () => {
   assert.equal(mod.clampClipSeconds(1), 2);

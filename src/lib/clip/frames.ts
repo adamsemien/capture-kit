@@ -212,6 +212,8 @@ export interface ClipReportInput {
   sampledFrames: number;
   sheetFilename: string;
   videoFilename: string;
+  /** Folder holding the kept frames at full size, relative to the output folder. */
+  framesFolder: string;
   events: ClipEvent[];
   /** Values scrubbed from the record (NOBC-152). */
   redacted?: string;
@@ -240,7 +242,7 @@ export function buildClipMarkdown(input: ClipReportInput): string {
       `- **Length:** ${seconds} s`,
       `- **Triggered by:** ${input.triggerLabel}`,
       `- **Viewport:** ${input.viewport.width} × ${input.viewport.height}`,
-      `- **Frames:** ${input.sheetFilename} — ${input.frameOffsetsMs.length} of ${input.sampledFrames} sampled frames, the ones where the picture changed`,
+      `- **Frames:** ${input.sheetFilename} — ${input.frameOffsetsMs.length} of ${input.sampledFrames} sampled frames, the ones where the picture changed; each at full size in ${input.framesFolder}/`,
       `- **Video:** ${input.videoFilename} — for a person; assistants read the frames and the timeline below`,
       `- **Recorder:** ${
         input.recorderActive
@@ -273,6 +275,11 @@ export function buildClipMarkdown(input: ClipReportInput): string {
     );
   }
   return parts.join('\n\n') + '\n';
+}
+
+/** `03_+1.25s.jpg` - the kept frame's place on the sheet and its offset, sortable in a file list. */
+export function frameFilename(index: number, offsetMs: number): string {
+  return `${String(index + 1).padStart(2, '0')}_${offsetLabel(offsetMs)}.jpg`;
 }
 
 /** Clip lengths the setting allows. */

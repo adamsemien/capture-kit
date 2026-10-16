@@ -186,7 +186,7 @@ recordClipBtn.addEventListener('click', () => {
     const response = (await chrome.runtime.sendMessage({ type: 'RECORD_CLIP' })) as ClipResponse;
     if (response.ok) {
       setStatus(
-        `Saved the clip, ${response.frames} frames on a sheet, and the report${
+        `Saved the clip, ${response.frames} frames (sheet + full size), and the report${
           response.copied ? ' — sheet is on your clipboard.' : '.'
         }`,
         'ok',
