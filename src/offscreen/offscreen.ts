@@ -23,6 +23,13 @@ import {
 import type { SampledFrame } from '../lib/clip/frames';
 import type { ClipRecordRequest, ClipRecordResponse } from '../lib/messages';
 
+// MediaStreamTrackProcessor (Chrome 94+) is not in the DOM typings this
+// project compiles against; the shape used here is the whole of it.
+declare class MediaStreamTrackProcessor {
+  constructor(init: { track: MediaStreamTrack });
+  readonly readable: ReadableStream<VideoFrame>;
+}
+
 const FRAME_JPEG_QUALITY = 0.85;
 const SHEET_JPEG_QUALITY = 0.85;
 
@@ -72,25 +79,23 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
     },
   } as unknown as MediaStreamConstraints;
   const stream = await navigator.mediaDevices.getUserMedia(constraints);
-  const video = document.createElement('video');
-  video.muted = true;
-  video.srcObject = stream;
-  await new Promise<void>((resolve, reject) => {
-    video.onloadedmetadata = () => resolve();
-    video.onerror = () => reject(new Error('could not start the tab stream'));
-  });
-  await video.play();
-  const frameWidth = video.videoWidth;
-  const frameHeight = video.videoHeight;
+  const [track] = stream.getVideoTracks();
+  if (!track) throw new Error('the tab stream has no video track');
 
-  const full = document.createElement('canvas');
-  full.width = frameWidth;
-  full.height = frameHeight;
-  const fullCtx = full.getContext('2d', { willReadFrequently: false });
+  // Frames come straight off the track. This document is hidden, and Chrome
+  // throttles timers in hidden pages to about once a second - a setInterval
+  // sampler produced six frames in five seconds. A track processor hands over
+  // every frame the tab paints, untouched by timer throttling; the clip's
+  // clock is the frames' own timestamps, so the length is honest too.
+  const processor = new MediaStreamTrackProcessor({ track });
+  const reader = processor.readable.getReader();
+
   const thumb = document.createElement('canvas');
   thumb.width = THUMB_W;
   thumb.height = THUMB_H;
   const thumbCtx = thumb.getContext('2d', { willReadFrequently: true });
+  const full = document.createElement('canvas');
+  const fullCtx = full.getContext('2d', { willReadFrequently: false });
   if (!fullCtx || !thumbCtx) throw new Error('no canvas context');
 
   const mimeType = pickMimeType();
@@ -104,37 +109,68 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
   });
 
   const frames: KeptFrame[] = [];
-  const startedAt = performance.now();
-  let sampling = false;
-  const sample = async (): Promise<void> => {
-    if (sampling) return;
-    sampling = true;
-    try {
-      const at = Math.round(performance.now() - startedAt);
-      fullCtx.drawImage(video, 0, 0, frameWidth, frameHeight);
-      thumbCtx.drawImage(video, 0, 0, THUMB_W, THUMB_H);
-      const rgba = thumbCtx.getImageData(0, 0, THUMB_W, THUMB_H).data;
-      const luma = new Uint8Array(THUMB_W * THUMB_H);
-      for (let i = 0, p = 0; i < luma.length; i++, p += 4) {
-        luma[i] = (rgba[p] * 299 + rgba[p + 1] * 587 + rgba[p + 2] * 114) / 1000;
-      }
-      const blob = await canvasBlob(full, 'image/jpeg', FRAME_JPEG_QUALITY);
-      frames.push({ at, luma, blob });
-    } finally {
-      sampling = false;
+  const minGapMs = 1000 / request.fps;
+  const lengthMs = request.seconds * 1000;
+  let frameWidth = 0;
+  let frameHeight = 0;
+  let startedAt = -1;
+  let lastSampleAt = -Infinity;
+  let durationMs = 0;
+
+  const sample = async (frame: VideoFrame, at: number): Promise<void> => {
+    fullCtx.drawImage(frame, 0, 0, frameWidth, frameHeight);
+    thumbCtx.drawImage(frame, 0, 0, THUMB_W, THUMB_H);
+    const rgba = thumbCtx.getImageData(0, 0, THUMB_W, THUMB_H).data;
+    const luma = new Uint8Array(THUMB_W * THUMB_H);
+    for (let i = 0, p = 0; i < luma.length; i++, p += 4) {
+      luma[i] = (rgba[p] * 299 + rgba[p + 1] * 587 + rgba[p + 2] * 114) / 1000;
     }
+    const blob = await canvasBlob(full, 'image/jpeg', FRAME_JPEG_QUALITY);
+    frames.push({ at, luma, blob });
   };
 
   recorder.start(250);
-  const interval = setInterval(() => void sample(), Math.max(50, Math.round(1000 / request.fps)));
-  await sample();
-  await new Promise((resolve) => setTimeout(resolve, request.seconds * 1000));
-  clearInterval(interval);
-  await sample();
+  // A ceiling in case the track stops delivering: the clip ends on its own
+  // clock below, this only guards against a frozen tab.
+  const ceiling = new Promise<void>((resolve) => setTimeout(resolve, lengthMs + 4000));
+  const readLoop = (async () => {
+    for (;;) {
+      const { value: frame, done } = await reader.read();
+      if (done || !frame) break;
+      try {
+        const now = performance.now();
+        if (startedAt < 0) {
+          startedAt = now;
+          frameWidth = frame.displayWidth;
+          frameHeight = frame.displayHeight;
+          full.width = frameWidth;
+          full.height = frameHeight;
+        }
+        const at = Math.round(now - startedAt);
+        durationMs = at;
+        if (at >= lengthMs) {
+          if (frames.length === 0 || frames[frames.length - 1].at < at) await sample(frame, at);
+          break;
+        }
+        if (at - lastSampleAt >= minGapMs) {
+          lastSampleAt = at;
+          await sample(frame, at);
+        }
+      } finally {
+        frame.close();
+      }
+    }
+  })();
+  await Promise.race([readLoop, ceiling]);
   recorder.stop();
   await stopped;
-  for (const track of stream.getTracks()) track.stop();
-  const durationMs = Math.round(performance.now() - startedAt);
+  try {
+    await reader.cancel();
+  } catch {
+    /* already closed */
+  }
+  for (const t of stream.getTracks()) t.stop();
+  if (frames.length === 0) throw new Error('the tab delivered no frames - is it in front?');
 
   const chosen = selectFrames(frames, { maxFrames: request.maxFrames });
   // Two across, each tile about half the tab's width: readable by a person,
