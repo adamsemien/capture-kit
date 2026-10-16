@@ -33,6 +33,8 @@ import { textToBase64 } from '../lib/base64';
 import { ICON_MODE_KEY, getSettings } from '../lib/settings';
 import type { Settings } from '../lib/settings';
 import { outputDirHasFile, outputDirStatus, writeToOutputDir } from '../lib/output-dir';
+import { redactPage, redactText } from '../lib/redact';
+import type { RedactedPage } from '../lib/redact';
 import {
   CAPTURE_PROGRESS_KEY,
   CONSOLE_LOGS_IN_BUNDLE,
@@ -97,6 +99,25 @@ async function activeTab(): Promise<chrome.tabs.Tab> {
 interface SnapshotLookup {
   snapshot: BufferSnapshot | null;
   recorderActive: boolean;
+}
+
+/**
+ * Everything a report says about a page, scrubbed of passwords, tokens and
+ * keys before any report, index, clipboard block or result tab is built from
+ * it. Tab fields fill in only what the recorder could not supply, and go
+ * through the same scrub - a token in a tab's URL is still a token.
+ */
+function scrubbedPage(tab: chrome.tabs.Tab, snapshot: BufferSnapshot | null): RedactedPage {
+  return redactPage({
+    meta: {
+      url: snapshot?.meta.url || tab.url || '',
+      title: snapshot?.meta.title || tab.title || '',
+      viewport: snapshot?.meta.viewport ?? { width: tab.width ?? 0, height: tab.height ?? 0 },
+      userAgent: snapshot?.meta.userAgent ?? navigator.userAgent,
+    },
+    console: snapshot?.console ?? [],
+    network: snapshot?.network ?? [],
+  });
 }
 
 async function getSnapshot(tabId: number): Promise<SnapshotLookup> {
@@ -535,6 +556,8 @@ interface ReportArtifacts {
   thirdPartyFailures: NetworkFailure[];
   warningCount: number;
   recorderActive: boolean;
+  /** Values scrubbed from this page's report. */
+  redacted: number;
   imageMime: string;
   /** Null when the image went to the chosen folder — no download record exists. */
   imageDownloadId: number | null;
@@ -567,6 +590,7 @@ async function captureReport(
 ): Promise<ReportArtifacts> {
   const tabId = tab.id as number;
   const { snapshot, recorderActive } = await getSnapshot(tabId);
+  const page = scrubbedPage(tab, snapshot);
   // The timestamp is taken before the capture so the footer and the report's
   // "Captured at" are the same instant — a segmented capture takes seconds,
   // and two clocks a few seconds apart in one bundle reads as a bug.
@@ -575,26 +599,17 @@ async function captureReport(
     tabId,
     segmentSize: settings.segmentSize,
     format: settings.bundleFormat,
-    stamp: stampRequest(settings, snapshot?.meta.url ?? tab.url ?? '', capturedAt),
+    stamp: stampRequest(settings, page.meta.url, capturedAt),
     onProgress: (done, total) => void reportProgress(done, total),
   });
 
-  const basename = captureBasename(
-    snapshot?.meta.title || tab.title || '',
-    snapshot?.meta.url || tab.url,
-    capturedAt,
-  );
+  const basename = captureBasename(page.meta.title, page.meta.url, capturedAt);
   const isJpeg = result.format === 'jpeg';
   const imageFilename = `${basename}.${isJpeg ? 'jpg' : 'png'}`;
   const markdownFilename = `${basename}.md`;
-  const meta = snapshot?.meta ?? {
-    url: tab.url ?? '',
-    title: tab.title ?? '',
-    viewport: { width: tab.width ?? 0, height: tab.height ?? 0 },
-    userAgent: navigator.userAgent,
-  };
-  const consoleEntries = snapshot?.console ?? [];
-  const networkFailures = snapshot?.network ?? [];
+  const meta = page.meta;
+  const consoleEntries = page.console;
+  const networkFailures = page.network;
 
   const markdownInput = {
     meta,
@@ -604,6 +619,7 @@ async function captureReport(
     consoleEntries,
     networkFailures,
     recorderActive,
+    redacted: page.redacted,
     includeLogs: settings.includeConsoleLogs,
     capturedAt,
     imageFilename,
@@ -627,7 +643,7 @@ async function captureReport(
     : null;
 
   const allErrors = consoleEntries.filter((e) => e.level === 'error');
-  const pageUrl = meta.url || tab.url || '';
+  const pageUrl = meta.url;
   // The manifest counts and orders on first-party signal only: a page whose
   // only failures are blocked analytics beacons is not a page with errors.
   const errorSplit = splitConsoleErrors(allErrors, pageUrl);
@@ -685,11 +701,12 @@ async function captureReport(
     thirdPartyFailures: failureSplit.thirdParty,
     warningCount,
     recorderActive,
+    redacted: page.redacted,
     imageMime,
     imageDownloadId: imageWrite.downloadId,
     result,
-    title: meta.title || tab.title || '',
-    url: meta.url || tab.url || '',
+    title: meta.title,
+    url: meta.url,
   };
 }
 
@@ -864,7 +881,8 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
       tabId: tab.id as number,
       segmentSize: settings.segmentSize,
       format,
-      stamp: stampRequest(settings, tab.url ?? '', capturedAt),
+      // The footer is text Capture Kit draws, so it is scrubbed like the report.
+      stamp: stampRequest(settings, redactText(tab.url ?? '').text, capturedAt),
       onProgress: (done, total) => void reportProgress(done, total),
     });
     const mime = format === 'png' ? 'image/png' : 'image/jpeg';
@@ -924,13 +942,14 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
     // A sweep is one page at three widths, so console/network state is read
     // once and stated once in the report.
     const { snapshot, recorderActive } = await getSnapshot(tabId);
+    const page = scrubbedPage(tab, snapshot);
 
     // Inner-scroll expansion applies once for the whole sweep, restored at
     // the end — same detection the single captures run.
     const expanded = await detectInnerScroll(tabId);
     if (expanded) await applyInnerScrollExpansion(tabId);
     const capturedAt = new Date();
-    const sweepUrl = snapshot?.meta.url ?? tab.url ?? '';
+    const sweepUrl = page.meta.url;
     await beginIndicator();
     let outcome;
     try {
@@ -943,7 +962,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
       if (expanded) await restoreInnerScrollExpansion(tabId);
     }
 
-    const basename = captureBasename(tab.title || '', tab.url, capturedAt);
+    const basename = captureBasename(page.meta.title, page.meta.url, capturedAt);
     const downloadIds: (number | null)[] = [];
     // The name each image actually landed under. writeBundleFile uniquifies a
     // taken name (" (1)"), so the requested name is not evidence of the file:
@@ -968,12 +987,7 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
     }
 
     // A sweep is a one-page session: it writes a report alongside the images.
-    const sweepMeta = snapshot?.meta ?? {
-      url: tab.url ?? '',
-      title: tab.title ?? '',
-      viewport: { width: tab.width ?? 0, height: tab.height ?? 0 },
-      userAgent: navigator.userAgent,
-    };
+    const sweepMeta = page.meta;
     const sweepMarkdown = buildSweepMarkdown({
       meta: sweepMeta,
       capturedAt,
@@ -992,9 +1006,10 @@ async function captureResponsiveSweep(): Promise<SweepResponse> {
         segments: capture.result.segments,
       })),
       failures: outcome.failures,
-      consoleEntries: snapshot?.console ?? [],
-      networkFailures: snapshot?.network ?? [],
+      consoleEntries: page.console,
+      networkFailures: page.network,
       recorderActive,
+      redacted: page.redacted,
       includeLogs: settings.includeConsoleLogs,
     });
     await writeBundleFile(`${basename}_sweep.md`, 'text/markdown', textToBase64(sweepMarkdown));
@@ -1130,8 +1145,10 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
       let url = '';
       try {
         const tab = await chrome.tabs.get(tabId);
-        title = tab.title ?? '';
-        url = tab.url ?? '';
+        // A tab that fails still gets a line in index.md, so its title and
+        // URL are scrubbed like every other report field.
+        title = redactText(tab.title ?? '').text;
+        url = redactText(tab.url ?? '').text;
         await setSessionProgress({
           state: 'running',
           current: index + 1,
@@ -1185,6 +1202,7 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
           thirdPartyFailures: report.thirdPartyFailures,
           warningCount: report.warningCount,
           recorderActive: report.recorderActive,
+          redacted: report.redacted,
         });
       } catch (error) {
         const reason = describeError(error);

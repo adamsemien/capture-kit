@@ -10,6 +10,7 @@
 // CHECK A15 - a chosen-folder write that fails partway leaves nothing behind.
 // CHECK A16 - every scrolling column of a multi-column app shell is unrolled
 // (NOBC-151).
+// CHECK A18 - reports hide passwords and keys (NOBC-152).
 //
 // The defect: the segmented path overrides the viewport to as much as
 // segmentSize tall, so every viewport-unit length resolves against that
@@ -208,6 +209,35 @@ const A15_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>a15</t
   document.title = 'RESULT ' + JSON.stringify(out);
 </script></body></html>`;
 
+// CHECK A18's fixture: a page that logs the four secret shapes NOBC-152 names
+// and requests a URL carrying a token, then fires a capture. The values are
+// assembled here at runtime so no credential-shaped literal sits in the repo.
+const A18_SECRETS = {
+  jwt:
+    Buffer.from('{"alg":"HS256","typ":"JWT"}').toString('base64url') + '.' +
+    Buffer.from('{"sub":"a18","iat":1760000000}').toString('base64url') + '.c2lnbmF0dXJlLWZha2U',
+  aws: 'AKIA' + 'IOSFODNN7EXAMPLE',
+  bearer: 'abc123DEF456' + 'ghi789JKL0',
+  stripe: ['sk', 'live', '4eC39HqLyjWDarjtT1zdp7dc'].join('_'),
+  query: 'a18query' + 'secret77',
+};
+const A18_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>ready</title></head>
+<body style="margin:0;font:16px sans-serif"><h1>a18 secrets</h1>
+<div style="height:300px;background:rgb(30,120,220)"></div>
+<script>
+  document.addEventListener('capture-kit:capture-complete', (e) => {
+    document.title = 'RESULT ' + JSON.stringify({ detail: e.detail });
+  });
+  console.error('session token ${A18_SECRETS.jwt}');
+  console.error('aws ${A18_SECRETS.aws}');
+  console.warn('Authorization: Bearer ${A18_SECRETS.bearer}');
+  console.warn('stripe ${A18_SECRETS.stripe}');
+  fetch('/a18-missing?access_token=${A18_SECRETS.query}').catch(() => {});
+  addEventListener('load', () => setTimeout(() => {
+    document.dispatchEvent(new CustomEvent('capture-kit:capture'));
+  }, 1200));
+</script></body></html>`;
+
 // CHECK A16's fixture: the NoBC OS event builder's shape. A document that does
 // not scroll, three columns side by side, two of which scroll on their own,
 // and neither of those covers 40% of the screen - the old single-winner rule's
@@ -388,6 +418,9 @@ const server = createServer((req, res) => {
   } else if (url.pathname === '/inspect-columns') {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(INSPECT_COLUMNS);
+  } else if (url.pathname === '/a18') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(A18_PAGE);
   } else if (url.pathname === '/a15') {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(A15_PAGE);
@@ -995,6 +1028,57 @@ async function clipboardAfterCapture(id) {
       !!c && c.previewEnd.pixels === 0 && c.settingsEnd.pixels === 0,
       c ? `control: preview sentinel ${c.previewEnd.pixels}px, settings sentinel ${c.settingsEnd.pixels}px` : 'control capture failed',
     );
+  }
+}
+
+// --- CHECK A18 - reports hide passwords and keys (NOBC-152) ----------------
+// The page logs a JWT, an AWS key, a Bearer header and a Stripe-style key,
+// and requests a URL with a token in it. None may reach the report; the
+// report must say how many it hid. The control is main's build from before
+// this change (CK_REDACT_CONTROL_DIST - its own variable, because A16's
+// control has to predate a different change), which must print all of them.
+{
+  const captureA18 = async () => {
+    rmSync(DOWNLOADS, { recursive: true, force: true });
+    mkdirSync(DOWNLOADS, { recursive: true });
+    const url = `http://127.0.0.1:${HTTP_PORT}/a18?n=${Date.now()}`;
+    await cdp(`/json/new?${encodeURIComponent(url)}`, 'PUT');
+    await sleep(500);
+    const tab = (await cdp('/json/list')).find((t) => t.url === url);
+    const page = await titleResult(tab.id);
+    let report = null;
+    for (let i = 0; i < 30 && !report; i++) {
+      report = newest(DOWNLOADS, '.md');
+      if (!report) await sleep(300);
+    }
+    await cdp(`/json/close/${tab.id}`);
+    return { page, md: report ? readFileSync(report, 'utf8') : null };
+  };
+  const survivors = (md) => Object.entries(A18_SECRETS).filter(([, v]) => md.includes(v)).map(([k]) => k);
+
+  await launch(DIST);
+  const r = await captureA18();
+  console.log('\n--- A18 real build ---');
+  if (!r.md) {
+    verdict('A18 capture wrote a report', false, JSON.stringify(r.page));
+  } else {
+    const line = r.md.split('\n').find((l) => l.startsWith('- **Redacted:**')) ?? '(no Redacted line)';
+    console.log('report: ' + line);
+    verdict('A18 no secret survives in the report', survivors(r.md).length === 0, `survived: ${JSON.stringify(survivors(r.md))}`);
+    verdict('A18 the four log lines are still in the report, scrubbed', (r.md.match(/\[REDACTED\]/g) ?? []).length >= 5 && /aws \[REDACTED\]/.test(r.md) && /Bearer \[REDACTED\]/.test(r.md), 'markers present');
+    verdict('A18 the report says how many it hid', /Redacted:\*\* 5 values/.test(line), line);
+    verdict('A18 the report names the screenshot caveat', /still in the screenshot/.test(line), line);
+  }
+
+  const control = process.env.CK_REDACT_CONTROL_DIST;
+  if (!control || !existsSync(control)) {
+    console.log('\nA18 falsifiability skipped: set CK_REDACT_CONTROL_DIST to a dist built from main before this change');
+  } else {
+    await launch(control);
+    const c = await captureA18();
+    console.log('\n--- A18 falsifiability - control build, no scrubbing ---');
+    const found = c.md ? survivors(c.md) : [];
+    verdict('A18 is falsifiable - the control prints every secret', found.length === Object.keys(A18_SECRETS).length, `control printed: ${JSON.stringify(found)}`);
   }
 }
 

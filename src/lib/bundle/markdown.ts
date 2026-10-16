@@ -3,6 +3,7 @@ import { CAPTURE_TRIGGER_LABEL, CONSOLE_LOGS_IN_BUNDLE } from '../messages';
 import type { CaptureMode, PageDimensions, StampInfo } from '../capture-engine/types';
 import { classifyEnvironment } from '../env-marker';
 import { stampLabel } from '../capture-engine/stamp';
+import { redactedLabel } from '../redact';
 import {
   collapseFailures,
   formatDemotedHost,
@@ -46,6 +47,8 @@ export interface BundleInput {
   naturalSize?: PageDimensions;
   /** The tab's page zoom when the capture started; captures normalize it to 1. */
   browserZoom?: number;
+  /** Values scrubbed from the page record this report was built from. */
+  redacted?: number;
 }
 
 function pad(value: number): string {
@@ -223,6 +226,8 @@ export interface ContextBlockInput {
   naturalSize?: PageDimensions;
   /** The tab's page zoom when the capture started; captures normalize it to 1. */
   browserZoom?: number;
+  /** Values scrubbed from the page record. Absent = the caller did not scrub, and no line is printed. */
+  redacted?: number;
 }
 
 /** True when the captured layout is not the layout the user was looking at. */
@@ -295,6 +300,7 @@ export function contextBlock(input: ContextBlockInput): string[] {
     }`,
     `- **Title:** ${input.title || '(untitled)'}`,
     `- **User agent:** ${input.userAgent}`,
+    ...(input.redacted !== undefined ? [`- **Redacted:** ${redactedLabel(input.redacted)}`] : []),
   ];
   return lines;
 }
@@ -337,6 +343,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
         naturalSize: input.naturalSize,
         browserZoom: input.browserZoom,
         userAgent: meta.userAgent,
+        redacted: input.redacted,
       }),
     ].join('\n'),
   );
@@ -480,6 +487,8 @@ export interface SweepMarkdownInput {
   viewport: PageDimensions;
   /** Present only when the URL footer was composited onto the widths. */
   stamp?: StampInfo;
+  /** Values scrubbed from the page record this report was built from. */
+  redacted?: number;
 }
 
 /**
@@ -514,6 +523,7 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
       }`,
       `- **Title:** ${meta.title || '(untitled)'}`,
       `- **User agent:** ${meta.userAgent}`,
+      ...(input.redacted !== undefined ? [`- **Redacted:** ${redactedLabel(input.redacted)}`] : []),
     ].join('\n'),
   );
 
