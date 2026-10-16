@@ -215,6 +215,8 @@ export type ClipRecordResponse =
       frames: string[];
       sampledFrames: number;
       durationMs: number;
+      /** Where the time went while sampling - printed in the report while this is new. */
+      debug?: string;
     }
   | { ok: false; reason: string };
 

@@ -219,6 +219,8 @@ export interface ClipReportInput {
   redacted?: string;
   /** The source-map line (NOBC-153), when there were frames to map. */
   sourceMaps?: string;
+  /** Sampling timings, while the recorder is being tuned. */
+  debug?: string;
 }
 
 function fence(text: string): string {
@@ -252,6 +254,7 @@ export function buildClipMarkdown(input: ClipReportInput): string {
       `- **User agent:** ${input.userAgent}`,
       ...(input.redacted ? [`- **Redacted:** ${input.redacted}`] : []),
       ...(input.sourceMaps ? [`- **Source maps:** ${input.sourceMaps}`] : []),
+      ...(input.debug ? [`- **Sampling:** ${input.debug}`] : []),
     ].join('\n'),
   );
   parts.push('## Frames on the sheet');
