@@ -158,6 +158,104 @@ export class FramePicker {
   }
 }
 
+// ------------------------------------------------------ crop to change --
+
+/** A rectangle in full-size frame pixels. */
+export interface CropBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface CropOptions {
+  /** Thumbnail cells of margin kept around the change. */
+  padCells?: number;
+  /** Smallest crop, in frame pixels, so a tiny change keeps some context. */
+  minWidth?: number;
+  minHeight?: number;
+  /** Past this share of the frame, cropping saves nothing: the whole frame is used. */
+  maxShare?: number;
+}
+
+const DEFAULT_PAD_CELLS = 1;
+const DEFAULT_MIN_CROP_W = 480;
+const DEFAULT_MIN_CROP_H = 270;
+const DEFAULT_MAX_CROP_SHARE = 0.6;
+
+/**
+ * The part of the picture that changed during the clip, so the sheet can show
+ * it at full sharpness instead of the whole page at a fifth of its size
+ * (NOBC-159). Built from the thumbnails every sampled frame already has: a
+ * thumbnail cell counts when its brightness moved past the noise floor
+ * between two consecutive frames. Null means "use the whole frame" - nothing
+ * changed, or so much did that a crop would not help.
+ */
+export function changeBox(
+  frames: SampledFrame[],
+  frameWidth: number,
+  frameHeight: number,
+  options: CropOptions = {},
+): CropBox | null {
+  if (frames.length < 2 || frameWidth <= 0 || frameHeight <= 0) return null;
+  let c0 = THUMB_W;
+  let c1 = -1;
+  let r0 = THUMB_H;
+  let r1 = -1;
+  for (let i = 1; i < frames.length; i++) {
+    const a = frames[i - 1].luma;
+    const b = frames[i].luma;
+    for (let r = 0; r < THUMB_H; r++) {
+      for (let c = 0; c < THUMB_W; c++) {
+        const p = r * THUMB_W + c;
+        if (Math.abs(a[p] - b[p]) <= PIXEL_CHANGE_FLOOR) continue;
+        if (c < c0) c0 = c;
+        if (c > c1) c1 = c;
+        if (r < r0) r0 = r;
+        if (r > r1) r1 = r;
+      }
+    }
+  }
+  if (c1 < 0) return null;
+  const pad = options.padCells ?? DEFAULT_PAD_CELLS;
+  c0 = Math.max(0, c0 - pad);
+  r0 = Math.max(0, r0 - pad);
+  c1 = Math.min(THUMB_W - 1, c1 + pad);
+  r1 = Math.min(THUMB_H - 1, r1 + pad);
+  const cellW = frameWidth / THUMB_W;
+  const cellH = frameHeight / THUMB_H;
+  let x = Math.floor(c0 * cellW);
+  let y = Math.floor(r0 * cellH);
+  let x2 = Math.min(frameWidth, Math.ceil((c1 + 1) * cellW));
+  let y2 = Math.min(frameHeight, Math.ceil((r1 + 1) * cellH));
+  // Grow a small box around its centre so the change keeps some context.
+  const grow = (lo: number, hi: number, min: number, limit: number): [number, number] => {
+    const want = Math.min(min, limit);
+    if (hi - lo >= want) return [lo, hi];
+    const centre = (lo + hi) / 2;
+    let a = Math.round(centre - want / 2);
+    a = Math.max(0, Math.min(limit - want, a));
+    return [a, a + want];
+  };
+  [x, x2] = grow(x, x2, options.minWidth ?? DEFAULT_MIN_CROP_W, frameWidth);
+  [y, y2] = grow(y, y2, options.minHeight ?? DEFAULT_MIN_CROP_H, frameHeight);
+  const share = ((x2 - x) * (y2 - y)) / (frameWidth * frameHeight);
+  if (share > (options.maxShare ?? DEFAULT_MAX_CROP_SHARE)) return null;
+  return { x, y, width: x2 - x, height: y2 - y };
+}
+
+/**
+ * Columns and sheet width for tiles of the given size. Tiles stay at their
+ * real size when they fit - up to four across on a sheet no wider than the
+ * cap - and only a crop too wide for two across is scaled down.
+ */
+export function sheetPlan(tileWidth: number, count: number, maxWidth = 2600, gap = 16): { columns: number; sheetWidth: number } {
+  const fit = Math.floor((maxWidth - gap) / (tileWidth + gap));
+  if (fit < 2) return { columns: 2, sheetWidth: Math.min(maxWidth, Math.max(1200, tileWidth)) };
+  const columns = Math.max(1, Math.min(4, fit, count));
+  return { columns, sheetWidth: columns * (tileWidth + gap) + gap };
+}
+
 // ----------------------------------------------------------- the sheet --
 
 export interface SheetLayout {
@@ -293,6 +391,11 @@ export interface ClipReportInput {
   redacted?: string;
   /** The source-map line (NOBC-153), when there were frames to map. */
   sourceMaps?: string;
+  /** The area the sheet was cropped to (NOBC-159), when it was cropped. */
+  crop?: CropBox;
+  /** Full frame size, for the crop line. */
+  frameWidth?: number;
+  frameHeight?: number;
 }
 
 function fence(text: string): string {
@@ -317,6 +420,11 @@ export function buildClipMarkdown(input: ClipReportInput): string {
       `- **Triggered by:** ${input.triggerLabel}`,
       `- **Viewport:** ${input.viewport.width} × ${input.viewport.height}`,
       `- **Frames:** ${input.sheetFilename} — ${input.frameOffsetsMs.length} of ${input.sampledFrames} sampled frames, the ones where the picture changed; each at full size in ${input.framesFolder}/`,
+      ...(input.crop
+        ? [
+            `- **Cropped to:** the area that changed — ${input.crop.width}×${input.crop.height} at (${input.crop.x}, ${input.crop.y}) of the ${input.frameWidth ?? '?'}×${input.frameHeight ?? '?'} tab, shown at full size; the whole tab is in each full-size frame`,
+          ]
+        : []),
       `- **Video:** ${input.videoFilename} — for a person; assistants read the frames and the timeline below`,
       `- **Recorder:** ${
         input.recorderActive
