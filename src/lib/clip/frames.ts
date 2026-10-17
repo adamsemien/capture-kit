@@ -19,9 +19,14 @@ export interface SampledFrame {
   luma: Uint8Array;
 }
 
-/** Thumbnail size used for the change score. Small on purpose - this is "did it change", not "what changed". */
-export const THUMB_W = 96;
-export const THUMB_H = 60;
+/**
+ * Thumbnail size used for the change score and the crop. 96x60 missed small
+ * UI motion entirely - a pulsing button on a 2560 px page changed no
+ * thumbnail pixel - so it is 384x240: each pixel covers about 7 px of a big
+ * screen, and reading it back costs a millisecond or two per sample.
+ */
+export const THUMB_W = 384;
+export const THUMB_H = 240;
 
 /** A pixel whose luma moved by more than this counts as changed; below it is noise. */
 const PIXEL_CHANGE_FLOOR = 20;
@@ -48,8 +53,12 @@ export interface SelectOptions {
 }
 
 const DEFAULT_MAX_FRAMES = 12;
-/** Percent of pixels. 0.3% of a 96x60 thumbnail is about 17 pixels - a 160 px box on a 2560 px page is ~40. */
-const DEFAULT_MIN_CHANGE = 0.3;
+/**
+ * Percent of thumbnail pixels: 0.008% of 384x240 is about 7 pixels. Measured
+ * on a pulsing button at 2560 px, each step of the pulse moved 10-48 pixels
+ * and still moments moved none, so 7 keeps the motion and drops nothing real.
+ */
+const DEFAULT_MIN_CHANGE = 0.008;
 
 /**
  * Which sampled frames go on the sheet. The first and last always do - they
@@ -156,6 +165,104 @@ export class FramePicker {
     if (this.pending >= 0) held.add(this.pending);
     return [...held].sort((a, b) => a - b);
   }
+}
+
+// ------------------------------------------------------ crop to change --
+
+/** A rectangle in full-size frame pixels. */
+export interface CropBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface CropOptions {
+  /** Thumbnail cells of margin kept around the change (a cell is about 7 px of a big screen). */
+  padCells?: number;
+  /** Smallest crop, in frame pixels, so a tiny change keeps some context. */
+  minWidth?: number;
+  minHeight?: number;
+  /** Past this share of the frame, cropping saves nothing: the whole frame is used. */
+  maxShare?: number;
+}
+
+const DEFAULT_PAD_CELLS = 4;
+const DEFAULT_MIN_CROP_W = 640;
+const DEFAULT_MIN_CROP_H = 360;
+const DEFAULT_MAX_CROP_SHARE = 0.6;
+
+/**
+ * The part of the picture that changed during the clip, so the sheet can show
+ * it at full sharpness instead of the whole page at a fifth of its size
+ * (NOBC-159). Built from the thumbnails every sampled frame already has: a
+ * thumbnail cell counts when its brightness moved past the noise floor
+ * between two consecutive frames. Null means "use the whole frame" - nothing
+ * changed, or so much did that a crop would not help.
+ */
+export function changeBox(
+  frames: SampledFrame[],
+  frameWidth: number,
+  frameHeight: number,
+  options: CropOptions = {},
+): CropBox | null {
+  if (frames.length < 2 || frameWidth <= 0 || frameHeight <= 0) return null;
+  let c0 = THUMB_W;
+  let c1 = -1;
+  let r0 = THUMB_H;
+  let r1 = -1;
+  for (let i = 1; i < frames.length; i++) {
+    const a = frames[i - 1].luma;
+    const b = frames[i].luma;
+    for (let r = 0; r < THUMB_H; r++) {
+      for (let c = 0; c < THUMB_W; c++) {
+        const p = r * THUMB_W + c;
+        if (Math.abs(a[p] - b[p]) <= PIXEL_CHANGE_FLOOR) continue;
+        if (c < c0) c0 = c;
+        if (c > c1) c1 = c;
+        if (r < r0) r0 = r;
+        if (r > r1) r1 = r;
+      }
+    }
+  }
+  if (c1 < 0) return null;
+  const pad = options.padCells ?? DEFAULT_PAD_CELLS;
+  c0 = Math.max(0, c0 - pad);
+  r0 = Math.max(0, r0 - pad);
+  c1 = Math.min(THUMB_W - 1, c1 + pad);
+  r1 = Math.min(THUMB_H - 1, r1 + pad);
+  const cellW = frameWidth / THUMB_W;
+  const cellH = frameHeight / THUMB_H;
+  let x = Math.floor(c0 * cellW);
+  let y = Math.floor(r0 * cellH);
+  let x2 = Math.min(frameWidth, Math.ceil((c1 + 1) * cellW));
+  let y2 = Math.min(frameHeight, Math.ceil((r1 + 1) * cellH));
+  // Grow a small box around its centre so the change keeps some context.
+  const grow = (lo: number, hi: number, min: number, limit: number): [number, number] => {
+    const want = Math.min(min, limit);
+    if (hi - lo >= want) return [lo, hi];
+    const centre = (lo + hi) / 2;
+    let a = Math.round(centre - want / 2);
+    a = Math.max(0, Math.min(limit - want, a));
+    return [a, a + want];
+  };
+  [x, x2] = grow(x, x2, options.minWidth ?? DEFAULT_MIN_CROP_W, frameWidth);
+  [y, y2] = grow(y, y2, options.minHeight ?? DEFAULT_MIN_CROP_H, frameHeight);
+  const share = ((x2 - x) * (y2 - y)) / (frameWidth * frameHeight);
+  if (share > (options.maxShare ?? DEFAULT_MAX_CROP_SHARE)) return null;
+  return { x, y, width: x2 - x, height: y2 - y };
+}
+
+/**
+ * Columns and sheet width for tiles of the given size. Tiles stay at their
+ * real size when they fit - up to four across on a sheet no wider than the
+ * cap - and only a crop too wide for two across is scaled down.
+ */
+export function sheetPlan(tileWidth: number, count: number, maxWidth = 2600, gap = 16): { columns: number; sheetWidth: number } {
+  const fit = Math.floor((maxWidth - gap) / (tileWidth + gap));
+  if (fit < 2) return { columns: 2, sheetWidth: Math.min(maxWidth, Math.max(1200, tileWidth)) };
+  const columns = Math.max(1, Math.min(4, fit, count));
+  return { columns, sheetWidth: columns * (tileWidth + gap) + gap };
 }
 
 // ----------------------------------------------------------- the sheet --
@@ -293,6 +400,11 @@ export interface ClipReportInput {
   redacted?: string;
   /** The source-map line (NOBC-153), when there were frames to map. */
   sourceMaps?: string;
+  /** The area the sheet was cropped to (NOBC-159), when it was cropped. */
+  crop?: CropBox;
+  /** Full frame size, for the crop line. */
+  frameWidth?: number;
+  frameHeight?: number;
 }
 
 function fence(text: string): string {
@@ -317,6 +429,11 @@ export function buildClipMarkdown(input: ClipReportInput): string {
       `- **Triggered by:** ${input.triggerLabel}`,
       `- **Viewport:** ${input.viewport.width} × ${input.viewport.height}`,
       `- **Frames:** ${input.sheetFilename} — ${input.frameOffsetsMs.length} of ${input.sampledFrames} sampled frames, the ones where the picture changed; each at full size in ${input.framesFolder}/`,
+      ...(input.crop
+        ? [
+            `- **Cropped to:** the area that changed — ${input.crop.width}×${input.crop.height} at (${input.crop.x}, ${input.crop.y}) of the ${input.frameWidth ?? '?'}×${input.frameHeight ?? '?'} tab, shown at full size; the whole tab is in each full-size frame`,
+          ]
+        : []),
       `- **Video:** ${input.videoFilename} — for a person; assistants read the frames and the timeline below`,
       `- **Recorder:** ${
         input.recorderActive
