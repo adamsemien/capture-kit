@@ -1078,7 +1078,7 @@ test('a small element moving in one corner gives a crop around just that corner'
   assert.ok(box.x <= 10 * cell && box.x + box.width >= 18 * cell, 'covers the path left to right');
   assert.ok(box.y <= 5 * (1600 / mod.THUMB_H), 'covers the top of the element');
   assert.ok(box.width * box.height < 0.6 * 2560 * 1600, 'much smaller than the page');
-  assert.ok(box.width >= 480 && box.height >= 270, 'keeps a minimum of context');
+  assert.ok(box.width >= 640 && box.height >= 360, 'keeps a minimum of context');
   assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= 2560 && box.y + box.height <= 1600, 'inside the frame');
 });
 test('a still page and a single frame give no crop', () => {
@@ -1094,8 +1094,8 @@ test('a tiny change near the edge grows inward, never past the frame', () => {
   assert.ok(box);
   assert.equal(box.x + box.width, 1920);
   assert.equal(box.y + box.height, 1080);
-  assert.equal(box.width, 480);
-  assert.equal(box.height, 270);
+  assert.equal(box.width, 640);
+  assert.equal(box.height, 360);
 });
 test('crops sit on the sheet at real size, up to four across; wide ones scale to two', () => {
   assert.deepEqual(mod.sheetPlan(500, 12), { columns: 4, sheetWidth: 4 * 516 + 16 });

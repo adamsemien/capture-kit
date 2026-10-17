@@ -188,8 +188,8 @@ export interface CropOptions {
 }
 
 const DEFAULT_PAD_CELLS = 4;
-const DEFAULT_MIN_CROP_W = 480;
-const DEFAULT_MIN_CROP_H = 270;
+const DEFAULT_MIN_CROP_W = 640;
+const DEFAULT_MIN_CROP_H = 360;
 const DEFAULT_MAX_CROP_SHARE = 0.6;
 
 /**
