@@ -35,12 +35,15 @@ import type { Settings } from '../lib/settings';
 import { outputDirHasFile, outputDirStatus, writeToOutputDir } from '../lib/output-dir';
 import { redactPage, redactText } from '../lib/redact';
 import type { RedactedPage } from '../lib/redact';
-import { FrameMapper, mapPageSources } from '../lib/source-map';
+import { FrameMapper, mapPageSources, sourceMapLabel } from '../lib/source-map';
+import { redactedLabel } from '../lib/redact';
+import { buildClipMarkdown, eventsDuringClip, frameFilename } from '../lib/clip/frames';
 import {
   CAPTURE_PROGRESS_KEY,
   CONSOLE_LOGS_IN_BUNDLE,
   SESSION_PROGRESS_KEY,
   SESSION_SUMMARY_KEY,
+  CAPTURE_TRIGGER_LABEL,
 } from '../lib/messages';
 import type {
   AgentCaptureDetail,
@@ -61,6 +64,9 @@ import type {
   SessionSummary,
   SessionTab,
   SweepResponse,
+  ClipRecordRequest,
+  ClipRecordResponse,
+  ClipResponse,
 } from '../lib/messages';
 import type { StampRequest } from '../lib/capture-engine/types';
 
@@ -551,6 +557,11 @@ function describeError(error: unknown): string {
   }
   if (message.includes('Cannot access') || message.includes('Cannot attach')) {
     return 'Chrome blocked debugger access to this page.';
+  }
+  // Tab recording needs a person to have used the extension on the tab first
+  // (Chrome's activeTab rule). A page or an agent cannot grant that itself.
+  if (message.includes('has not been invoked')) {
+    return 'Chrome only lets Capture Kit record a tab after you use it there once. Press Cmd+Shift+8 (or click the Capture Kit icon) on this tab, after that a page or agent can record clips in this tab until it moves to another site or closes.';
   }
   return message;
 }
@@ -1321,6 +1332,202 @@ async function downloadPointerFile(
   await downloadLatestPointer(filename, mime, base64);
 }
 
+// ------------------------------------------------------------- clips --
+//
+// A clip is a few seconds of the tab, recorded in the offscreen document
+// (NOBC-158). The worker's job is the plumbing: a stream id from tabCapture,
+// one offscreen document to record in, then the files, the report and the
+// clipboard - the same seams a still capture uses. The sheet of changed
+// frames is what an assistant reads; the video is for the person.
+
+const OFFSCREEN_URL = 'offscreen/offscreen.html';
+const CLIP_SAMPLE_FPS = 8;
+const CLIP_MAX_FRAMES = 12;
+
+async function ensureOffscreenDocument(): Promise<void> {
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
+  });
+  if (contexts.length > 0) return;
+  await chrome.offscreen.createDocument({
+    url: OFFSCREEN_URL,
+    reasons: [chrome.offscreen.Reason.USER_MEDIA],
+    justification: 'Record a short clip of the current tab and pick the frames that changed.',
+  });
+}
+
+async function closeOffscreenDocument(): Promise<void> {
+  try {
+    await chrome.offscreen.closeDocument();
+  } catch {
+    /* already closed */
+  }
+}
+
+/** One clip at a time: a MediaRecorder per tab stream is plenty, and the offscreen document is shared. */
+let clipRunning = false;
+
+async function recordClip(
+  trigger: 'clip' | 'clip-shortcut' | 'agent-clip',
+  tabIdOverride?: number,
+): Promise<ClipResponse> {
+  const announce = trigger !== 'clip';
+  if (clipRunning) return { ok: false, reason: 'A clip is already recording.' };
+  clipRunning = true;
+  try {
+    const tab = tabIdOverride !== undefined ? await chrome.tabs.get(tabIdOverride) : await activeTab();
+    const blocked = protectedPageReason(tab.url);
+    if (blocked) {
+      await recordError(blocked, announce);
+      return { ok: false, reason: blocked };
+    }
+    const tabId = tab.id as number;
+    const settings = await getSettings();
+    await ensureOutputReadme();
+
+    // The count-in, on the badge in amber. The stream id is taken after it:
+    // Chrome expires an unused id after a few seconds.
+    for (let left = settings.clipDelaySeconds; left > 0; left--) {
+      await setBadge(`${left}`, BADGE_RUNNING, `capture-kit — recording in ${left}s`);
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+    await ensureOffscreenDocument();
+    // A countdown on the badge is the only sign a recording is running: the
+    // popup has closed and nothing may be drawn on the page itself.
+    const startedAt = new Date();
+    let remaining = settings.clipSeconds;
+    await setBadge(`${remaining}s`, BADGE_ERROR, `capture-kit — recording ${settings.clipSeconds}s`);
+    const countdown = setInterval(() => {
+      remaining = Math.max(0, remaining - 1);
+      void setBadge(remaining > 0 ? `${remaining}s` : '…', BADGE_ERROR, 'capture-kit — recording');
+    }, 1000);
+    let recorded: ClipRecordResponse;
+    try {
+      const request: ClipRecordRequest = {
+        target: 'offscreen',
+        type: 'CLIP_RECORD',
+        streamId,
+        seconds: settings.clipSeconds,
+        fps: CLIP_SAMPLE_FPS,
+        maxFrames: CLIP_MAX_FRAMES,
+        width: tab.width ?? 1280,
+        height: tab.height ?? 800,
+      };
+      recorded = (await chrome.runtime.sendMessage(request)) as ClipRecordResponse;
+    } finally {
+      clearInterval(countdown);
+      await closeOffscreenDocument();
+    }
+    if (!recorded || !recorded.ok) {
+      const reason = recorded?.reason ?? 'the recorder gave no answer';
+      await recordError(reason, announce);
+      return { ok: false, reason };
+    }
+
+    // Console and network for the clip window, through the same mapping and
+    // scrubbing every report gets, then cut down to what happened during it.
+    const { snapshot, recorderActive } = await getSnapshot(tabId);
+    const page = await preparedPage(tab, snapshot);
+    const events = eventsDuringClip(page.console, page.network, startedAt.getTime(), recorded.durationMs);
+
+    const basename = captureBasename(page.meta.title, page.meta.url, startedAt);
+    const sheetFilename = `${basename}_frames.jpg`;
+    const videoFilename = `${basename}_clip.webm`;
+    const markdownFilename = `${basename}_clip.md`;
+    const framesFolder = `${basename}_frames`;
+    const markdown = buildClipMarkdown({
+      url: page.meta.url,
+      title: page.meta.title,
+      viewport: page.meta.viewport,
+      userAgent: page.meta.userAgent,
+      startedAt,
+      durationMs: recorded.durationMs,
+      triggerLabel: CAPTURE_TRIGGER_LABEL[trigger],
+      recorderActive,
+      frameOffsetsMs: recorded.frameOffsetsMs,
+      sampledFrames: recorded.sampledFrames,
+      sheetFilename,
+      videoFilename,
+      framesFolder,
+      events,
+      redacted: redactedLabel(page.redacted),
+      sourceMaps: sourceMapLabel(page.frames, page.mappedFrames) ?? undefined,
+    });
+
+    const sheetWrite = await writeBundleFile(sheetFilename, 'image/jpeg', recorded.sheet);
+    await writeBundleFile(videoFilename, recorded.videoMime, recorded.video);
+    await writeBundleFile(markdownFilename, 'text/markdown', textToBase64(markdown));
+    // The kept frames at full size, one file each, in a folder named after the
+    // clip - the sheet is the overview, these are for looking closely.
+    for (let i = 0; i < recorded.frames.length; i++) {
+      await writeBundleFile(
+        `${framesFolder}/${frameFilename(i, recorded.frameOffsetsMs[i])}`,
+        'image/jpeg',
+        recorded.frames[i],
+      );
+    }
+    if (settings.maintainLatest) {
+      await downloadLatestPointer('latest-frames.jpg', 'image/jpeg', recorded.sheet);
+      await downloadLatestPointer('latest-clip.webm', recorded.videoMime, recorded.video);
+      await downloadLatestPointer('latest-clip.md', 'text/markdown', textToBase64(withLatestNotice(markdown)));
+    }
+
+    // The sheet goes to the clipboard the way a capture's image does: through
+    // the page, image only - an assistant reads the frames, the report is on
+    // disk next to them. Best effort, never a failure.
+    let copied = false;
+    if (settings.autoCopyImage) {
+      copied = await copyImageThroughPage(tabId, 'image/jpeg', recorded.sheet, undefined);
+    }
+
+    await endIndicator(true, announce);
+    return {
+      ok: true,
+      sheetFilename: sheetWrite.filename,
+      videoFilename,
+      markdownFilename,
+      framesFolder,
+      frames: recorded.frameOffsetsMs.length,
+      copied,
+    };
+  } catch (error) {
+    const reason = describeError(error);
+    console.error('[capture-kit] clip failed:', error);
+    await recordError(reason, announce);
+    return { ok: false, reason };
+  } finally {
+    clipRunning = false;
+  }
+}
+
+async function agentClip(tabId: number): Promise<void> {
+  if (agentCaptureRunning || clipRunning) {
+    await tellPage(tabId, { ok: false, error: 'busy' });
+    return;
+  }
+  agentCaptureRunning = true;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab.active) {
+      await chrome.tabs.update(tabId, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    const response = await recordClip('agent-clip', tabId);
+    await tellPage(
+      tabId,
+      response.ok
+        ? { ok: true, basename: response.markdownFilename.replace(/_clip\.md$/, ''), output: collectOutput().via }
+        : { ok: false, error: response.reason },
+    );
+  } catch (error) {
+    await tellPage(tabId, { ok: false, error: describeError(error) });
+  } finally {
+    agentCaptureRunning = false;
+  }
+}
+
 // ---------------------------------------------------------- agent trigger --
 //
 // Extension keyboard commands are browser chrome: no page-level automation can
@@ -1402,6 +1609,30 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
     sendResponse({ ok: true });
     return false;
   }
+  if ((message as { target?: string })?.target === 'offscreen') {
+    // Addressed to the offscreen document; this listener is not the recipient.
+    return false;
+  }
+  if (message?.type === 'AGENT_RECORD') {
+    const tabId = sender.tab?.id;
+    if (tabId === undefined) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    void getSettings().then((settings) => {
+      if (!settings.allowInPageTrigger) {
+        void tellPage(tabId, { ok: false, error: 'in-page trigger is turned off in Settings' });
+        return;
+      }
+      void agentClip(tabId);
+    });
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (message?.type === 'RECORD_CLIP') {
+    void recordClip('clip').then(sendResponse);
+    return true;
+  }
   if (message?.type === 'CAPTURE_BUNDLE') {
     void captureBundle('popup').then(sendResponse);
     return true;
@@ -1444,6 +1675,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
 
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'capture-bundle') void captureBundle('shortcut');
+  if (command === 'record-clip') void recordClip('clip-shortcut');
 });
 
 // ------------------------------------------------------- one-click capture --
@@ -1462,6 +1694,7 @@ chrome.commands.onCommand.addListener((command) => {
 
 const POPUP_PAGE = 'popup/popup.html';
 const PANEL_MENU_ID = 'capture-kit-open-panel';
+const CLIP_MENU_ID = 'capture-kit-record-clip';
 
 async function applyActionPopup(oneClick: boolean): Promise<void> {
   try {
@@ -1523,6 +1756,9 @@ chrome.action.onClicked.addListener(() => {
 
 chrome.contextMenus.onClicked.addListener((info) => {
   if (info.menuItemId === PANEL_MENU_ID) void openPanel();
+  // Always in the icon's menu: with one-click capture on, the popup is a
+  // right-click away and this saves the second click.
+  if (info.menuItemId === CLIP_MENU_ID) void recordClip('clip');
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -1536,6 +1772,11 @@ chrome.runtime.onInstalled.addListener(() => {
         title: 'Open capture-kit panel',
         contexts: ['action'],
         visible: false,
+      });
+      chrome.contextMenus.create({
+        id: CLIP_MENU_ID,
+        title: 'Record clip',
+        contexts: ['action'],
       });
     } catch (error) {
       console.error('[capture-kit] could not create the icon menu:', error);
