@@ -209,6 +209,8 @@ export type ClipRecordResponse =
       sheetHeight: number;
       frameWidth: number;
       frameHeight: number;
+      /** The area the sheet was cropped to, in frame pixels, when it was cropped (NOBC-159). */
+      crop?: { x: number; y: number; width: number; height: number };
       /** Offsets of the frames on the sheet, in order. */
       frameOffsetsMs: number[];
       /** The same frames at full size, JPEG base64, in order - for a person looking closely. */

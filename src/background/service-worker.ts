@@ -1497,6 +1497,9 @@ async function recordClip(
       events,
       redacted: redactedLabel(page.redacted),
       sourceMaps: sourceMapLabel(page.frames, page.mappedFrames) ?? undefined,
+      crop: recorded.crop,
+      frameWidth: recorded.frameWidth,
+      frameHeight: recorded.frameHeight,
     });
 
     const sheetWrite = await writeBundleFile(sheetFilename, 'image/jpeg', recorded.sheet);

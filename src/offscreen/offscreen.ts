@@ -17,9 +17,11 @@ import {
   FramePicker,
   THUMB_H,
   THUMB_W,
+  changeBox,
   offsetLabel,
   selectFrames,
   sheetLayout,
+  sheetPlan,
 } from '../lib/clip/frames';
 import type { ClipRecordRequest, ClipRecordResponse } from '../lib/messages';
 
@@ -209,12 +211,14 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
     if (!canvas) throw new Error(`frame ${i} was picked but not kept - picker bug`);
     return canvas;
   });
-  // Two across, each tile about half the tab's width: readable by a person,
-  // and an assistant downscales anything larger anyway.
-  const layout = sheetLayout(chosen.length, frameWidth, frameHeight, {
-    columns: 2,
-    sheetWidth: Math.min(2600, Math.max(1200, frameWidth)),
-  });
+  // When only part of the page moved, the sheet shows just that part at its
+  // real size (NOBC-159): an assistant shrinks a whole-page sheet to about a
+  // fifth, which loses text and fine detail. The full-size frames keep the
+  // whole tab either way.
+  const crop = changeBox(frames, frameWidth, frameHeight);
+  const src = crop ?? { x: 0, y: 0, width: frameWidth, height: frameHeight };
+  const plan = crop ? sheetPlan(src.width, chosen.length) : { columns: 2, sheetWidth: Math.min(2600, Math.max(1200, frameWidth)) };
+  const layout = sheetLayout(chosen.length, src.width, src.height, plan);
   const sheet = new OffscreenCanvas(layout.width, layout.height);
   const ctx = sheet.getContext('2d');
   if (!ctx) throw new Error('no sheet context');
@@ -224,7 +228,7 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
   ctx.textBaseline = 'middle';
   for (let i = 0; i < chosen.length; i++) {
     const tile = layout.tiles[i];
-    ctx.drawImage(chosenCanvases[i], tile.x, tile.y, layout.tileWidth, layout.tileHeight);
+    ctx.drawImage(chosenCanvases[i], src.x, src.y, src.width, src.height, tile.x, tile.y, layout.tileWidth, layout.tileHeight);
     ctx.strokeStyle = '#333';
     ctx.lineWidth = 1;
     ctx.strokeRect(tile.x + 0.5, tile.y + 0.5, layout.tileWidth - 1, layout.tileHeight - 1);
@@ -259,6 +263,7 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
     sheetHeight: layout.height,
     frameWidth,
     frameHeight,
+    ...(crop ? { crop } : {}),
     frameOffsetsMs: chosen.map((i) => frames[i].at),
     frames: frameBase64,
     sampledFrames: frames.length,

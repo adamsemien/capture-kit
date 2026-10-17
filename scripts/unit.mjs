@@ -31,7 +31,7 @@ export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
 export { buildSessionIndex } from '${ROOT}/src/lib/session/manifest.ts';
-export { frameDifference, selectFrames, FramePicker, sheetLayout, offsetLabel, eventsDuringClip, buildClipMarkdown, clampClipSeconds, clampClipDelay, frameFilename, THUMB_W, THUMB_H } from '${ROOT}/src/lib/clip/frames.ts';
+export { frameDifference, selectFrames, FramePicker, changeBox, sheetPlan, sheetLayout, offsetLabel, eventsDuringClip, buildClipMarkdown, clampClipSeconds, clampClipDelay, frameFilename, THUMB_W, THUMB_H } from '${ROOT}/src/lib/clip/frames.ts';
 export { decodeMappings, SourceMapIndex, parseSourceMap, cleanSourcePath, findSourceMapUrl, dataUrlText, parseFrame, formatFrame, FrameMapper, mapPageSources, sourceMapLabel } from '${ROOT}/src/lib/source-map.ts';
 `;
 
@@ -1063,6 +1063,57 @@ test('a constantly moving page keeps memory flat - 80 frames, at most 12 held', 
 test('a still page holds just the first and the newest', () => {
   const frames = Array.from({ length: 40 }, (_, i) => frame(i * 125, 50));
   assert.deepEqual(runPicker(frames, { maxFrames: 12 }).held, [0, 39]);
+});
+
+heading('clips - cropping the sheet to what changed (NOBC-159)');
+// A thumbnail with a dark block at (col, row), size w x h cells, on white.
+const blockAt = (col, row, w = 2, h = 2) => {
+  const luma = thumb(255);
+  for (let r = row; r < row + h; r++) luma.fill(0, r * mod.THUMB_W + col, r * mod.THUMB_W + col + w);
+  return luma;
+};
+test('a small element moving in one corner gives a crop around just that corner', () => {
+  const frames = [0, 1, 2, 3].map((i) => ({ at: i * 125, luma: blockAt(10 + i * 2, 5) }));
+  const box = mod.changeBox(frames, 2560, 1600);
+  assert.ok(box, 'expected a crop');
+  const cell = 2560 / mod.THUMB_W;
+  assert.ok(box.x <= 10 * cell && box.x + box.width >= 18 * cell, 'covers the path left to right');
+  assert.ok(box.y <= 5 * (1600 / mod.THUMB_H), 'covers the top of the element');
+  assert.ok(box.width * box.height < 0.6 * 2560 * 1600, 'much smaller than the page');
+  assert.ok(box.width >= 640 && box.height >= 360, 'keeps a minimum of context');
+  assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= 2560 && box.y + box.height <= 1600, 'inside the frame');
+});
+test('a still page and a single frame give no crop', () => {
+  assert.equal(mod.changeBox([frame(0, 40), frame(125, 40), frame(250, 41)], 2560, 1600), null);
+  assert.equal(mod.changeBox([frame(0, 40)], 2560, 1600), null);
+});
+test('when most of the page changes the whole frame is kept', () => {
+  assert.equal(mod.changeBox([frame(0, 0), frame(125, 200)], 2560, 1600), null);
+});
+test('a tiny change near the edge grows inward, never past the frame', () => {
+  const frames = [{ at: 0, luma: thumb(255) }, { at: 125, luma: blockAt(mod.THUMB_W - 1, mod.THUMB_H - 1, 1, 1) }];
+  const box = mod.changeBox(frames, 1920, 1080);
+  assert.ok(box);
+  assert.equal(box.x + box.width, 1920);
+  assert.equal(box.y + box.height, 1080);
+  assert.equal(box.width, 640);
+  assert.equal(box.height, 360);
+});
+test('crops sit on the sheet at real size, up to four across; wide ones scale to two', () => {
+  assert.deepEqual(mod.sheetPlan(500, 12), { columns: 4, sheetWidth: 4 * 516 + 16 });
+  assert.deepEqual(mod.sheetPlan(500, 3), { columns: 3, sheetWidth: 3 * 516 + 16 });
+  assert.deepEqual(mod.sheetPlan(1000, 12), { columns: 2, sheetWidth: 2 * 1016 + 16 });
+  assert.deepEqual(mod.sheetPlan(2000, 12), { columns: 2, sheetWidth: 2000 });
+});
+test('the report says when and where the sheet was cropped', () => {
+  const base = {
+    url: 'u', title: 't', viewport: { width: 1, height: 1 }, userAgent: 'ua', startedAt: new Date(0), durationMs: 5000,
+    triggerLabel: 'x', recorderActive: true, frameOffsetsMs: [0], sampledFrames: 1, sheetFilename: 's.jpg',
+    videoFilename: 'v.webm', framesFolder: 'f', events: [],
+  };
+  assert.doesNotMatch(mod.buildClipMarkdown(base), /Cropped to/);
+  const md = mod.buildClipMarkdown({ ...base, crop: { x: 10, y: 20, width: 480, height: 270 }, frameWidth: 2560, frameHeight: 1232 });
+  assert.match(md, /Cropped to:\*\* the area that changed — 480×270 at \(10, 20\) of the 2560×1232 tab/);
 });
 
 heading('clips - the sheet');
