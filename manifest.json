@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "capture-kit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "One-shot full-page capture plus console & network failure reports for AI-assisted coding.",
   "minimum_chrome_version": "116",
   "icons": {

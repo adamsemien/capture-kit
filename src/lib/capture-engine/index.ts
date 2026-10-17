@@ -1,6 +1,7 @@
 import type { CaptureRequest, CaptureResult, CaptureStrategy } from './types';
 import { CdpFullPageStrategy } from './cdp-fullpage';
 import { InnerScrollExpansionStrategy, detectInnerScroll } from './inner-scroll';
+import { sliceEncodedImage } from './slices';
 import { stampCaptureResult } from './stamp';
 
 export type {
@@ -9,12 +10,14 @@ export type {
   CaptureProgress,
   CaptureRequest,
   CaptureResult,
+  CaptureSlice,
   CaptureStrategy,
   PageDimensions,
   StampInfo,
   StampRequest,
 } from './types';
 export { bandHeight, stampCaptureResult, stampLabel } from './stamp';
+export { sliceFilename, SLICE_OVERLAP } from './slices';
 
 /**
  * Per-capture strategy picker. Pages where the document barely scrolls but a
@@ -30,7 +33,14 @@ export async function getCaptureStrategy(tabId: number): Promise<CaptureStrategy
 
 export async function captureFullPage(request: CaptureRequest): Promise<CaptureResult> {
   const strategy = await getCaptureStrategy(request.tabId);
-  const result = await strategy.capture(request);
+  let result = await strategy.capture(request);
+  // The segmented path slices as it goes. A single-shot capture is one image
+  // already, so a tall one is cut afterwards - before the footer, so slices
+  // are the page and nothing else.
+  if (request.slices && !result.slices) {
+    const slices = await sliceEncodedImage(result.imageBase64, result.format);
+    if (slices.length > 0) result = { ...result, slices };
+  }
   // The one place the footer can be applied on this path, and it is strictly
   // after the strategy has returned — meaning after every segment was taken
   // and after the debugger detached. With the setting off this is a single

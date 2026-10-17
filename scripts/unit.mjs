@@ -25,6 +25,8 @@ export { bandHeight, stampLabel } from '${ROOT}/src/lib/capture-engine/stamp.ts'
 export { readEncodedImageSize } from '${ROOT}/src/lib/capture-engine/image-size.ts';
 export { contextBlock, buildBundleMarkdown, captureModeLabel, withLatestNotice, LATEST_NOTICE, OUTPUT_README } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { planScrollOffsets } from '${ROOT}/src/lib/capture-engine/segments.ts';
+export { planSlices, wholeImageScale, scaledSize, baseSliceHeight, sliceFilename, SLICE_OVERLAP, MAX_SLICES, MAX_CAPTURE_HEIGHT } from '${ROOT}/src/lib/capture-engine/slices.ts';
+export { tallPageSections, scaleLabel, buildContentsLine } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
@@ -1195,6 +1197,119 @@ test('clip length is clamped to 2-10 seconds', () => {
   assert.equal(mod.clampClipSeconds(99), 10);
   assert.equal(mod.clampClipSeconds(4.6), 5);
   assert.equal(mod.clampClipSeconds(NaN), 5);
+});
+
+
+heading('Tall pages - slices and whole-image scale (NOBC-161)');
+function checkCoverage(plan, height) {
+  assert.equal(plan[0].top, 0, 'starts at the top');
+  const last = plan[plan.length - 1];
+  assert.equal(last.top + last.height, height, 'ends exactly at the bottom');
+  for (let i = 1; i < plan.length; i++) {
+    assert.ok(plan[i].top > plan[i - 1].top, 'tops strictly increase');
+    // No gap, and every boundary is inside the overlap so a line of text cut
+    // by one slice's edge is whole in its neighbour.
+    assert.ok(plan[i].top <= plan[i - 1].top + plan[i - 1].height - mod.SLICE_OVERLAP, 'overlap at least SLICE_OVERLAP');
+    assert.equal(plan[i].height, plan[0].height, 'every slice is the same height');
+  }
+}
+test('a page that fits on two screens is not sliced', () => {
+  assert.equal(mod.planSlices(1280, 3200), null);
+  assert.equal(mod.planSlices(1280, 900), null);
+  assert.equal(mod.planSlices(0, 5000), null);
+});
+test('slice height is about a screen: 1.25 x width, 1000-4000', () => {
+  assert.equal(mod.baseSliceHeight(1280), 1600);
+  assert.equal(mod.baseSliceHeight(390), 1000);
+  assert.equal(mod.baseSliceHeight(5120), 4000);
+});
+test('the 47,962 px page from the real-use run is covered with no gaps', () => {
+  const plan = mod.planSlices(1280, 47962);
+  checkCoverage(plan, 47962);
+  assert.equal(plan[0].height, 1600);
+  assert.ok(plan.length <= mod.MAX_SLICES);
+  assert.equal(plan.length, 32); // ceil((47962 - 64) / 1536)
+});
+test('slices grow taller past MAX_SLICES rather than more numerous', () => {
+  const plan = mod.planSlices(1280, mod.MAX_CAPTURE_HEIGHT);
+  checkCoverage(plan, mod.MAX_CAPTURE_HEIGHT);
+  assert.equal(plan.length, mod.MAX_SLICES);
+  assert.ok(plan[0].height > 1600);
+});
+test('coverage holds across awkward sizes', () => {
+  for (const [w, h] of [[1280, 3201], [390, 2001], [2560, 40000], [1440, 9999], [800, 2001], [1920, 131072]]) {
+    const plan = mod.planSlices(w, h);
+    assert.ok(plan, `${w}x${h} slices`);
+    checkCoverage(plan, h);
+  }
+});
+test('whole-image scale is 1 when the page fits in one canvas', () => {
+  assert.equal(mod.wholeImageScale(1280, 32767), 1);
+  assert.equal(mod.wholeImageScale(1280, 10000), 1);
+});
+test('a page past 32,767 px is scaled to fit, never cut', () => {
+  const s = mod.wholeImageScale(1280, 47962);
+  assert.ok(s < 1 && s > 0.68 && s <= 32767 / 47962);
+  const size = mod.scaledSize(1280, 47962, s);
+  assert.ok(size.height <= 32767 && size.width <= 32767);
+  assert.ok(size.width * size.height <= 2 ** 28);
+});
+test('a page past the area limit but under 32,767 tall is scaled too', () => {
+  const s = mod.wholeImageScale(10000, 30000);
+  const size = mod.scaledSize(10000, 30000, s);
+  assert.ok(s < 1);
+  assert.ok(size.width * size.height <= 2 ** 28);
+});
+test('scale labels never round up to 100%', () => {
+  assert.equal(mod.scaleLabel(0.683), '68.3%');
+  assert.equal(mod.scaleLabel(0.25), '25%');
+  assert.equal(mod.scaleLabel(0.9999), '99.9%');
+});
+test('slice files are numbered from 01', () => {
+  assert.equal(mod.sliceFilename(0, 'jpeg'), 'slice-01.jpg');
+  assert.equal(mod.sliceFilename(30, 'png'), 'slice-31.png');
+});
+test('the report says the image was scaled and lists the slices in order', () => {
+  const parts = mod.tallPageSections({
+    scale: 0.683,
+    fullSize: { width: 1280, height: 47962 },
+    imageSize: { width: 874, height: 32758 },
+    slices: [
+      { path: 'p_slices/slice-01.jpg', top: 0, height: 1600, width: 1280 },
+      { path: 'p_slices/slice-02.jpg', top: 1536, height: 1600, width: 1280 },
+    ],
+  });
+  const text = parts.join('\n\n');
+  assert.match(text, /scaled to 68\.3% \(874×32758\)\. Nothing is cut off\./);
+  assert.match(text, /## Slices/);
+  assert.match(text, /overlaps the next by 64 px/);
+  assert.match(text, /\| p_slices\/slice-01\.jpg \| 0–1600 \|/);
+  assert.match(text, /\| p_slices\/slice-02\.jpg \| 1536–3136 \|/);
+});
+test('a short page gets no tall-page sections at all', () => {
+  assert.deepEqual(mod.tallPageSections({ fullSize: { width: 1, height: 1 }, imageSize: { width: 1, height: 1 } }), []);
+});
+test('the contents line names a scaled image and the slices', () => {
+  const line = mod.buildContentsLine({
+    truncated: false, fullSize: { width: 1280, height: 47962 }, contentSize: { width: 1280, height: 47962 },
+    recorderActive: true, errors: 0, warnings: 0, logs: 0, networkFailures: 0, thirdPartyErrors: 0, thirdPartyFailures: 0,
+    scale: 0.683, slices: 31,
+  });
+  assert.equal(line, 'Contents: full-page image (scaled to 68.3%) + 31 image slices + no console or network issues');
+});
+test('the full report carries the slices section and the scaled pixel scale', () => {
+  const md = mod.buildBundleMarkdown({
+    ...BUNDLE_INPUT,
+    contentSize: { width: 1280, height: 47962 },
+    fullSize: { width: 1280, height: 47962 },
+    imageSize: { width: 874, height: 32758 },
+    scale: 0.683,
+    slices: [{ path: 'x_slices/slice-01.jpg', top: 0, height: 1600, width: 1280 }, { path: 'x_slices/slice-02.jpg', top: 1536, height: 1600, width: 1280 }],
+  });
+  assert.match(md, /Contents: full-page image \(scaled to 68\.3%\) \+ 2 image slices/);
+  assert.match(md, /Pixel scale:\*\* 0\.68× — the whole-page image is scaled down/);
+  assert.ok(!md.includes('high-DPI'), 'a scaled image is not described as a high-DPI one');
+  assert.ok(md.indexOf('## Slices') < md.indexOf('## Console'), 'slices come before the console');
 });
 
 rmSync(dir, { recursive: true, force: true });

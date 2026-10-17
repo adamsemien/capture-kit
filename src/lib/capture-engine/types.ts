@@ -54,6 +54,19 @@ export interface CaptureRequest {
   stamp?: StampRequest;
   /** Optional in-flight progress for long segmented captures. */
   onProgress?: CaptureProgress;
+  /**
+   * Also cut a tall capture into screen-sized slices an assistant can read
+   * (NOBC-161). Only the report path asks; a plain screenshot does not pay for it.
+   */
+  slices?: boolean;
+}
+
+/** One full-resolution piece of a tall capture, in image pixels from the top. */
+export interface CaptureSlice {
+  imageBase64: string;
+  top: number;
+  height: number;
+  width: number;
 }
 
 export interface CaptureResult {
@@ -107,6 +120,17 @@ export interface CaptureResult {
   heightHeld?: number;
   /** Present only when the URL footer was composited onto this image. */
   stamp?: StampInfo;
+  /**
+   * Below 1 when the page was past Chrome's single-image limits and the
+   * whole-page image was scaled down to fit rather than cut off. `fullSize`
+   * stays the page's real size; `imageSize` is the scaled file.
+   */
+  scale?: number;
+  /**
+   * Full-resolution slices of a tall page, top to bottom, when the request
+   * asked for them and the page is more than about two screens tall.
+   */
+  slices?: CaptureSlice[];
 }
 
 /**
