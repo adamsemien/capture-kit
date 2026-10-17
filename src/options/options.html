@@ -157,6 +157,24 @@
       </section>
 
       <section class="card">
+        <h2 class="label">Clips</h2>
+        <label class="field" for="clip-seconds">
+          <span class="field-text">
+            <span class="field-title">Clip length</span>
+            <small>"Record clip" records the current tab for this many seconds, then saves the video for you and a sheet of the frames where the picture changed for your assistant, with the console and network events that happened during the clip. Between 2 and 10 seconds.</small>
+            <input id="clip-seconds" type="number" min="2" max="10" step="1" />
+          </span>
+        </label>
+        <label class="field" for="clip-delay">
+          <span class="field-text">
+            <span class="field-title">Count-in before recording</span>
+            <small>Seconds between pressing ⌘⇧8 (or the button) and the recording starting, counted down on the toolbar badge, so you can get to the thing you want to show. 0 to 5.</small>
+            <input id="clip-delay" type="number" min="0" max="5" step="1" />
+          </span>
+        </label>
+      </section>
+
+      <section class="card">
         <h2 class="label">Long pages</h2>
 
         <div class="field">

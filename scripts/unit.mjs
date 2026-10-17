@@ -29,6 +29,7 @@ export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
 export { buildSessionIndex } from '${ROOT}/src/lib/session/manifest.ts';
+export { frameDifference, selectFrames, FramePicker, sheetLayout, offsetLabel, eventsDuringClip, buildClipMarkdown, clampClipSeconds, clampClipDelay, frameFilename, THUMB_W, THUMB_H } from '${ROOT}/src/lib/clip/frames.ts';
 export { decodeMappings, SourceMapIndex, parseSourceMap, cleanSourcePath, findSourceMapUrl, dataUrlText, parseFrame, formatFrame, FrameMapper, mapPageSources, sourceMapLabel } from '${ROOT}/src/lib/source-map.ts';
 `;
 
@@ -945,6 +946,204 @@ test('the context block prints it after Redacted, and only when there were frame
   const r = withFrames.findIndex((l) => l.startsWith('- **Redacted:**'));
   assert.match(withFrames[r + 1], /^- \*\*Source maps:\*\* 1 of 2 frames mapped/);
   assert.ok(!mod.buildBundleMarkdown({ ...BUNDLE_INPUT, sourceMaps: { frames: 0, mapped: 0 } }).includes('**Source maps:**'));
+});
+
+
+// --------------------------------------------------------- clips (NOBC-158) --
+
+const thumb = (value) => new Uint8Array(mod.THUMB_W * mod.THUMB_H).fill(value);
+const frame = (at, value) => ({ at, luma: thumb(value) });
+
+heading('clips - which frames make the sheet');
+test('frame difference is the percent of pixels that moved past the noise floor', () => {
+  assert.equal(mod.frameDifference(thumb(10), thumb(10)), 0);
+  assert.equal(mod.frameDifference(thumb(10), thumb(14)), 0, 'a 4-step wobble everywhere is noise');
+  assert.equal(mod.frameDifference(thumb(10), thumb(200)), 100);
+  const half = thumb(0);
+  half.fill(255, 0, half.length / 2);
+  assert.equal(mod.frameDifference(thumb(0), half), 50);
+  assert.equal(mod.frameDifference(new Uint8Array(0), new Uint8Array(0)), 0);
+});
+test('a small element moving across a big page is kept', () => {
+  // A box 2% of the thumbnail moves one slot per frame on an otherwise still page.
+  const size = Math.round(mod.THUMB_W * mod.THUMB_H * 0.02);
+  const withBox = (at, offset) => {
+    const luma = thumb(255);
+    luma.fill(0, offset, offset + size);
+    return { at, luma };
+  };
+  const frames = [withBox(0, 0), withBox(125, size), withBox(250, size * 2), withBox(375, size * 3), withBox(500, size * 3)];
+  assert.deepEqual(mod.selectFrames(frames), [0, 1, 2, 3, 4]);
+});
+test('a page that sits still gives first and last only', () => {
+  const frames = [frame(0, 50), frame(125, 50), frame(250, 51), frame(375, 50), frame(500, 50)];
+  assert.deepEqual(mod.selectFrames(frames), [0, 4]);
+});
+test('the moments it moved are kept, in time order', () => {
+  const frames = [frame(0, 0), frame(125, 0), frame(250, 60), frame(375, 60), frame(500, 120), frame(625, 120), frame(750, 120)];
+  assert.deepEqual(mod.selectFrames(frames), [0, 2, 4, 6]);
+});
+test('past the cap the kept frames spread across the clip, not into one burst', () => {
+  // Every frame changes, but the change is biggest in two short bursts - the
+  // fast moments of an eased animation. A biggest-change rule put all the
+  // frames in the bursts; the sheet should cover the whole clip.
+  const frames = [];
+  for (let i = 0; i < 40; i++) {
+    const fast = (i >= 8 && i <= 11) || (i >= 28 && i <= 31);
+    // Fast: a big block toggles (about half the picture). Slow: a small one (under 2%).
+    const luma = thumb(0);
+    if (i % 2) luma.fill(255, 0, fast ? 3000 : 100);
+    frames.push({ at: i * 125, luma });
+  }
+  const chosen = mod.selectFrames(frames, { maxFrames: 12 });
+  assert.equal(chosen.length, 12);
+  assert.equal(chosen[0], 0);
+  assert.equal(chosen[11], 39);
+  const gaps = chosen.slice(1).map((v, i) => frames[v].at - frames[chosen[i]].at);
+  const ideal = (39 * 125) / 11;
+  assert.ok(Math.max(...gaps) <= ideal * 1.6, `largest gap ${Math.max(...gaps)} ms vs ideal ${ideal.toFixed(0)}`);
+});
+test('past the cap only the moments that moved are thinned - a still stretch adds nothing', () => {
+  // Moves for the first second, sits still for three: the frames stay where the motion was.
+  const frames = Array.from({ length: 32 }, (_, i) => frame(i * 125, i < 8 ? (i % 2) * 200 : 200));
+  const chosen = mod.selectFrames(frames, { maxFrames: 6 });
+  assert.equal(chosen[chosen.length - 1], 31);
+  for (const i of chosen.slice(0, -1)) assert.ok(i < 8, `frame ${i} is from the still stretch`);
+});
+test('one or zero frames do not break it', () => {
+  assert.deepEqual(mod.selectFrames([]), []);
+  assert.deepEqual(mod.selectFrames([frame(0, 1)]), [0]);
+});
+
+heading('clips - picking frames as they arrive');
+// A seeded generator, so a failure reproduces.
+const lcg = (seed) => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+const runPicker = (frames, options) => {
+  const picker = new mod.FramePicker(options);
+  const held = new Set();
+  let peak = 0;
+  frames.forEach((f, i) => {
+    for (const r of picker.push(f)) {
+      assert.ok(held.has(r), `released ${r} which was not held`);
+      held.delete(r);
+    }
+    held.add(i);
+    peak = Math.max(peak, held.size);
+  });
+  assert.deepEqual([...held].sort((a, b) => a - b), picker.held(), 'release list and held() agree');
+  return { held: picker.held(), peak };
+};
+test('what it holds at the end is exactly what selectFrames picks', () => {
+  for (let seed = 1; seed <= 200; seed++) {
+    const rand = lcg(seed);
+    const count = 1 + Math.floor(rand() * 90);
+    const frames = [];
+    let level = Math.floor(rand() * 256);
+    for (let i = 0; i < count; i++) {
+      if (rand() < 0.5) level = Math.floor(rand() * 256);
+      const luma = thumb(level);
+      if (rand() < 0.3) luma.fill(255 - level, 0, Math.floor(rand() * luma.length * 0.05));
+      frames.push({ at: i * 125, luma });
+    }
+    const maxFrames = 2 + Math.floor(rand() * 12);
+    const { held, peak } = runPicker(frames, { maxFrames });
+    const chosen = mod.selectFrames(frames, { maxFrames });
+    assert.deepEqual(held, chosen, `seed ${seed}: what the recorder holds is what the sheet shows`);
+    assert.ok(held.length <= maxFrames, `seed ${seed}: holds ${held.length} > ${maxFrames}`);
+    assert.ok(peak <= maxFrames, `seed ${seed}: peak ${peak}`);
+  }
+});
+test('a constantly moving page keeps memory flat - 80 frames, at most 12 held', () => {
+  const frames = Array.from({ length: 80 }, (_, i) => frame(i * 125, (i * 37) % 256));
+  const { peak } = runPicker(frames, { maxFrames: 12 });
+  assert.ok(peak <= 12, `peak ${peak}`);
+});
+test('a still page holds just the first and the newest', () => {
+  const frames = Array.from({ length: 40 }, (_, i) => frame(i * 125, 50));
+  assert.deepEqual(runPicker(frames, { maxFrames: 12 }).held, [0, 39]);
+});
+
+heading('clips - the sheet');
+test('three across by default, as many rows as needed, tiles keep the frame aspect', () => {
+  const layout = mod.sheetLayout(7, 1440, 900, { sheetWidth: 1800, gap: 16, labelHeight: 28 });
+  assert.equal(layout.columns, 3);
+  assert.equal(layout.rows, 3);
+  assert.equal(layout.tileWidth, Math.floor((1800 - 16 * 4) / 3));
+  assert.equal(layout.tileHeight, Math.round(layout.tileWidth * (900 / 1440)));
+  assert.equal(layout.tiles.length, 7);
+  assert.deepEqual(layout.tiles[0], { x: 16, y: 16 });
+  assert.equal(layout.tiles[3].x, 16, 'fourth tile starts a new row');
+  assert.equal(layout.tiles[3].y, 16 + layout.tileHeight + 28 + 16);
+  assert.equal(layout.height, 16 + 3 * (layout.tileHeight + 28 + 16));
+});
+test('fewer frames than columns shrinks the grid', () => {
+  assert.equal(mod.sheetLayout(2, 100, 100).columns, 2);
+  assert.equal(mod.sheetLayout(1, 100, 100).rows, 1);
+});
+
+heading('clips - the timeline');
+test('offsets are relative and two decimals', () => {
+  assert.equal(mod.offsetLabel(0), '+0.00s');
+  assert.equal(mod.offsetLabel(1204), '+1.20s');
+  assert.equal(mod.offsetLabel(-5), '+0.00s');
+});
+test('only events inside the clip, as offsets, sorted', () => {
+  const start = 1_000_000;
+  const events = mod.eventsDuringClip(
+    [
+      { level: 'error', message: 'late', timestamp: start + 9000 },
+      { level: 'warn', message: 'mid', source: 'src/a.ts:1:2', timestamp: start + 1500 },
+      { level: 'log', message: 'early', timestamp: start - 10 },
+    ],
+    [{ method: 'GET', url: 'https://x.co/api', status: 500, durationMs: 40, timestamp: start + 700 }],
+    start,
+    5000,
+  );
+  assert.deepEqual(events.map((e) => [e.offsetMs, e.kind]), [[700, 'network'], [1500, 'console']]);
+  assert.match(events[0].text, /GET https:\/\/x\.co\/api - HTTP 500 \(40 ms\)/);
+  assert.match(events[1].text, /mid\n    at src\/a\.ts:1:2/);
+});
+test('the report names each tile and stamps each event', () => {
+  const md = mod.buildClipMarkdown({
+    url: 'https://x.co/page', title: 'Page', viewport: { width: 1440, height: 900 }, userAgent: 'UA',
+    startedAt: new Date('2026-10-16T21:00:00Z'), durationMs: 5020, triggerLabel: 'popup Record clip button',
+    recorderActive: true, frameOffsetsMs: [0, 1250, 5020], sampledFrames: 41,
+    sheetFilename: 'page_frames.jpg', videoFilename: 'page_clip.webm', framesFolder: 'page_frames',
+    events: [{ offsetMs: 1500, kind: 'console', level: 'error', text: 'boom' }],
+    redacted: 'none found.', sourceMaps: 'all 1 frame mapped to the original file and line.',
+  });
+  assert.match(md, /^# Clip — Page/);
+  assert.match(md, /\*\*Length:\*\* 5\.0 s/);
+  assert.match(md, /3 of 41 sampled frames, the ones where the picture changed; each at full size in page_frames\//);
+  assert.match(md, /1\. \+0\.00s\n2\. \+1\.25s\n3\. \+5\.02s/);
+  assert.match(md, /\+1\.50s \[error\] boom/);
+  assert.match(md, /\*\*Redacted:\*\* none found/);
+  assert.match(md, /\*\*Source maps:\*\* all 1 frame/);
+});
+test('an inactive recorder is said plainly, not shown as a quiet clip', () => {
+  const md = mod.buildClipMarkdown({
+    url: '', title: '', viewport: { width: 1, height: 1 }, userAgent: '', startedAt: new Date(0), durationMs: 1000,
+    triggerLabel: 't', recorderActive: false, frameOffsetsMs: [0, 1000], sampledFrames: 9,
+    sheetFilename: 'a', videoFilename: 'b', framesFolder: 'c', events: [],
+  });
+  assert.match(md, /NOT ACTIVE/);
+  assert.match(md, /reload the tab, reproduce, and record again/);
+  assert.ok(!md.includes('No console output'));
+});
+test('kept frames are named by their place and offset', () => {
+  assert.equal(mod.frameFilename(0, 0), '01_+0.00s.jpg');
+  assert.equal(mod.frameFilename(11, 4504), '12_+4.50s.jpg');
+});
+test('the count-in is clamped to 0-5 seconds', () => {
+  assert.equal(mod.clampClipDelay(-1), 0);
+  assert.equal(mod.clampClipDelay(9), 5);
+  assert.equal(mod.clampClipDelay(NaN), 2);
+});
+test('clip length is clamped to 2-10 seconds', () => {
+  assert.equal(mod.clampClipSeconds(1), 2);
+  assert.equal(mod.clampClipSeconds(99), 10);
+  assert.equal(mod.clampClipSeconds(4.6), 5);
+  assert.equal(mod.clampClipSeconds(NaN), 5);
 });
 
 rmSync(dir, { recursive: true, force: true });

@@ -18,6 +18,8 @@ const iconCapturesInput = document.getElementById('icon-captures') as HTMLInputE
 const stampUrlInput = document.getElementById('stamp-url') as HTMLInputElement;
 const autoCopyInput = document.getElementById('auto-copy-image') as HTMLInputElement;
 const imageOnlyInput = document.getElementById('clipboard-image-only') as HTMLInputElement;
+const clipSecondsInput = document.getElementById('clip-seconds') as HTMLInputElement;
+const clipDelayInput = document.getElementById('clip-delay') as HTMLInputElement;
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
 const dirNameEl = document.getElementById('output-dir-name') as HTMLElement;
 const dirChooseBtn = document.getElementById('output-dir-choose') as HTMLButtonElement;
@@ -37,6 +39,8 @@ async function load(): Promise<void> {
   stampUrlInput.checked = settings.stampUrlOnImage;
   autoCopyInput.checked = settings.autoCopyImage;
   imageOnlyInput.checked = settings.clipboardImageOnly;
+  clipSecondsInput.value = String(settings.clipSeconds);
+  clipDelayInput.value = String(settings.clipDelaySeconds);
   syncAutoCopy();
   for (const input of formatInputs) {
     input.checked = input.value === settings.bundleFormat;
@@ -119,7 +123,7 @@ async function save(): Promise<void> {
   const bundleFormat = normalizeBundleFormat(formatInputs.find((input) => input.checked)?.value);
   // imageOnlyPng belongs to the popup checkbox; carry it through untouched
   // so saving from this page can't silently reset it.
-  const { imageOnlyPng } = await getSettings();
+  const { imageOnlyPng, clipSeconds, clipDelaySeconds } = await getSettings();
   await saveSettings({
     segmentSize,
     includeConsoleLogs: includeLogsInput.checked,
@@ -132,6 +136,8 @@ async function save(): Promise<void> {
     stampUrlOnImage: stampUrlInput.checked,
     autoCopyImage: autoCopyInput.checked,
     clipboardImageOnly: imageOnlyInput.checked,
+    clipSeconds: clipSecondsInput.value ? Number(clipSecondsInput.value) : clipSeconds,
+    clipDelaySeconds: clipDelayInput.value ? Number(clipDelayInput.value) : clipDelaySeconds,
   });
   syncAutoCopy();
   segmentInput.value = String(segmentSize);
@@ -167,6 +173,8 @@ iconCapturesInput.addEventListener('change', () => void save());
 stampUrlInput.addEventListener('change', () => void save());
 autoCopyInput.addEventListener('change', () => void save());
 imageOnlyInput.addEventListener('change', () => void save());
+clipSecondsInput.addEventListener('change', () => void save());
+clipDelayInput.addEventListener('change', () => void save());
 for (const input of formatInputs) {
   input.addEventListener('change', () => void save());
 }

@@ -13,6 +13,7 @@ import type {
 import {
   AGENT_CAPTURE_EVENT,
   AGENT_COMPLETE_EVENT,
+  AGENT_RECORD_EVENT,
   CONSOLE_BUFFER_CAP,
   NETWORK_BUFFER_CAP,
   RECORDER_EVENT,
@@ -98,6 +99,17 @@ import {
   document.addEventListener(AGENT_CAPTURE_EVENT, () => {
     try {
       void chrome.runtime.sendMessage({ type: 'AGENT_CAPTURE' });
+    } catch {
+      dispatchComplete({ ok: false, error: 'extension unavailable' });
+    }
+  });
+
+  // The same for a clip: capture-kit:record records the tab for the length
+  // set in Settings and answers on capture-kit:capture-complete with the
+  // files' shared basename.
+  document.addEventListener(AGENT_RECORD_EVENT, () => {
+    try {
+      void chrome.runtime.sendMessage({ type: 'AGENT_RECORD' });
     } catch {
       dispatchComplete({ ok: false, error: 'extension unavailable' });
     }
