@@ -40,8 +40,8 @@ or its permission has lapsed.
 
 `downloads.ui` lets Capture Kit hide Chrome's download bubble for the second it
 takes to write a tall page's slices, so a 20-slice page doesn't flash 20
-downloads at you. The image and report still show as normal, and the bubble is
-turned back on as soon as the slices are written. It adds no new permission
+downloads at you. The bubble is turned back on as soon as the slices are
+written. It adds no new permission
 warning: Chrome shows the same "Manage your downloads" line for both.
 
 ## No permission for the chosen output folder

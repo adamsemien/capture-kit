@@ -273,7 +273,6 @@ async function writeBundleFile(
 /**
  * Hides Chrome's download bubble while a batch of slices is written to
  * Downloads, so a tall page doesn't flash 20+ entries at the user (NOBC-162).
- * The image and report around it still show as normal.
  *
  * chrome.downloads.setUiOptions hides the download UI for the whole profile
  * while any extension has it off, so it is turned back on in a finally, and a
