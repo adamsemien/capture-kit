@@ -19,9 +19,14 @@ export interface SampledFrame {
   luma: Uint8Array;
 }
 
-/** Thumbnail size used for the change score. Small on purpose - this is "did it change", not "what changed". */
-export const THUMB_W = 96;
-export const THUMB_H = 60;
+/**
+ * Thumbnail size used for the change score and the crop. 96x60 missed small
+ * UI motion entirely - a pulsing button on a 2560 px page changed no
+ * thumbnail pixel - so it is 384x240: each pixel covers about 7 px of a big
+ * screen, and reading it back costs a millisecond or two per sample.
+ */
+export const THUMB_W = 384;
+export const THUMB_H = 240;
 
 /** A pixel whose luma moved by more than this counts as changed; below it is noise. */
 const PIXEL_CHANGE_FLOOR = 20;
@@ -48,8 +53,12 @@ export interface SelectOptions {
 }
 
 const DEFAULT_MAX_FRAMES = 12;
-/** Percent of pixels. 0.3% of a 96x60 thumbnail is about 17 pixels - a 160 px box on a 2560 px page is ~40. */
-const DEFAULT_MIN_CHANGE = 0.3;
+/**
+ * Percent of thumbnail pixels: 0.008% of 384x240 is about 7 pixels. Measured
+ * on a pulsing button at 2560 px, each step of the pulse moved 10-48 pixels
+ * and still moments moved none, so 7 keeps the motion and drops nothing real.
+ */
+const DEFAULT_MIN_CHANGE = 0.008;
 
 /**
  * Which sampled frames go on the sheet. The first and last always do - they
@@ -169,7 +178,7 @@ export interface CropBox {
 }
 
 export interface CropOptions {
-  /** Thumbnail cells of margin kept around the change. */
+  /** Thumbnail cells of margin kept around the change (a cell is about 7 px of a big screen). */
   padCells?: number;
   /** Smallest crop, in frame pixels, so a tiny change keeps some context. */
   minWidth?: number;
@@ -178,7 +187,7 @@ export interface CropOptions {
   maxShare?: number;
 }
 
-const DEFAULT_PAD_CELLS = 1;
+const DEFAULT_PAD_CELLS = 4;
 const DEFAULT_MIN_CROP_W = 480;
 const DEFAULT_MIN_CROP_H = 270;
 const DEFAULT_MAX_CROP_SHARE = 0.6;
