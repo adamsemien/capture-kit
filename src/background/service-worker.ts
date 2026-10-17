@@ -138,20 +138,16 @@ interface PreparedPage extends RedactedPage {
   mappedFrames: number;
 }
 
-// Source-map fetches are best effort and must never hold a capture: each one
-// gets a few seconds, then the frame is printed raw. Credentials ride along
-// so a protected preview deployment resolves the same as a public site.
-const SOURCE_MAP_FETCH_MS = 4000;
-
-async function fetchForSourceMap(url: string): Promise<Response | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SOURCE_MAP_FETCH_MS);
+// Source-map fetches are best effort and must never hold a capture. The
+// mapper owns the clock (NOBC-160): one deadline per script covering headers
+// and bodies, one budget per capture, and it aborts the signal passed here
+// when time runs out. Credentials ride along so a protected preview
+// deployment resolves the same as a public site.
+async function fetchForSourceMap(url: string, signal?: AbortSignal): Promise<Response | null> {
   try {
-    return await fetch(url, { credentials: 'include', signal: controller.signal });
+    return await fetch(url, { credentials: 'include', signal });
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

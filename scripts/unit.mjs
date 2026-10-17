@@ -878,6 +878,61 @@ await atest('the input record is not modified', async () => {
   assert.equal(JSON.stringify(page), before);
 });
 
+heading('source maps - time limits (NOBC-160)');
+const hang = () => new Promise(() => {});
+await atest('a map whose body never finishes gives up inside the deadline, frame left raw', async () => {
+  let aborted = false;
+  const fetch = async (url, signal) => {
+    signal?.addEventListener('abort', () => { aborted = true; });
+    if (url === SCRIPT_URL) return { ok: true, headers: noHeaders, text: async () => chunkJs + '\n//# sourceMappingURL=chunk-8f3a.js.map\n' };
+    return { ok: true, headers: noHeaders, text: hang };
+  };
+  const t0 = Date.now();
+  const out = await mod.mapPageSources(PAGE(), new mod.FrameMapper({ fetch, timeoutMs: 60 }));
+  const took = Date.now() - t0;
+  assert.ok(took < 1000, `took ${took} ms`);
+  assert.equal(out.mappedFrames, 0);
+  assert.equal(out.console[0].source, `${throwAt} (no source map)`);
+  assert.ok(aborted, 'the download was told to stop');
+});
+await atest('headers that never arrive are covered by the same deadline', async () => {
+  const t0 = Date.now();
+  const out = await mod.mapPageSources(PAGE(), new mod.FrameMapper({ fetch: hang, timeoutMs: 60 }));
+  assert.ok(Date.now() - t0 < 1000);
+  assert.equal(out.frames, 3);
+  assert.equal(out.mappedFrames, 0);
+});
+await atest('many slow scripts share one budget for the whole capture', async () => {
+  const many = {
+    meta: PAGE().meta,
+    console: Array.from({ length: 10 }, (_, i) => ({
+      level: 'error', message: 'x', source: `https://s${i}.example.com/a.js:1:1`, timestamp: i,
+    })),
+    network: [],
+  };
+  const t0 = Date.now();
+  const out = await mod.mapPageSources(many, new mod.FrameMapper({ fetch: hang, timeoutMs: 100, budgetMs: 250 }));
+  const took = Date.now() - t0;
+  assert.ok(took < 600, `10 hanging scripts took ${took} ms - the budget did not hold`);
+  assert.equal(out.frames, 10);
+  assert.equal(out.mappedFrames, 0);
+});
+await atest('a map the server says is too big is never downloaded', async () => {
+  let read = false;
+  const fetch = async (url) => {
+    if (url === SCRIPT_URL) return { ok: true, headers: noHeaders, text: async () => chunkJs + '\n//# sourceMappingURL=chunk-8f3a.js.map\n' };
+    if (url !== SCRIPT_URL + '.map') return { ok: false, headers: noHeaders, text: async () => '' };
+    return {
+      ok: true,
+      headers: { get: (n) => (n.toLowerCase() === 'content-length' ? '999999999' : null) },
+      text: async () => { read = true; return chunkMap; },
+    };
+  };
+  const out = await mod.mapPageSources(PAGE(), new mod.FrameMapper({ fetch, maxMapChars: 1000 }));
+  assert.equal(out.mappedFrames, 0);
+  assert.equal(read, false);
+});
+
 heading('source maps - the report line');
 test('no frames, no line; otherwise the count and what happened to the rest', () => {
   assert.equal(mod.sourceMapLabel(0, 0), null);
