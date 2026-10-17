@@ -558,6 +558,11 @@ function describeError(error: unknown): string {
   if (message.includes('Cannot access') || message.includes('Cannot attach')) {
     return 'Chrome blocked debugger access to this page.';
   }
+  // Tab recording needs a person to have used the extension on the tab first
+  // (Chrome's activeTab rule). A page or an agent cannot grant that itself.
+  if (message.includes('has not been invoked')) {
+    return 'Chrome only lets Capture Kit record a tab after you use it there once. Press Cmd+Shift+8 (or click the Capture Kit icon) on this tab, then a page or agent can record clips here until the tab closes.';
+  }
   return message;
 }
 
