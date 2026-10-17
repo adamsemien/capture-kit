@@ -52,6 +52,18 @@ export interface BundleInput {
   redacted?: number;
   /** Frames the source-map pass looked at, and how many it rewrote. */
   sourceMaps?: SourceMapCounts;
+  /** Below 1 when the whole-page image was scaled to fit Chrome's limits (NOBC-161). */
+  scale?: number;
+  /** Full-resolution slices of a tall page, as written, top to bottom. */
+  slices?: SliceRef[];
+}
+
+/** A slice as the report names it: its path relative to the report, and the rows it covers. */
+export interface SliceRef {
+  path: string;
+  top: number;
+  height: number;
+  width: number;
 }
 
 export interface SourceMapCounts {
@@ -146,7 +158,8 @@ export function captureModeLabel(
  *
  *   Contents: <item>[ + <item>]*
  *
- * Items are `full-page image`, `partial image (W×H of W×H)`, `<n> console
+ * Items are `full-page image`, `full-page image (scaled to N%)`, `partial
+ * image (W×H of W×H)`, `<n> image slices`, `<n> console
  * error|warning|log(s)`, `<n> network failure(s)`, `no console or network
  * issues`, or `recorder not active (no console or network data)`. Counts are
  * what this file CONTAINS — never what exists elsewhere — so excluded or
@@ -165,6 +178,16 @@ export interface ContentsInput {
   networkFailures: number;
   thirdPartyErrors: number;
   thirdPartyFailures: number;
+  /** Below 1 when the whole-page image was scaled to fit (NOBC-161). */
+  scale?: number;
+  /** How many full-resolution slices were written beside the image. */
+  slices?: number;
+}
+
+/** "68%" - a scale as a percentage a reader can picture, never rounded up to 100%. */
+export function scaleLabel(scale: number): string {
+  const pct = Math.floor(scale * 1000) / 10;
+  return `${Number.isInteger(pct) ? pct : pct.toFixed(1)}%`;
 }
 
 /**
@@ -175,8 +198,11 @@ export interface ContentsInput {
 export function buildContentsLine(input: ContentsInput): string {
   const image = input.truncated
     ? `partial image (${input.fullSize.width}×${input.fullSize.height} of ${input.contentSize.width}×${input.contentSize.height})`
-    : 'full-page image';
+    : input.scale !== undefined && input.scale < 1
+      ? `full-page image (scaled to ${scaleLabel(input.scale)})`
+      : 'full-page image';
   const items = [image];
+  if (input.slices) items.push(`${input.slices} image slice${input.slices === 1 ? '' : 's'}`);
 
   if (!input.recorderActive) {
     items.push('recorder not active (no console or network data)');
@@ -199,7 +225,7 @@ export function buildContentsLine(input: ContentsInput): string {
       `${input.thirdPartyFailures} third-party request${input.thirdPartyFailures === 1 ? '' : 's'} blocked or failed`,
     );
   }
-  if (items.length === 1) items.push('no console or network issues');
+  if (items.length === (input.slices ? 2 : 1)) items.push('no console or network issues');
   return `Contents: ${items.join(' + ')}`;
 }
 
@@ -220,6 +246,8 @@ function contentsLine(
     networkFailures: failureSplit.firstParty.length,
     thirdPartyErrors: errorSplit.thirdParty.length,
     thirdPartyFailures: failureSplit.thirdParty.length,
+    scale: input.scale,
+    slices: input.slices?.length,
   });
 }
 
@@ -245,6 +273,8 @@ export interface ContextBlockInput {
   redacted?: number;
   /** Frames the source-map pass looked at. Absent, or no frames = no line. */
   sourceMaps?: SourceMapCounts;
+  /** Below 1 when the whole-page image was scaled to fit Chrome's limits. */
+  scale?: number;
 }
 
 /** True when the captured layout is not the layout the user was looking at. */
@@ -292,7 +322,13 @@ export function contextBlock(input: ContextBlockInput): string[] {
         ]
       : []),
     `- **Image file:** ${input.imageSize.width}×${input.imageSize.height}`,
-    ...(pixelScale(input) !== null
+    ...(input.scale !== undefined && input.scale < 1
+      ? [
+          `- **Pixel scale:** ${pixelScale(input) ?? input.scale}× — the whole-page image is scaled ` +
+            "down to fit Chrome's single-image limit. Divide coordinates measured in it by " +
+            `${pixelScale(input) ?? input.scale} to get CSS pixels.`,
+        ]
+      : pixelScale(input) !== null
       ? [
           `- **Pixel scale:** ${pixelScale(input)}× — the file holds ${pixelScale(input)} image ` +
             'pixels per CSS pixel (a high-DPI display). Coordinates measured in the image must be ' +
@@ -363,15 +399,17 @@ export function buildBundleMarkdown(input: BundleInput): string {
         userAgent: meta.userAgent,
         redacted: input.redacted,
         sourceMaps: input.sourceMaps,
+        scale: input.scale,
       }),
     ].join('\n'),
   );
 
   if (input.truncated) {
     parts.push(
-      `> ⚠️ The page exceeds Chrome's canvas limits — the screenshot was truncated to ${input.fullSize.width}×${input.fullSize.height} of the full ${input.contentSize.width}×${input.contentSize.height}.`,
+      `> ⚠️ The page is longer than a capture will go — the screenshot was truncated to ${input.fullSize.width}×${input.fullSize.height} of the full ${input.contentSize.width}×${input.contentSize.height}.`,
     );
   }
+  parts.push(...tallPageSections(input));
 
   parts.push(...consoleAndNetworkSections({
     recorderActive: input.recorderActive,
@@ -387,6 +425,43 @@ export function buildBundleMarkdown(input: BundleInput): string {
   parts.push('');
 
   return parts.join('\n\n') + '\n';
+}
+
+/**
+ * What a reader of a tall capture needs before anything else (NOBC-161): that
+ * the whole-page image was scaled rather than cut, and where the readable
+ * full-size pieces are. Nothing at all for a page that fits on a screen or two.
+ */
+export function tallPageSections(input: Pick<BundleInput, 'scale' | 'slices' | 'fullSize' | 'imageSize'>): string[] {
+  const parts: string[] = [];
+  if (input.scale !== undefined && input.scale < 1) {
+    parts.push(
+      `> The page is ${input.fullSize.width}×${input.fullSize.height}, past the 32,767 px Chrome ` +
+        `allows in one image, so the whole-page image is scaled to ${scaleLabel(input.scale)} ` +
+        `(${input.imageSize.width}×${input.imageSize.height}). Nothing is cut off.` +
+        (input.slices?.length ? ' The slices below are full size.' : ''),
+    );
+  }
+  const slices = input.slices ?? [];
+  if (slices.length === 0) return parts;
+  const first = slices[0];
+  const overlap = slices.length > 1 ? first.top + first.height - slices[1].top : 0;
+  parts.push('## Slices');
+  parts.push(
+    `This page is too tall to read as one picture — an assistant shrinks a tall image until its ` +
+      `text is unreadable. These ${slices.length} slices cover it top to bottom at full size, ` +
+      `${first.width}×${first.height} each` +
+      (overlap > 0 ? `, and each overlaps the next by ${overlap} px` : '') +
+      '. Read them in order. Rows are image pixels from the top of the page.',
+  );
+  parts.push(
+    [
+      '| Slice | Rows |',
+      '|---|---|',
+      ...slices.map((slice) => `| ${slice.path} | ${slice.top}–${slice.top + slice.height} |`),
+    ].join('\n'),
+  );
+  return parts;
 }
 
 interface SectionsInput {

@@ -1,6 +1,7 @@
 import type { CaptureFormat, CaptureRequest, CaptureResult, CaptureStrategy } from './types';
 import { JPEG_QUALITY, SINGLE_SHOT_SURFACE_LIMIT } from './types';
-import { SegmentCanvas, clampDimensions, planScrollOffsets } from './segments';
+import { CANVAS_MAX_DIMENSION, planScrollOffsets } from './segments';
+import { MAX_CAPTURE_HEIGHT, PageCanvas } from './slices';
 import { readEncodedImageSize } from './image-size';
 
 export const CDP_VERSION = '1.3';
@@ -799,10 +800,13 @@ async function captureSegmented(
     // The virtual viewport can still change layout (media queries on width,
     // anything the hold does not cover), so re-measure before planning.
     const overriddenSize = await readContentSize(target);
-    const { width, height, truncated } = clampDimensions(
-      overriddenSize.width,
-      overriddenSize.height,
-    );
+    // Chrome's single-canvas limits no longer cut the page (NOBC-161): the
+    // whole-page image is scaled to fit instead, and the slices hold the full
+    // resolution. What is still cut is a page wider than one canvas side (no
+    // known real page) or taller than MAX_CAPTURE_HEIGHT (an endless feed).
+    const width = Math.min(overriddenSize.width, CANVAS_MAX_DIMENSION);
+    const height = Math.min(overriddenSize.height, MAX_CAPTURE_HEIGHT);
+    const truncated = width < overriddenSize.width || height < overriddenSize.height;
     // Plan against the viewport that EXISTS, not a fresh min() of the size we
     // just re-measured. Those two disagree whenever the page's content grows
     // under the override — a page with horizontal overflow that tracks the
@@ -821,7 +825,7 @@ async function captureSegmented(
     const xOffsets = planScrollOffsets(width, viewportWidth);
     const yOffsets = planScrollOffsets(height, viewportHeight);
 
-    const canvas = new SegmentCanvas(width, height);
+    const canvas = new PageCanvas(width, height, request.format, request.slices === true);
     // The grid is known before the loop runs, so progress can be reported as
     // "3/7" rather than a spinner. A segmented capture of a long page is the
     // case where the user has no other sign anything is happening.
@@ -846,7 +850,7 @@ async function captureSegmented(
 
     // Segments are always captured as PNG (lossless intermediates); the
     // joined canvas encodes once into the requested output format.
-    const imageBase64 = await canvas.toBase64(request.format);
+    const { imageBase64, slices } = await canvas.finish();
     return {
       imageBase64,
       format: request.format,
@@ -861,11 +865,13 @@ async function captureSegmented(
       // Kept so the report can say the page re-laid out rather than leaving a
       // reader to wonder why "Full page" does not match their browser.
       naturalSize,
-      imageSize: readEncodedImageSize(imageBase64, request.format) ?? { width, height },
+      imageSize: readEncodedImageSize(imageBase64, request.format) ?? canvas.wholeSize,
       truncated,
       segments,
       revealForced: 0,
       heightHeld,
+      ...(canvas.scale < 1 ? { scale: canvas.scale } : {}),
+      ...(slices.length > 0 ? { slices } : {}),
     };
   } finally {
     try {

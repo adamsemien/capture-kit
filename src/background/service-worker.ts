@@ -9,7 +9,7 @@
 
 import { clipboardText, copiesFromPage, opensResultTab } from '../lib/clipboard-only';
 import { toClipboardPng } from '../lib/clipboard-png';
-import { captureFullPage } from '../lib/capture-engine';
+import { captureFullPage, sliceFilename } from '../lib/capture-engine';
 import { captureSweep } from '../lib/capture-engine/sweep';
 import {
   applyInnerScrollExpansion,
@@ -24,6 +24,7 @@ import {
   captureModeLabel,
   OUTPUT_README,
   withLatestNotice,
+  type SliceRef,
 } from '../lib/bundle/markdown';
 import { captureBasename, slugify, timestampForFilename } from '../lib/bundle/filename';
 import { buildSessionIndex } from '../lib/session/manifest';
@@ -637,6 +638,9 @@ async function captureReport(
     format: settings.bundleFormat,
     stamp: stampRequest(settings, page.meta.url, capturedAt),
     onProgress: (done, total) => void reportProgress(done, total),
+    // Tall pages also come back as screen-sized slices an assistant can read
+    // (NOBC-161), written beside the image and listed in the report.
+    slices: true,
   });
 
   const basename = captureBasename(page.meta.title, page.meta.url, capturedAt);
@@ -671,12 +675,26 @@ async function captureReport(
     stamp: result.stamp,
     naturalSize: result.naturalSize,
     browserZoom: result.browserZoom,
+    scale: result.scale,
   };
+  const slices = result.slices ?? [];
   const mirrorImageFilename = mirrorBasename
     ? `${mirrorBasename}.${isJpeg ? 'jpg' : 'png'}`
     : null;
+  // The session mirror writes its slices as NN_slices/slice-01.jpg, so its
+  // copy of the report points there - every path in the mirror resolves
+  // inside the mirror.
   const mirrorMarkdown = mirrorImageFilename
-    ? buildBundleMarkdown({ ...markdownInput, imageFilename: mirrorImageFilename })
+    ? buildBundleMarkdown({
+        ...markdownInput,
+        imageFilename: mirrorImageFilename,
+        slices: slices.map((slice, i) => ({
+          path: `${mirrorBasename}_slices/${sliceFilename(i, result.format)}`,
+          top: slice.top,
+          height: slice.height,
+          width: slice.width,
+        })),
+      })
     : null;
 
   const allErrors = consoleEntries.filter((e) => e.level === 'error');
@@ -697,11 +715,32 @@ async function captureReport(
     imageMime,
     result.imageBase64,
   );
+  // Slices next, into their own folder beside the image, so the report below
+  // can name each one as it actually landed.
+  const slicesFolder = `${basename}_slices`;
+  const sliceRefs: SliceRef[] = [];
+  for (const [i, slice] of slices.entries()) {
+    const written = await writeBundleFile(
+      `${folder}${slicesFolder}/${sliceFilename(i, result.format)}`,
+      imageMime,
+      slice.imageBase64,
+    );
+    sliceRefs.push({
+      path: `${slicesFolder}/${written.filename}`,
+      top: slice.top,
+      height: slice.height,
+      width: slice.width,
+    });
+  }
   // The report is written after the image and names the file that actually
   // landed. A collision renames the new image to "… (1).jpg", and a report
   // still pointing at "….jpg" would send its reader to the PREVIOUS capture's
   // picture — a wrong screenshot is worse than a missing one.
-  const markdown = buildBundleMarkdown({ ...markdownInput, imageFilename: imageWrite.filename });
+  const markdown = buildBundleMarkdown({
+    ...markdownInput,
+    imageFilename: imageWrite.filename,
+    slices: sliceRefs,
+  });
   const markdownWrite = await writeBundleFile(
     `${folder}${markdownFilename}`,
     'text/markdown',
@@ -731,6 +770,8 @@ async function captureReport(
       networkFailures: failureSplit.firstParty.length,
       thirdPartyErrors: errorSplit.thirdParty.length,
       thirdPartyFailures: failureSplit.thirdParty.length,
+      scale: result.scale,
+      slices: sliceRefs.length,
     }),
     errors,
     thirdPartyErrors: errorSplit.thirdParty,
@@ -1227,6 +1268,13 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
           report.imageMime,
           report.result.imageBase64,
         );
+        for (const [i, slice] of (report.result.slices ?? []).entries()) {
+          await downloadPointerFile(
+            `${pointer}${ordinal}_slices/${sliceFilename(i, report.result.format)}`,
+            report.imageMime,
+            slice.imageBase64,
+          );
+        }
         await downloadPointerFile(
           `${pointer}${ordinal}.md`,
           'text/markdown',
