@@ -27,6 +27,9 @@ export { contextBlock, buildBundleMarkdown, captureModeLabel, withLatestNotice, 
 export { planScrollOffsets } from '${ROOT}/src/lib/capture-engine/segments.ts';
 export { planSlices, wholeImageScale, scaledSize, baseSliceHeight, sliceFilename, SLICE_OVERLAP, MAX_SLICES, MAX_CAPTURE_HEIGHT } from '${ROOT}/src/lib/capture-engine/slices.ts';
 export { tallPageSections, scaleLabel, buildContentsLine } from '${ROOT}/src/lib/bundle/markdown.ts';
+export { contentColumns, planTrim, TRIM_PADDING } from '${ROOT}/src/lib/capture-engine/slices.ts';
+export { decidePageTrigger, parseSitePattern, normalizeSiteList, normalizeTriggerMode, DEFAULT_TRIGGER_SITES } from '${ROOT}/src/lib/site-access.ts';
+export { storedTriggerMode } from '${ROOT}/src/lib/settings.ts';
 export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
@@ -1310,6 +1313,107 @@ test('the full report carries the slices section and the scaled pixel scale', ()
   assert.match(md, /Pixel scale:\*\* 0\.68× — the whole-page image is scaled down/);
   assert.ok(!md.includes('high-DPI'), 'a scaled image is not described as a high-DPI one');
   assert.ok(md.indexOf('## Slices') < md.indexOf('## Console'), 'slices come before the console');
+});
+
+// --- NOBC-162: per-site trigger control ------------------------------------
+const decide = (mode, sites, url) => mod.decidePageTrigger(mode, sites, url);
+test('off refuses every page with the old message an agent already knows', () => {
+  assert.deepEqual(decide('off', ['localhost'], 'http://localhost:3000/'), { allowed: false, reason: 'in-page trigger is turned off in Settings' });
+});
+test('any page allows anything, file pages included', () => {
+  assert.equal(decide('any', [], 'https://evil.example/').allowed, true);
+  assert.equal(decide('any', [], 'file:///tmp/x.html').allowed, true);
+});
+test('a bare host allows every port and both schemes', () => {
+  assert.equal(decide('allowed', ['localhost'], 'http://localhost:3000/app').allowed, true);
+  assert.equal(decide('allowed', ['localhost'], 'https://localhost/').allowed, true);
+});
+test('a host with a port allows only that port, default ports included', () => {
+  assert.equal(decide('allowed', ['localhost:3000'], 'http://localhost:3000/').allowed, true);
+  assert.equal(decide('allowed', ['localhost:3000'], 'http://localhost:5173/').allowed, false);
+  assert.equal(decide('allowed', ['example.com:443'], 'https://example.com/').allowed, true);
+});
+test('a bare host does not allow its subdomains, a wildcard does', () => {
+  assert.equal(decide('allowed', ['example.com'], 'https://app.example.com/').allowed, false);
+  assert.equal(decide('allowed', ['*.example.com'], 'https://app.example.com/').allowed, true);
+  assert.equal(decide('allowed', ['*.example.com'], 'https://example.com/').allowed, true);
+  assert.equal(decide('allowed', ['*.example.com'], 'https://badexample.com/').allowed, false);
+});
+test('a pasted URL counts as its host', () => {
+  assert.equal(decide('allowed', ['https://App.Example.com/some/path?q=1'], 'https://app.example.com/other').allowed, true);
+});
+test('a refused page is told its host and where the setting lives', () => {
+  const d = decide('allowed', ['localhost'], 'https://news.example.org/a');
+  assert.equal(d.allowed, false);
+  assert.match(d.reason, /not allowed on news\.example\.org - add it under Settings → Automation → Allowed sites/);
+});
+test('allowed-sites mode never matches a file page', () => {
+  assert.equal(decide('allowed', ['localhost'], 'file:///Users/x/index.html').allowed, false);
+});
+test('IPv6 loopback can be listed', () => {
+  assert.equal(decide('allowed', ['[::1]:3000'], 'http://[::1]:3000/').allowed, true);
+});
+test('the site list drops junk lines and duplicates and keeps order', () => {
+  assert.deepEqual(mod.normalizeSiteList('localhost\n\n  127.0.0.1 \nlocalhost\nhttp://\nexample.com:abc\n*.dev.test'), ['localhost', '127.0.0.1', '*.dev.test']);
+});
+test('an unknown mode reads as off', () => {
+  assert.equal(mod.normalizeTriggerMode('sometimes'), 'off');
+});
+test('an old profile with the boolean on keeps working as any page', () => {
+  assert.equal(mod.storedTriggerMode({ allowInPageTrigger: true }), 'any');
+  assert.equal(mod.storedTriggerMode({}), 'off');
+  assert.equal(mod.storedTriggerMode({ pageTriggerMode: null, allowInPageTrigger: true }), 'any', 'null is "not stored", as getSettings reads it');
+});
+test('the new mode wins over a stale boolean', () => {
+  assert.equal(mod.storedTriggerMode({ allowInPageTrigger: true, pageTriggerMode: 'allowed' }), 'allowed');
+});
+
+// --- NOBC-162: slice margin trim --------------------------------------------
+function rowsOf(width, rows, paint) {
+  const data = new Uint8ClampedArray(width * rows * 4);
+  for (let r = 0; r < rows; r++) {
+    for (let x = 0; x < width; x++) {
+      const [R, G, B] = paint(x, r);
+      const i = (r * width + x) * 4;
+      data[i] = R; data[i + 1] = G; data[i + 2] = B; data[i + 3] = 255;
+    }
+  }
+  return data;
+}
+test('content columns find a centred text column on a white page', () => {
+  const data = rowsOf(100, 5, (x, r) => (x >= 30 && x < 70 && (x + r) % 3 === 0 ? [0, 0, 0] : [255, 255, 255]));
+  assert.deepEqual(mod.contentColumns(data, 100, 5), { left: 30, right: 70 });
+});
+test('a full-width header band counts as margin, not content', () => {
+  const data = rowsOf(100, 4, (x, r) => (r === 0 ? [20, 40, 200] : x === 50 ? [0, 0, 0] : [255, 255, 255]));
+  assert.deepEqual(mod.contentColumns(data, 100, 4), { left: 50, right: 51 });
+});
+test('JPEG-level noise in the margin is still margin', () => {
+  const data = rowsOf(100, 3, (x) => (x === 60 ? [0, 0, 0] : [250 + (x % 5), 255, 251]));
+  assert.deepEqual(mod.contentColumns(data, 100, 3), { left: 60, right: 61 });
+});
+test('a blank slice is left whole', () => {
+  const data = rowsOf(50, 3, () => [255, 255, 255]);
+  assert.deepEqual(mod.contentColumns(data, 50, 3), { left: 0, right: 50 });
+});
+test('the trim keeps padding and skips small wins', () => {
+  assert.deepEqual(mod.planTrim(2560, 480, 2080), { left: 480 - mod.TRIM_PADDING, width: 1600 + 2 * mod.TRIM_PADDING });
+  assert.equal(mod.planTrim(1280, 40, 1240), null, 'a 40 px margin each side is not worth a narrower slice');
+  assert.equal(mod.planTrim(1280, 0, 1280), null);
+});
+test('a trimmed slice table names the columns each slice shows', () => {
+  const sections = mod.tallPageSections({
+    fullSize: { width: 2560, height: 9000 }, imageSize: { width: 2560, height: 9000 },
+    slices: [
+      { path: 'x_slices/slice-01.jpg', top: 0, height: 3200, width: 1632, left: 464 },
+      { path: 'x_slices/slice-02.jpg', top: 3136, height: 3200, width: 2560, left: 0 },
+    ],
+  });
+  const text = sections.join('\n');
+  assert.match(text, /\| Slice \| Rows \| Columns \|/);
+  assert.match(text, /\| x_slices\/slice-01\.jpg \| 0–3200 \| 464–2096 \|/);
+  assert.match(text, /\| x_slices\/slice-02\.jpg \| 3136–6336 \| 0–2560 \|/);
+  assert.match(text, /3200 px tall each/);
 });
 
 rmSync(dir, { recursive: true, force: true });

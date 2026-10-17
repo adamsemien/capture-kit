@@ -32,6 +32,7 @@ import { splitConsoleErrors, splitFailures } from '../lib/net-classify';
 import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
 import { ICON_MODE_KEY, getSettings } from '../lib/settings';
+import { decidePageTrigger } from '../lib/site-access';
 import type { Settings } from '../lib/settings';
 import { outputDirHasFile, outputDirStatus, writeToOutputDir } from '../lib/output-dir';
 import { redactPage, redactText } from '../lib/redact';
@@ -268,6 +269,53 @@ async function writeBundleFile(
   };
   return { filename: path.split('/').pop() as string, downloadId: id, via: 'downloads' };
 }
+
+/**
+ * Hides Chrome's download bubble while a batch of slices is written to
+ * Downloads, so a tall page doesn't flash 20+ entries at the user (NOBC-162).
+ *
+ * chrome.downloads.setUiOptions hides the download UI for the whole profile
+ * while any extension has it off, so it is turned back on in a finally, and a
+ * storage.session flag lets a worker that died mid-batch put it back on its
+ * next wake. A chosen output folder makes no downloads, so it is left alone.
+ */
+const DOWNLOAD_UI_HIDDEN_KEY = 'downloadUiHidden';
+
+async function withQuietDownloads(when: boolean, write: () => Promise<void>): Promise<void> {
+  let hidden = false;
+  if (when && (await outputDirStatus()).state !== 'granted') {
+    try {
+      await chrome.storage.session.set({ [DOWNLOAD_UI_HIDDEN_KEY]: true });
+      await chrome.downloads.setUiOptions({ enabled: false });
+      hidden = true;
+    } catch (error) {
+      // Older Chrome or a missing permission: the slices still get written,
+      // just noisily.
+      console.warn('[capture-kit] could not hide the download bubble:', error);
+    }
+  }
+  try {
+    await write();
+  } finally {
+    if (hidden) await restoreDownloadUi();
+  }
+}
+
+async function restoreDownloadUi(): Promise<void> {
+  try {
+    await chrome.downloads.setUiOptions({ enabled: true });
+  } catch (error) {
+    // Errors when another extension also has it off - theirs to restore.
+    console.warn('[capture-kit] could not restore the download bubble:', error);
+  }
+  await chrome.storage.session.remove(DOWNLOAD_UI_HIDDEN_KEY).catch(() => undefined);
+}
+
+/** A worker torn down mid-batch would leave the bubble hidden for the profile; undo that on wake. */
+void chrome.storage.session
+  .get(DOWNLOAD_UI_HIDDEN_KEY)
+  .then((stored) => (stored[DOWNLOAD_UI_HIDDEN_KEY] ? restoreDownloadUi() : undefined))
+  .catch(() => undefined);
 
 function collectOutput(): OutputInfo {
   return currentOutput ?? { via: 'downloads', label: DOWNLOADS_LABEL, lapsed: false };
@@ -508,14 +556,14 @@ async function setCaptureProgress(state: CaptureProgressState): Promise<void> {
 
 /** Amber dot the moment a capture starts, before the grid size is known. */
 async function beginIndicator(): Promise<void> {
-  await setBadge('•••', BADGE_RUNNING, 'capture-kit — capturing…');
+  await setBadge('•••', BADGE_RUNNING, 'Capture Kit — capturing…');
   await setCaptureProgress({ state: 'running', done: 0, total: 0, startedAt: Date.now() });
 }
 
 /** Called per segment. `total` of 1 means a single-shot; nothing to count. */
 async function reportProgress(done: number, total: number): Promise<void> {
   if (total > 1) {
-    await setBadge(`${done}/${total}`, BADGE_RUNNING, `capture-kit — segment ${done} of ${total}`);
+    await setBadge(`${done}/${total}`, BADGE_RUNNING, `Capture Kit — segment ${done} of ${total}`);
   }
   await setCaptureProgress({ state: 'running', done, total, startedAt: Date.now() });
 }
@@ -528,10 +576,10 @@ async function reportProgress(done: number, total: number): Promise<void> {
 async function endIndicator(ok: boolean, announce: boolean): Promise<void> {
   await setCaptureProgress({ state: 'idle', done: 0, total: 0, startedAt: Date.now() });
   if (!announce) {
-    await setBadge('', BADGE_OK, 'capture-kit');
+    await setBadge('', BADGE_OK, 'Capture Kit');
     return;
   }
-  await setBadge(ok ? 'OK' : '!', ok ? BADGE_OK : BADGE_ERROR, 'capture-kit');
+  await setBadge(ok ? 'OK' : '!', ok ? BADGE_OK : BADGE_ERROR, 'Capture Kit');
   setTimeout(() => {
     void chrome.action.setBadgeText({ text: '' });
   }, 5000);
@@ -693,6 +741,7 @@ async function captureReport(
           top: slice.top,
           height: slice.height,
           width: slice.width,
+          left: slice.left,
         })),
       })
     : null;
@@ -719,19 +768,22 @@ async function captureReport(
   // can name each one as it actually landed.
   const slicesFolder = `${basename}_slices`;
   const sliceRefs: SliceRef[] = [];
-  for (const [i, slice] of slices.entries()) {
-    const written = await writeBundleFile(
-      `${folder}${slicesFolder}/${sliceFilename(i, result.format)}`,
-      imageMime,
-      slice.imageBase64,
-    );
-    sliceRefs.push({
-      path: `${slicesFolder}/${written.filename}`,
-      top: slice.top,
-      height: slice.height,
-      width: slice.width,
-    });
-  }
+  await withQuietDownloads(slices.length > 0, async () => {
+    for (const [i, slice] of slices.entries()) {
+      const written = await writeBundleFile(
+        `${folder}${slicesFolder}/${sliceFilename(i, result.format)}`,
+        imageMime,
+        slice.imageBase64,
+      );
+      sliceRefs.push({
+        path: `${slicesFolder}/${written.filename}`,
+        top: slice.top,
+        height: slice.height,
+        width: slice.width,
+        left: slice.left,
+      });
+    }
+  });
   // The report is written after the image and names the file that actually
   // landed. A collision renames the new image to "… (1).jpg", and a report
   // still pointing at "….jpg" would send its reader to the PREVIOUS capture's
@@ -1268,13 +1320,16 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
           report.imageMime,
           report.result.imageBase64,
         );
-        for (const [i, slice] of (report.result.slices ?? []).entries()) {
-          await downloadPointerFile(
-            `${pointer}${ordinal}_slices/${sliceFilename(i, report.result.format)}`,
-            report.imageMime,
-            slice.imageBase64,
-          );
-        }
+        const mirrorSlices = report.result.slices ?? [];
+        await withQuietDownloads(mirrorSlices.length > 0, async () => {
+          for (const [i, slice] of mirrorSlices.entries()) {
+            await downloadPointerFile(
+              `${pointer}${ordinal}_slices/${sliceFilename(i, report.result.format)}`,
+              report.imageMime,
+              slice.imageBase64,
+            );
+          }
+        });
         await downloadPointerFile(
           `${pointer}${ordinal}.md`,
           'text/markdown',
@@ -1432,7 +1487,7 @@ async function recordClip(
     // The count-in, on the badge in amber. The stream id is taken after it:
     // Chrome expires an unused id after a few seconds.
     for (let left = settings.clipDelaySeconds; left > 0; left--) {
-      await setBadge(`${left}`, BADGE_RUNNING, `capture-kit — recording in ${left}s`);
+      await setBadge(`${left}`, BADGE_RUNNING, `Capture Kit — recording in ${left}s`);
       await new Promise((r) => setTimeout(r, 1000));
     }
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
@@ -1441,10 +1496,10 @@ async function recordClip(
     // popup has closed and nothing may be drawn on the page itself.
     const startedAt = new Date();
     let remaining = settings.clipSeconds;
-    await setBadge(`${remaining}s`, BADGE_ERROR, `capture-kit — recording ${settings.clipSeconds}s`);
+    await setBadge(`${remaining}s`, BADGE_ERROR, `Capture Kit — recording ${settings.clipSeconds}s`);
     const countdown = setInterval(() => {
       remaining = Math.max(0, remaining - 1);
-      void setBadge(remaining > 0 ? `${remaining}s` : '…', BADGE_ERROR, 'capture-kit — recording');
+      void setBadge(remaining > 0 ? `${remaining}s` : '…', BADGE_ERROR, 'Capture Kit — recording');
     }, 1000);
     let recorded: ClipRecordResponse;
     try {
@@ -1637,6 +1692,15 @@ async function agentCapture(tabId: number): Promise<void> {
   }
 }
 
+/**
+ * The page that sent an in-page trigger. The content script runs in the top
+ * frame only, so the sender's own URL is the page's; the tab URL is the
+ * fallback for the rare message that arrives without one.
+ */
+function senderPageUrl(sender: chrome.runtime.MessageSender): string | undefined {
+  return sender.url ?? sender.tab?.url;
+}
+
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
   if (message?.type === 'AGENT_CAPTURE') {
     const tabId = sender.tab?.id;
@@ -1647,8 +1711,9 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
       return false;
     }
     void getSettings().then((settings) => {
-      if (!settings.allowInPageTrigger) {
-        void tellPage(tabId, { ok: false, error: 'in-page trigger is turned off in Settings' });
+      const decision = decidePageTrigger(settings.pageTriggerMode, settings.pageTriggerSites, senderPageUrl(sender));
+      if (!decision.allowed) {
+        void tellPage(tabId, { ok: false, error: decision.reason });
         return;
       }
       void agentCapture(tabId);
@@ -1667,8 +1732,9 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
       return false;
     }
     void getSettings().then((settings) => {
-      if (!settings.allowInPageTrigger) {
-        void tellPage(tabId, { ok: false, error: 'in-page trigger is turned off in Settings' });
+      const decision = decidePageTrigger(settings.pageTriggerMode, settings.pageTriggerSites, senderPageUrl(sender));
+      if (!decision.allowed) {
+        void tellPage(tabId, { ok: false, error: decision.reason });
         return;
       }
       void agentClip(tabId);
@@ -1747,7 +1813,7 @@ async function applyActionPopup(oneClick: boolean): Promise<void> {
   try {
     await chrome.action.setPopup({ popup: oneClick ? '' : POPUP_PAGE });
     await chrome.action.setTitle({
-      title: oneClick ? 'capture-kit — click to capture' : 'capture-kit',
+      title: oneClick ? 'Capture Kit — click to capture' : 'Capture Kit',
     });
   } catch (error) {
     console.error('[capture-kit] could not set the action popup:', error);
@@ -1808,7 +1874,12 @@ chrome.contextMenus.onClicked.addListener((info) => {
   if (info.menuItemId === CLIP_MENU_ID) void recordClip('clip');
 });
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
+  // A first install opens the getting-started page once. Updates and the
+  // reloads an unpacked extension fires on every edit do not.
+  if (details.reason === 'install') {
+    void chrome.tabs.create({ url: chrome.runtime.getURL('welcome/welcome.html') });
+  }
   void (async () => {
     try {
       // removeAll first: onInstalled fires on every reload of an unpacked
@@ -1816,7 +1887,7 @@ chrome.runtime.onInstalled.addListener(() => {
       await chrome.contextMenus.removeAll();
       chrome.contextMenus.create({
         id: PANEL_MENU_ID,
-        title: 'Open capture-kit panel',
+        title: 'Open Capture Kit panel',
         contexts: ['action'],
         visible: false,
       });

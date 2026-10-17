@@ -346,14 +346,14 @@ console.log(
       await options.eval(
         `(async () => {
            await chrome.storage.sync.set({
-             allowInPageTrigger: true,   // the only way automation can fire a capture
+             pageTriggerMode: 'any', // the only way automation can fire a capture
              openResult: false,          // no result tabs cluttering /json/list
              maintainLatest: false,      // do not touch a latest.* anywhere
              stampUrlOnImage: false,
              bundleFormat: 'jpeg',
            });
            return await chrome.storage.sync.get(
-             ['allowInPageTrigger','openResult','maintainLatest','stampUrlOnImage','bundleFormat']);
+             ['pageTriggerMode','openResult','maintainLatest','stampUrlOnImage','bundleFormat']);
          })()`,
       ),
     ),

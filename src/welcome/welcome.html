@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Capture Kit - getting started</title>
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="welcome.css" />
+  </head>
+  <body>
+    <main>
+      <div class="wordmark">
+        <span class="mark"></span>
+        <span class="label">Capture Kit</span>
+      </div>
+
+      <h1>Show your AI what you're looking at.</h1>
+      <p class="lede">
+        One key gives you a full-page screenshot plus a report of the page's console errors and
+        failed network requests, ready to paste into Claude, ChatGPT, Cursor or any other
+        assistant. Nothing leaves your computer.
+      </p>
+
+      <section class="keys" aria-label="Your shortcuts">
+        <div class="key-card">
+          <kbd id="key-capture">⌘⇧9</kbd>
+          <div>
+            <h2>Capture + Report</h2>
+            <p>The whole page, top to bottom, with its console and network problems. Both land on your clipboard - just paste.</p>
+          </div>
+        </div>
+        <div class="key-card">
+          <kbd id="key-clip">⌘⇧8</kbd>
+          <div>
+            <h2>Record a clip</h2>
+            <p>A few seconds of the tab, cut down to the frames where something changed. For bugs that only show up when things move.</p>
+          </div>
+        </div>
+      </section>
+      <p class="hint" id="key-hint">
+        Shortcut taken by another app?
+        <button type="button" class="link" id="open-shortcuts">Change it in Chrome's shortcut settings</button>
+      </p>
+
+      <section class="card">
+        <h2 class="label">Try it now</h2>
+        <ol class="steps">
+          <li>Open a page you're working on - a local dev server is perfect.</li>
+          <li>Press <kbd class="inline" data-key="capture">⌘⇧9</kbd>.</li>
+          <li>Paste into your AI chat and ask what's wrong.</li>
+        </ol>
+        <p class="muted small">
+          Pin it for one-click access: click the puzzle-piece icon in Chrome's toolbar, then the pin
+          next to Capture Kit.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2 class="label">Using an AI coding agent?</h2>
+        <p>
+          Two settings let an agent like Claude Code or Cursor read your captures, or take them
+          itself:
+        </p>
+        <ul class="plain">
+          <li>
+            <b>Output folder.</b> Pick a folder and every capture also writes
+            <code>latest.md</code> and <code>latest.jpg</code> there, so you can tell your agent
+            "check my capture" instead of pasting.
+          </li>
+          <li>
+            <b>Which pages can trigger a capture.</b> Off by default. Choose "Allowed sites" and an
+            agent driving <code>localhost</code> can capture without a keystroke.
+          </li>
+        </ul>
+        <button type="button" class="primary" id="open-settings">Open settings</button>
+      </section>
+
+      <section class="card quiet">
+        <h2 class="label">Privacy</h2>
+        <p>
+          Capture Kit has no server and no analytics. Screenshots and reports are written to your
+          computer and your clipboard, and nowhere else. Common secret formats that show up in console
+          messages or request URLs - API keys, access tokens, auth headers - are blanked out of the
+          report text before it's saved. The screenshot itself shows what was on screen, so check
+          it before sharing.
+        </p>
+      </section>
+
+      <footer>
+        Free and open source.
+        <a href="https://github.com/adamsemien/capture-kit" target="_blank" rel="noopener">Source, docs and issues on GitHub</a>.
+      </footer>
+    </main>
+    <script src="welcome.js"></script>
+  </body>
+</html>

@@ -579,7 +579,7 @@ async function launch(dist, patch = {}) {
   const options = new Session(opt.webSocketDebuggerUrl);
   await options.open();
   const set = await options.eval(`(async () => {
-    await chrome.storage.sync.set(Object.assign({ allowInPageTrigger: true, openResult: false, bundleFormat: 'png',
+    await chrome.storage.sync.set(Object.assign({ pageTriggerMode: 'any', openResult: false, bundleFormat: 'png',
       segmentSize: 8192, stampUrlOnImage: false, maintainLatest: false }, ${JSON.stringify(patch)}));
     return await chrome.storage.sync.get(null);
   })()`);

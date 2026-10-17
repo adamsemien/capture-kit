@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "capture-kit",
-  "version": "0.3.0",
-  "description": "One-shot full-page capture plus console & network failure reports for AI-assisted coding.",
+  "name": "Capture Kit",
+  "version": "0.4.0",
+  "description": "Full-page screenshots and clips with the console errors and failed requests behind them, ready to paste into your AI.",
   "minimum_chrome_version": "116",
   "icons": {
     "16": "icons/icon16.png",
@@ -14,6 +14,7 @@
     "debugger",
     "activeTab",
     "downloads",
+    "downloads.ui",
     "storage",
     "clipboardWrite",
     "scripting",
@@ -38,7 +39,7 @@
   ],
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "capture-kit",
+    "default_title": "Capture Kit",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",

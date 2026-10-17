@@ -1,4 +1,5 @@
 import { clampSegmentSize, getSettings, normalizeBundleFormat, saveSettings } from '../lib/settings';
+import { normalizeSiteList, normalizeTriggerMode } from '../lib/site-access';
 import {
   clearOutputDir,
   outputDirStatus,
@@ -13,7 +14,11 @@ const openResultInput = document.getElementById('open-result') as HTMLInputEleme
 const formatInputs = Array.from(
   document.querySelectorAll<HTMLInputElement>('input[name="bundle-format"]'),
 );
-const triggerInput = document.getElementById('allow-in-page-trigger') as HTMLInputElement;
+const triggerInputs = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="trigger-mode"]'),
+);
+const sitesInput = document.getElementById('trigger-sites') as HTMLTextAreaElement;
+const sitesField = document.getElementById('trigger-sites-field') as HTMLElement;
 const iconCapturesInput = document.getElementById('icon-captures') as HTMLInputElement;
 const stampUrlInput = document.getElementById('stamp-url') as HTMLInputElement;
 const autoCopyInput = document.getElementById('auto-copy-image') as HTMLInputElement;
@@ -34,7 +39,11 @@ async function load(): Promise<void> {
   includeLogsInput.checked = settings.includeConsoleLogs;
   maintainLatestInput.checked = settings.maintainLatest;
   openResultInput.checked = settings.openResult;
-  triggerInput.checked = settings.allowInPageTrigger;
+  for (const input of triggerInputs) {
+    input.checked = input.value === settings.pageTriggerMode;
+  }
+  sitesInput.value = settings.pageTriggerSites.join('\n');
+  syncTriggerSites();
   iconCapturesInput.checked = settings.iconCapturesImmediately;
   stampUrlInput.checked = settings.stampUrlOnImage;
   autoCopyInput.checked = settings.autoCopyImage;
@@ -131,7 +140,8 @@ async function save(): Promise<void> {
     maintainLatest: maintainLatestInput.checked,
     openResult: openResultInput.checked,
     imageOnlyPng,
-    allowInPageTrigger: triggerInput.checked,
+    pageTriggerMode: normalizeTriggerMode(triggerInputs.find((input) => input.checked)?.value),
+    pageTriggerSites: normalizeSiteList(sitesInput.value),
     iconCapturesImmediately: iconCapturesInput.checked,
     stampUrlOnImage: stampUrlInput.checked,
     autoCopyImage: autoCopyInput.checked,
@@ -140,6 +150,7 @@ async function save(): Promise<void> {
     clipDelaySeconds: clipDelayInput.value ? Number(clipDelayInput.value) : clipDelaySeconds,
   });
   syncAutoCopy();
+  syncTriggerSites();
   segmentInput.value = String(segmentSize);
   flashStatus('Saved');
 }
@@ -156,6 +167,12 @@ function syncAutoCopy(): void {
   imageOnlyInput.disabled = !autoCopyInput.checked;
 }
 
+/** The site list only matters in "Allowed sites" mode; it stays editable so a list can be prepared first. */
+function syncTriggerSites(): void {
+  const mode = triggerInputs.find((input) => input.checked)?.value;
+  sitesField.classList.toggle('is-disabled', mode !== 'allowed');
+}
+
 function flashStatus(text: string): void {
   statusEl.textContent = text;
   clearTimeout(statusTimer);
@@ -168,7 +185,16 @@ segmentInput.addEventListener('change', () => void save());
 includeLogsInput.addEventListener('change', () => void save());
 maintainLatestInput.addEventListener('change', () => void save());
 openResultInput.addEventListener('change', () => void save());
-triggerInput.addEventListener('change', () => void save());
+for (const input of triggerInputs) {
+  input.addEventListener('change', () => void save());
+}
+// Saved on blur, then rewritten in its cleaned form, so a line that names no
+// host visibly disappears instead of silently not matching.
+sitesInput.addEventListener('change', () => {
+  void save().then(() => {
+    sitesInput.value = normalizeSiteList(sitesInput.value).join('\n');
+  });
+});
 iconCapturesInput.addEventListener('change', () => void save());
 stampUrlInput.addEventListener('change', () => void save());
 autoCopyInput.addEventListener('change', () => void save());

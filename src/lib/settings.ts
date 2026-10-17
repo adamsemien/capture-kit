@@ -1,5 +1,11 @@
 import type { CaptureFormat } from './capture-engine/types';
 import { CLIP_DELAY_DEFAULT, CLIP_SECONDS_DEFAULT, clampClipDelay, clampClipSeconds } from './clip/frames';
+import {
+  DEFAULT_TRIGGER_SITES,
+  normalizeSiteList,
+  normalizeTriggerMode,
+  type PageTriggerMode,
+} from './site-access';
 
 export interface Settings {
   /** Max capture dimension per segment, px. Pages larger than this per axis are captured in segments. */
@@ -18,18 +24,14 @@ export interface Settings {
    */
   imageOnlyPng: boolean;
   /**
-   * Let page JavaScript fire a capture via the capture-kit:capture event.
-   *
-   * Default OFF, and it has to be: this boolean has no origin restriction, so
-   * turning it on lets every site you visit fire a capture, pull its own tab
-   * to the front, focus the window, and write a file into your output folder.
-   * That is a fair trade to opt into deliberately and a bad one to inherit.
-   * A page-driven capture is still worth having, so the setting stays; PR-3
-   * replaces this boolean with a three-mode site-access control (Off /
-   * Allowed sites / Any page), matching Chrome's own vocabulary for exactly
-   * this decision.
+   * Which pages may fire a capture via the capture-kit:capture event: none,
+   * the hosts in pageTriggerSites, or any page. Default off - a page-driven
+   * capture pulls its tab to the front and writes a file, which is a fair
+   * trade to opt into and a bad one to inherit. See lib/site-access.ts.
    */
-  allowInPageTrigger: boolean;
+  pageTriggerMode: PageTriggerMode;
+  /** Hosts for "Allowed sites" mode, one pattern per entry ("localhost:3000", "*.example.com"). */
+  pageTriggerSites: string[];
   /**
    * Clicking the toolbar icon fires a capture instead of opening the popup.
    *
@@ -82,7 +84,8 @@ export const DEFAULT_SETTINGS: Settings = {
   maintainLatest: true,
   openResult: true,
   imageOnlyPng: false,
-  allowInPageTrigger: false,
+  pageTriggerMode: 'off',
+  pageTriggerSites: [...DEFAULT_TRIGGER_SITES],
   iconCapturesImmediately: false,
   stampUrlOnImage: false,
   autoCopyImage: false,
@@ -103,8 +106,26 @@ export function clampSegmentSize(value: number): number {
   return Math.min(SEGMENT_SIZE_MAX, Math.max(SEGMENT_SIZE_MIN, Math.floor(value)));
 }
 
+/**
+ * The trigger mode a stored profile asks for. Profiles from before 0.4.0 hold
+ * only the old allowInPageTrigger boolean: on meant every site, so it maps to
+ * "any" and nobody's working agent setup breaks on upgrade. Once the new key
+ * exists it wins.
+ */
+export function storedTriggerMode(stored: { pageTriggerMode?: unknown; allowInPageTrigger?: unknown }): PageTriggerMode {
+  if (stored.pageTriggerMode != null) return normalizeTriggerMode(stored.pageTriggerMode);
+  return stored.allowInPageTrigger === true ? 'any' : 'off';
+}
+
 export async function getSettings(): Promise<Settings> {
-  const stored = (await chrome.storage.sync.get(DEFAULT_SETTINGS)) as Settings;
+  // null, not undefined, for "not stored": chrome.storage serializes the
+  // defaults object, and a key whose default is undefined is dropped from the
+  // request entirely - it would then never be read back at all.
+  const stored = (await chrome.storage.sync.get({
+    ...DEFAULT_SETTINGS,
+    pageTriggerMode: null,
+    allowInPageTrigger: null,
+  } as Record<string, unknown>)) as unknown as Settings & { allowInPageTrigger?: unknown };
   return {
     segmentSize: clampSegmentSize(stored.segmentSize),
     includeConsoleLogs: Boolean(stored.includeConsoleLogs),
@@ -112,9 +133,10 @@ export async function getSettings(): Promise<Settings> {
     maintainLatest: stored.maintainLatest !== false,
     openResult: stored.openResult !== false,
     imageOnlyPng: stored.imageOnlyPng === true,
-    // `=== true`, not `!== false`: an unset key must read as off, including
-    // for anyone whose profile predates this setting existing.
-    allowInPageTrigger: stored.allowInPageTrigger === true,
+    pageTriggerMode: storedTriggerMode(stored),
+    pageTriggerSites: Array.isArray(stored.pageTriggerSites)
+      ? normalizeSiteList(stored.pageTriggerSites)
+      : [...DEFAULT_TRIGGER_SITES],
     iconCapturesImmediately: stored.iconCapturesImmediately === true,
     stampUrlOnImage: stored.stampUrlOnImage === true,
     autoCopyImage: stored.autoCopyImage === true,
@@ -132,7 +154,8 @@ export async function saveSettings(settings: Settings): Promise<void> {
     maintainLatest: settings.maintainLatest !== false,
     openResult: settings.openResult !== false,
     imageOnlyPng: settings.imageOnlyPng === true,
-    allowInPageTrigger: settings.allowInPageTrigger === true,
+    pageTriggerMode: normalizeTriggerMode(settings.pageTriggerMode),
+    pageTriggerSites: normalizeSiteList(settings.pageTriggerSites),
     iconCapturesImmediately: settings.iconCapturesImmediately === true,
     stampUrlOnImage: settings.stampUrlOnImage === true,
     autoCopyImage: settings.autoCopyImage === true,
@@ -140,6 +163,9 @@ export async function saveSettings(settings: Settings): Promise<void> {
     clipSeconds: clampClipSeconds(settings.clipSeconds),
     clipDelaySeconds: clampClipDelay(settings.clipDelaySeconds),
   });
+  // The old boolean is superseded; leaving it would let a stale "true" look
+  // meaningful to anyone reading storage.
+  await chrome.storage.sync.remove('allowInPageTrigger');
 }
 
 /** Storage keys the worker watches to re-arm the toolbar icon on change. */

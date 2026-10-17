@@ -32,6 +32,7 @@ await esbuild.build({
     'result/result': 'src/result/result.ts',
     'session/session': 'src/session/session.ts',
     'offscreen/offscreen': 'src/offscreen/offscreen.ts',
+    'welcome/welcome': 'src/welcome/welcome.ts',
   },
 });
 
@@ -49,6 +50,8 @@ cpSync('src/result/result.html', `${outdir}/result/result.html`);
 cpSync('src/result/result.css', `${outdir}/result/result.css`);
 cpSync('src/session/session.html', `${outdir}/session/session.html`);
 cpSync('src/session/session.css', `${outdir}/session/session.css`);
+cpSync('src/welcome/welcome.html', `${outdir}/welcome/welcome.html`);
+cpSync('src/welcome/welcome.css', `${outdir}/welcome/welcome.css`);
 cpSync('src/offscreen/offscreen.html', `${outdir}/offscreen/offscreen.html`);
 
 console.log('Built dist/ — load it unpacked via chrome://extensions.');

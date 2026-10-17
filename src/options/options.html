@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>capture-kit — settings</title>
+    <title>Capture Kit — settings</title>
     <link rel="stylesheet" href="../tokens.css" />
     <link rel="stylesheet" href="options.css" />
   </head>
@@ -10,7 +10,7 @@
     <main>
       <div class="wordmark">
         <span class="mark"></span>
-        <span class="label">capture-kit</span>
+        <span class="label">Capture Kit</span>
       </div>
       <h1>Settings</h1>
 
@@ -22,7 +22,7 @@
             <span class="field-title">Output folder</span>
             <small id="output-dir-help">
               Chrome saves downloads inside its own Downloads folder and nowhere else. Pick a folder
-              here and capture-kit writes there directly instead.
+              here and Capture Kit writes there directly instead.
             </small>
             <span class="output-dir">
               <b id="output-dir-name">Chrome Downloads — default</b>
@@ -45,7 +45,7 @@
               Off by default: clicking the icon opens the popup. Turn this on and one click fires
               Capture + Report straight away with your current settings — no popup, no second
               click. The popup is still there: right-click the icon and choose
-              <b>Open capture-kit panel</b> for "Image only", session capture, the responsive
+              <b>Open Capture Kit panel</b> for "Image only", session capture, the responsive
               sweep, and "Copy last report".
             </small>
           </span>
@@ -138,22 +138,35 @@
       <section class="card">
         <h2 class="label">Automation</h2>
 
-        <label class="field">
-          <input id="allow-in-page-trigger" type="checkbox" />
+        <div class="field">
           <span class="field-text">
-            <span class="field-title">Let a page trigger a capture</span>
+            <span class="field-title">Which pages can trigger a capture</span>
             <small>
-              Off by default. Turn this on and an AI assistant driving this browser can capture
-              without a keystroke, by dispatching <code>capture-kit:capture</code> on the page and
-              listening for <code>capture-kit:capture-complete</code>.
-              <b>It applies to every site you visit</b>, not just the one you had in mind: any
-              script on any page could fire a capture, bring its own tab to the front, and write a
-              file into your output folder. Per-site control is coming in the next release. Until
-              then this is all-or-nothing, so leave it off unless you are driving the browser
-              yourself.
+              An AI assistant driving this browser can capture without a keystroke by dispatching
+              <code>capture-kit:capture</code> (or <code>capture-kit:record</code> for a clip) on the
+              page and listening for <code>capture-kit:capture-complete</code>. A page that fires
+              one brings its tab to the front and writes a file into your output folder, so choose
+              where that is allowed.
             </small>
+            <span class="radios radios-stacked" role="radiogroup" aria-label="Which pages can trigger a capture">
+              <label class="radio"><input type="radio" name="trigger-mode" value="off" /> Off <small>- only you, with the shortcut, icon or popup</small></label>
+              <label class="radio"><input type="radio" name="trigger-mode" value="allowed" /> Allowed sites <small>- only the sites listed below</small></label>
+              <label class="radio"><input type="radio" name="trigger-mode" value="any" /> Any page <small>- every site you visit, including ones you don't trust</small></label>
+            </span>
           </span>
-        </label>
+        </div>
+
+        <div class="field field-sub" id="trigger-sites-field">
+          <span class="field-text">
+            <label class="field-title" for="trigger-sites">Allowed sites</label>
+            <small>
+              One per line. <code>localhost:3000</code> allows one port; <code>localhost</code> allows
+              any port; <code>*.example.com</code> allows a domain and all its subdomains. Scheme and
+              path are ignored.
+            </small>
+            <textarea id="trigger-sites" rows="4" spellcheck="false" autocomplete="off"></textarea>
+          </span>
+        </div>
       </section>
 
       <section class="card">
