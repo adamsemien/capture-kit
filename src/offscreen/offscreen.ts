@@ -99,8 +99,22 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
   const mimeType = pickMimeType();
   const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
   const chunks: Blob[] = [];
+  // The clip ends on its own clock, not on the next frame: a tab that sits
+  // still sends a frame about once a second, which let a 5 s clip run to
+  // 5.5 s. Timers are throttled in this hidden document, so the clock is
+  // checked from every source that ticks - a short interval, the
+  // recorder's data events and each frame - and the first to see the
+  // deadline ends the clip.
+  let reachDeadline: () => void = () => {};
+  const deadline = new Promise<'deadline'>((resolve) => {
+    reachDeadline = () => resolve('deadline');
+  });
+  const checkDeadline = (): void => {
+    if (startedAt >= 0 && performance.now() - startedAt >= lengthMs) reachDeadline();
+  };
   recorder.ondataavailable = (event) => {
     if (event.data.size > 0) chunks.push(event.data);
+    checkDeadline();
   };
   const stopped = new Promise<void>((resolve) => {
     recorder.onstop = () => resolve();
@@ -136,12 +150,21 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
   };
 
   recorder.start(250);
-  // A ceiling in case the track stops delivering: the clip ends on its own
-  // clock below, this only guards against a frozen tab.
+  const tick = setInterval(checkDeadline, 50);
+  // A ceiling in case the track never delivers a first frame: the clip ends
+  // on its own clock below, this only guards against a frozen tab.
   const ceiling = new Promise<void>((resolve) => setTimeout(resolve, lengthMs + 4000));
+  let pendingRead: Promise<ReadableStreamReadResult<VideoFrame>> | null = null;
   const readLoop = (async () => {
     for (;;) {
-      const { value: frame, done } = await reader.read();
+      pendingRead = reader.read();
+      const next = await Promise.race([pendingRead, deadline]);
+      if (next === 'deadline') {
+        durationMs = Math.round(performance.now() - startedAt);
+        break;
+      }
+      pendingRead = null;
+      const { value: frame, done } = next;
       if (done || !frame) break;
       try {
         const now = performance.now();
@@ -163,6 +186,7 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
     }
   })();
   await Promise.race([readLoop, ceiling]);
+  clearInterval(tick);
   recorder.stop();
   await stopped;
   try {
@@ -170,6 +194,11 @@ async function record(request: ClipRecordRequest): Promise<ClipRecordResponse> {
   } catch {
     /* already closed */
   }
+  // A read left waiting when the deadline won may still hand over a frame.
+  void (pendingRead as Promise<ReadableStreamReadResult<VideoFrame>> | null)?.then(
+    (result) => result.value?.close(),
+    () => undefined,
+  );
   for (const t of stream.getTracks()) t.stop();
   if (picker.frames.length === 0) throw new Error('the tab delivered no frames - is it in front?');
 
