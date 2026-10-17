@@ -257,15 +257,29 @@ export interface MappedPage extends PageRecord {
 type MapResult = SourceMapIndex | null;
 
 export interface MapperOptions {
-  fetch: (url: string) => Promise<{ ok: boolean; text(): Promise<string>; headers: { get(name: string): string | null } } | null>;
+  /**
+   * Fetches a script or map. The signal is aborted when the time allowed for
+   * that script runs out, so a slow download stops instead of finishing in
+   * the background.
+   */
+  fetch: (
+    url: string,
+    signal?: AbortSignal,
+  ) => Promise<{ ok: boolean; text(): Promise<string>; headers: { get(name: string): string | null } } | null>;
   /** Distinct scripts resolved per capture; frames past this are left raw. */
   maxScripts?: number;
   /** Largest map text accepted, in characters. */
   maxMapChars?: number;
+  /** Longest one script may take to resolve - script and map, headers and bodies. */
+  timeoutMs?: number;
+  /** Longest the whole capture may spend resolving, across every script. */
+  budgetMs?: number;
 }
 
 const DEFAULT_MAX_SCRIPTS = 12;
 const DEFAULT_MAX_MAP_CHARS = 25_000_000;
+const DEFAULT_TIMEOUT_MS = 4000;
+const DEFAULT_BUDGET_MS = 8000;
 
 /**
  * Resolves one script's map through the cache. Any failure - no map, a map
@@ -275,12 +289,15 @@ const DEFAULT_MAX_MAP_CHARS = 25_000_000;
 export class FrameMapper {
   private readonly cache = new Map<string, Promise<MapResult>>();
   private readonly options: Required<MapperOptions>;
+  private startedAt: number | null = null;
 
   constructor(options: MapperOptions) {
     this.options = {
       fetch: options.fetch,
       maxScripts: options.maxScripts ?? DEFAULT_MAX_SCRIPTS,
       maxMapChars: options.maxMapChars ?? DEFAULT_MAX_MAP_CHARS,
+      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      budgetMs: options.budgetMs ?? DEFAULT_BUDGET_MS,
     };
   }
 
@@ -293,13 +310,34 @@ export class FrameMapper {
     const cached = this.cache.get(url);
     if (cached) return cached;
     if (this.cache.size >= this.options.maxScripts) return Promise.resolve(null);
-    const promise = this.resolve(url).catch(() => null);
+    // One deadline covers the script and its map, headers and bodies alike,
+    // and every script draws on one budget for the whole capture: a slow or
+    // huge map gives up and the frame prints raw, the capture never waits.
+    const now = Date.now();
+    if (this.startedAt === null) this.startedAt = now;
+    const left = this.options.budgetMs - (now - this.startedAt);
+    if (left <= 0) {
+      const none = Promise.resolve(null);
+      this.cache.set(url, none);
+      return none;
+    }
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<null>((resolve) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        resolve(null);
+      }, Math.min(this.options.timeoutMs, left));
+    });
+    const promise = Promise.race([this.resolve(url, controller.signal).catch(() => null), expired]).finally(() =>
+      clearTimeout(timer),
+    );
     this.cache.set(url, promise);
     return promise;
   }
 
-  private async resolve(scriptUrl: string): Promise<MapResult> {
-    const response = await this.options.fetch(scriptUrl);
+  private async resolve(scriptUrl: string, signal: AbortSignal): Promise<MapResult> {
+    const response = await this.options.fetch(scriptUrl, signal);
     if (!response || !response.ok) return null;
     const text = await response.text();
     const mapUrl = findSourceMapUrl(scriptUrl, response.headers, text);
@@ -308,8 +346,11 @@ export class FrameMapper {
     if (/^data:/i.test(mapUrl)) {
       mapText = dataUrlText(mapUrl);
     } else {
-      const mapResponse = await this.options.fetch(mapUrl);
+      const mapResponse = await this.options.fetch(mapUrl, signal);
       if (!mapResponse || !mapResponse.ok) return null;
+      // A map the server says is too big is not downloaded at all.
+      const length = Number(mapResponse.headers.get('Content-Length'));
+      if (Number.isFinite(length) && length > this.options.maxMapChars) return null;
       mapText = await mapResponse.text();
     }
     if (!mapText || mapText.length > this.options.maxMapChars) return null;
