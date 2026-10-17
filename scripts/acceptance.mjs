@@ -821,8 +821,8 @@ console.log(
     JSON.stringify(
       await options.eval(
         `(async () => {
-           await chrome.storage.sync.set({ allowInPageTrigger: true });
-           return (await chrome.storage.sync.get('allowInPageTrigger')).allowInPageTrigger;
+           await chrome.storage.sync.set({ pageTriggerMode: 'any' });
+           return (await chrome.storage.sync.get('pageTriggerMode')).pageTriggerMode;
          })()`,
       ),
     ),
@@ -1736,7 +1736,7 @@ async function relaunchWith(dist) {
   await openExact(url);
   options = await attach(url);
   await setSetting(options, {
-    allowInPageTrigger: true,
+    pageTriggerMode: 'any',
     segmentSize: 8192,
     stampUrlOnImage: false,
   });

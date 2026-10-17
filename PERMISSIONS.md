@@ -1,101 +1,113 @@
 # Permissions
 
-Every permission capture-kit requests, and why. The extension makes **zero
-remote calls** — no analytics, no telemetry, no network requests of its own.
-Everything it captures stays on the user's machine (the folder the user chose,
-or the downloads folder, and the clipboard).
+Every permission Capture Kit requests, and why. The extension makes **no
+network requests of its own**: no analytics, no telemetry, no server. What it
+captures stays on your machine, in the folder you chose (or your Downloads
+folder) and on your clipboard. The one fetch it makes is reading a page's own
+source maps, from the same place the page loaded its scripts, so console errors
+can point at your original files; that request goes to the site you are
+debugging and nowhere else.
+
+These are also the justifications used for the Chrome Web Store listing.
 
 ## `debugger`
 
-The core capture mechanism. The capture engine attaches the Chrome DevTools
-Protocol to the active tab and calls `Page.captureScreenshot` with
-`captureBeyondViewport: true` — the only Chrome API that produces a true
-one-shot full-page screenshot (full scroll height *and* scroll width) without
-scroll-and-stitch. The debugger is attached only for the duration of a
-user-initiated capture and detached immediately after, in a `finally` block.
+The core capture mechanism. Capture Kit attaches the Chrome DevTools Protocol
+to the tab you are capturing and calls `Page.captureScreenshot` with
+`captureBeyondViewport: true`. It is the only Chrome API that takes a true
+full-page screenshot, including content below the fold and wider than the
+window. The debugger is attached only while a capture you started is running
+and is detached straight after, in a `finally` block.
 
 ## `activeTab`
 
-Captures always target the tab the user is looking at, and are always
-user-initiated (toolbar button or keyboard shortcut).
+Captures target the tab you are looking at, and start from your shortcut press,
+toolbar click or popup button.
 
-## `contextMenus`
+## `tabCapture` and `offscreen`
 
-Exactly one menu item, `contexts: ["action"]` — a right-click entry on the
-toolbar icon reading **Open capture-kit panel**. It exists because
-"Toolbar icon captures immediately" takes the popup off the icon's left-click,
-and the popup still holds Image only, session capture, the responsive sweep and
-Copy last report. `contexts: ["action"]` is the only API for an item in that
-menu. The item is hidden whenever one-click mode is off, and nothing is ever
-added to a **page's** right-click menu. Chrome shows no permission warning for
-`contextMenus`.
+Used only by **Record clip**. `chrome.tabCapture.getMediaStreamId` gives a
+stream of the current tab for the few seconds you asked to record. A service
+worker cannot hold a video stream, so an offscreen document receives it,
+samples frames, keeps the ones where something changed and lays them on one
+sheet. The offscreen document is created for the clip and closed when it ends.
 
-## `downloads`
+## `downloads` and `downloads.ui`
 
-Each capture writes an image (and, for bundles, a sibling markdown file) via
-`chrome.downloads.download` — the default path, and the fallback whenever no
-output folder has been chosen or its permission has lapsed.
+Each capture writes its image and report with `chrome.downloads.download`.
+This is the default path, and the fallback whenever no output folder is chosen
+or its permission has lapsed.
+
+`downloads.ui` lets Capture Kit hide Chrome's download bubble for the second it
+takes to write a tall page's slices, so a 20-slice page doesn't flash 20
+downloads at you. The image and report still show as normal, and the bubble is
+turned back on as soon as the slices are written. It adds no new permission
+warning: Chrome shows the same "Manage your downloads" line for both.
 
 ## No permission for the chosen output folder
 
-Writing to a user-chosen directory adds **no manifest permission**. The File
-System Access API is gated on the user picking a folder in the options page and
-Chrome's own permission grant, not on a manifest key, so the extension's
-declared permissions are unchanged by that feature. The grant is Chrome's to
-give: taken as "allow on every visit" it survives restarts, taken for one visit
-it lapses with the browser session. Re-arming it always requires a click in an
-extension page — a service worker has no user activation and cannot fake one,
-so the extension can never silently regain access to a folder you revoked.
+Writing to a folder you choose adds **no manifest permission**. The File System
+Access API is gated on you picking a folder in Settings and on Chrome's own
+grant. Taken as "allow on every visit", the grant survives restarts; taken for
+one visit, it lapses with the browser session. Getting it back always needs a
+click in an extension page, so the extension can never quietly regain access to
+a folder you revoked.
 
 ## `storage`
 
-- `storage.sync` holds the user settings (segment size cap, include-logs
-  toggle, image format, result tab, `latest.*` pointers, whether the toolbar
-  icon captures immediately — **off by default** — whether the URL footer is
-  stamped onto images — **off by default** — and whether a page may trigger a
-  capture — **off by default**, see below).
-- IndexedDB (no permission required) holds the chosen output directory handle,
-  which `chrome.storage` cannot store because it JSON-serializes its values.
-- `storage.session` holds the last captured bundle (for the "Copy last report"
-  button), the last error (so shortcut-triggered failures can be shown next
-  time the popup opens), and live segment counts for the capture in flight (so
-  a popup opened mid-capture can say where it is up to). Session storage
-  survives service-worker
-  death — required because MV3 workers are killed at will — and is cleared
-  when the browser closes.
+- `storage.sync` holds your settings: image format, segment size, whether logs
+  are included, the `latest.*` pointers, the result tab, clip length, and the
+  opt-in switches that are **off by default** - one-click icon, URL stamp,
+  automatic copy, and which pages may trigger a capture.
+- IndexedDB (no permission needed) holds the chosen output folder's handle,
+  which `chrome.storage` cannot store.
+- `storage.session` holds the last report (for "Copy last report"), the last
+  error, the progress of a capture in flight, and a flag that the download
+  bubble is hidden, so a worker that restarts mid-capture can turn it back on.
+  It is cleared when the browser closes.
 
 ## `clipboardWrite`
 
-Bundle captures copy the markdown report to the clipboard so it can be pasted
-straight into an AI chat. Written from the popup when the popup triggered the
-capture, or from the content script when the keyboard shortcut did (the
-focused document differs between the two paths).
+A capture copies its report (and, if you choose, its image) to the clipboard so
+you can paste it straight into an AI chat.
 
 ## `scripting`
 
-Fallback injection: if a page was loaded before the extension was installed
-or reloaded, the declared content scripts aren't present. The worker injects
-the isolated-world half (`content/recorder-isolated.js`) on demand so page
-metadata and the clipboard path still work. The bundle explicitly flags such
-pages as having no recorder coverage since load.
+If a tab was open before Capture Kit was installed or reloaded, its content
+scripts aren't there yet. The worker injects the isolated-world half on demand
+so the page's details and the clipboard path still work. The report says
+plainly that such a page has no console coverage since it loaded.
 
-## The in-page capture trigger
+## `contextMenus`
 
-Not a Chrome permission, but the same kind of decision, so it belongs here.
-With **Settings → Automation** enabled, a page can dispatch
-`capture-kit:capture` and cause a capture: that activates the tab, focuses its
-window, and writes files to the output folder. The setting carries no origin
-restriction, so enabling it enables it for every site visited. **It therefore
-defaults to off**, and a page that fires the event while it is off gets an
-explicit refusal rather than silence. A three-mode site-access control (Off /
-Allowed sites / Any page) replaces the boolean in the next release.
+Two items on the toolbar icon's own right-click menu: **Record clip**, and
+**Open Capture Kit panel** when one-click mode has taken the popup off the
+icon. Nothing is ever added to a page's right-click menu.
 
 ## `host_permissions: <all_urls>`
 
-The console/network recorder must run at `document_start` on every page to
-catch errors from the very first script the page executes — the entire point
-of "errors since page load." URLs can't be known ahead of time, so a narrower
-host list would silently miss the pages the user ends up debugging. The
-recorder is passive: it wraps `console`/`fetch`/`XMLHttpRequest` with
-transparent passthrough, produces no console output, changes no page
-behavior, and sends nothing anywhere.
+The console and network recorder has to run at `document_start` on every page
+to catch errors from the first script a page runs - the whole point of "errors
+since page load". You can't know ahead of time which pages you'll end up
+debugging, so a narrower list would silently miss them. The recorder is
+passive: it wraps `console`, `fetch` and `XMLHttpRequest` with transparent
+passthrough, prints nothing, changes no page behaviour, and sends nothing
+anywhere. What it records is read only when you capture.
+
+## The in-page capture trigger
+
+Not a Chrome permission, but the same kind of decision. An AI agent driving the
+browser can dispatch `capture-kit:capture` (or `capture-kit:record`) on a page
+to fire a capture without a keystroke. That brings the tab to the front and
+writes files, so **Settings → Automation** decides which pages may do it:
+
+- **Off** (default) - no page can. A page that tries is told so on
+  `capture-kit:capture-complete`, so an agent can tell "refused" from "broken".
+- **Allowed sites** - only the hosts you list. `localhost` and `127.0.0.1` are
+  pre-filled. `localhost:3000` allows one port; `*.example.com` allows a domain
+  and its subdomains.
+- **Any page** - every site you visit, including ones you don't trust.
+
+Profiles from before 0.4.0 that had the old on/off switch turned on are moved to
+**Any page**, which is what that switch meant, so a working agent setup doesn't
+break on update.

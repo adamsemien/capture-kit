@@ -66,7 +66,10 @@ export interface CaptureSlice {
   imageBase64: string;
   top: number;
   height: number;
+  /** Width of the slice as written - narrower than the page when its empty side margins were trimmed. */
   width: number;
+  /** Columns trimmed off the left, in page pixels; 0 when untrimmed. */
+  left: number;
 }
 
 export interface CaptureResult {

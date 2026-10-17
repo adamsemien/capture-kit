@@ -316,7 +316,7 @@ async function main(): Promise<void> {
   copyReportBtn.hidden = !meta.markdown;
 
   const first = meta.images[0];
-  document.title = `capture-kit — ${first?.filename ?? 'result'}`;
+  document.title = `Capture Kit — ${first?.filename ?? 'result'}`;
   headlineEl.textContent =
     meta.kind === 'sweep'
       ? `Captured at ${meta.images.length} widths`

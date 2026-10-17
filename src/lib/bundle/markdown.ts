@@ -64,6 +64,8 @@ export interface SliceRef {
   top: number;
   height: number;
   width: number;
+  /** Columns trimmed off the left (empty margin), in page pixels. 0 or absent when untrimmed. */
+  left?: number;
 }
 
 export interface SourceMapCounts {
@@ -446,20 +448,34 @@ export function tallPageSections(input: Pick<BundleInput, 'scale' | 'slices' | '
   if (slices.length === 0) return parts;
   const first = slices[0];
   const overlap = slices.length > 1 ? first.top + first.height - slices[1].top : 0;
+  const trimmed = slices.some((slice) => (slice.left ?? 0) > 0 || slice.width < input.fullSize.width);
+  const sameWidth = slices.every((slice) => slice.width === first.width);
   parts.push('## Slices');
   parts.push(
     `This page is too tall to read as one picture — an assistant shrinks a tall image until its ` +
       `text is unreadable. These ${slices.length} slices cover it top to bottom at full size, ` +
-      `${first.width}×${first.height} each` +
+      (sameWidth ? `${first.width}×${first.height} each` : `${first.height} px tall each`) +
       (overlap > 0 ? `, and each overlaps the next by ${overlap} px` : '') +
-      '. Read them in order. Rows are image pixels from the top of the page.',
+      '. Read them in order. Rows are image pixels from the top of the page.' +
+      (trimmed
+        ? ' Empty side margins are trimmed off slices that had them; Columns says which part of the page width each one shows.'
+        : ''),
   );
   parts.push(
-    [
-      '| Slice | Rows |',
-      '|---|---|',
-      ...slices.map((slice) => `| ${slice.path} | ${slice.top}–${slice.top + slice.height} |`),
-    ].join('\n'),
+    trimmed
+      ? [
+          '| Slice | Rows | Columns |',
+          '|---|---|---|',
+          ...slices.map((slice) => {
+            const left = slice.left ?? 0;
+            return `| ${slice.path} | ${slice.top}–${slice.top + slice.height} | ${left}–${left + slice.width} |`;
+          }),
+        ].join('\n')
+      : [
+          '| Slice | Rows |',
+          '|---|---|',
+          ...slices.map((slice) => `| ${slice.path} | ${slice.top}–${slice.top + slice.height} |`),
+        ].join('\n'),
   );
   return parts;
 }
@@ -703,7 +719,7 @@ export function withLatestNotice(markdown: string): string {
  *
  * Never overwrites — someone may have put their own notes here.
  */
-export const OUTPUT_README = `capture-kit — what is in this folder
+export const OUTPUT_README = `Capture Kit — what is in this folder
 
 {page-title}_{date}_{time}.jpg   one capture's screenshot
 {page-title}_{date}_{time}.md    that capture's report: URL, environment, console errors, network failures

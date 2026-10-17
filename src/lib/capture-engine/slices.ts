@@ -43,6 +43,15 @@ export const MAX_SLICES = 40;
  */
 export const MAX_CAPTURE_HEIGHT = 131072;
 
+/** Content kept either side of the trimmed area, so a glyph on the edge is never shaved. */
+export const TRIM_PADDING = 16;
+/** Trimming happens only when it removes at least this share of the width; less is not worth a changed width. */
+export const TRIM_MIN_SHARE = 0.1;
+/** Every Nth row is sampled when looking for empty margins. */
+export const TRIM_ROW_STEP = 4;
+/** Per-channel difference still counted as "the same background". JPEG-safe. */
+export const TRIM_TOLERANCE = 6;
+
 export interface SlicePlanEntry {
   top: number;
   height: number;
@@ -104,6 +113,97 @@ export function scaledSize(width: number, height: number, scale: number): { widt
   };
 }
 
+/**
+ * The columns that hold something, given sampled rows of RGBA pixels packed
+ * one after another (`rows` rows of `width` pixels).
+ *
+ * A column is empty when, on every sampled row, it matches that row's own
+ * edge pixel - the left edge when scanning in from the left, the right edge
+ * from the right. Comparing per row rather than to one colour is what lets a
+ * full-width header band or a striped background count as margin. Returns
+ * the half-open range [left, right); the whole width when nothing is empty
+ * or nothing is there at all.
+ */
+export function contentColumns(
+  data: Uint8ClampedArray,
+  width: number,
+  rows: number,
+  tolerance = TRIM_TOLERANCE,
+): { left: number; right: number } {
+  if (width <= 0 || rows <= 0) return { left: 0, right: Math.max(0, width) };
+  const same = (x: number, edge: number, row: number): boolean => {
+    const base = row * width * 4;
+    const a = base + x * 4;
+    const b = base + edge * 4;
+    return (
+      Math.abs(data[a] - data[b]) <= tolerance &&
+      Math.abs(data[a + 1] - data[b + 1]) <= tolerance &&
+      Math.abs(data[a + 2] - data[b + 2]) <= tolerance
+    );
+  };
+  const columnEmpty = (x: number, edge: number): boolean => {
+    for (let row = 0; row < rows; row++) {
+      if (!same(x, edge, row)) return false;
+    }
+    return true;
+  };
+  let left = 0;
+  while (left < width && columnEmpty(left, 0)) left++;
+  if (left === width) return { left: 0, right: width };
+  let right = width;
+  while (right > left && columnEmpty(right - 1, width - 1)) right--;
+  return { left, right };
+}
+
+/**
+ * Where to crop a slice of this width with content in [left, right): padded,
+ * and only when it pays. Null means keep the full width.
+ */
+export function planTrim(width: number, left: number, right: number): { left: number; width: number } | null {
+  const from = Math.max(0, left - TRIM_PADDING);
+  const to = Math.min(width, right + TRIM_PADDING);
+  if (to <= from) return null;
+  if (width - (to - from) < width * TRIM_MIN_SHARE) return null;
+  return { left: from, width: to - from };
+}
+
+/**
+ * Crops a slice canvas to its content columns. Wide screens are where this
+ * matters: a 2560 px capture of a page whose text sits in a 1,600 px column
+ * is mostly empty, and an assistant shrinks the whole thing, text included,
+ * to fit. Trimming the margins first keeps the text larger.
+ */
+function trimSlice(canvas: OffscreenCanvas): { canvas: OffscreenCanvas; left: number } {
+  const { width, height } = canvas;
+  const ctx = context(canvas);
+  const rows = Math.ceil(height / TRIM_ROW_STEP);
+  const data = new Uint8ClampedArray(rows * width * 4);
+  for (let i = 0; i < rows; i++) {
+    data.set(ctx.getImageData(0, Math.min(height - 1, i * TRIM_ROW_STEP), width, 1).data, i * width * 4);
+  }
+  const columns = contentColumns(data, width, rows);
+  const trim = planTrim(width, columns.left, columns.right);
+  if (!trim) return { canvas, left: 0 };
+  const cropped = new OffscreenCanvas(trim.width, height);
+  context(cropped).drawImage(canvas, -trim.left, 0);
+  return { canvas: cropped, left: trim.left };
+}
+
+async function encodeSlice(
+  canvas: OffscreenCanvas,
+  format: CaptureFormat,
+  slice: SlicePlanEntry,
+): Promise<CaptureSlice> {
+  const trimmed = trimSlice(canvas);
+  return {
+    imageBase64: await encode(trimmed.canvas, format),
+    top: slice.top,
+    height: slice.height,
+    width: trimmed.canvas.width,
+    left: trimmed.left,
+  };
+}
+
 async function encode(canvas: OffscreenCanvas, format: CaptureFormat): Promise<string> {
   const blob = await canvas.convertToBlob(
     format === 'jpeg' ? { type: 'image/jpeg', quality: JPEG_QUALITY / 100 } : { type: 'image/png' },
@@ -111,8 +211,9 @@ async function encode(canvas: OffscreenCanvas, format: CaptureFormat): Promise<s
   return blobToBase64(blob);
 }
 
-function context(canvas: OffscreenCanvas): OffscreenCanvasRenderingContext2D {
-  const ctx = canvas.getContext('2d');
+function context(canvas: OffscreenCanvas, readBack = false): OffscreenCanvasRenderingContext2D {
+  // The first getContext call fixes the options; later calls return the same context.
+  const ctx = canvas.getContext('2d', readBack ? { willReadFrequently: true } : undefined);
   if (!ctx) throw new Error('Could not create a 2d canvas context.');
   return ctx;
 }
@@ -190,7 +291,9 @@ export class PageCanvas {
     let ctx = this.open.get(index);
     if (!ctx) {
       const slice = (this.plan as SlicePlanEntry[])[index];
-      ctx = context(new OffscreenCanvas(this.width, slice.height));
+      // Read back row by row by the margin trim; the hint keeps the pixels
+      // on the CPU so each read is not a GPU round trip.
+      ctx = context(new OffscreenCanvas(this.width, slice.height), true);
       this.open.set(index, ctx);
     }
     return ctx;
@@ -204,12 +307,7 @@ export class PageCanvas {
       // A slice no segment reached is still written, blank, so the numbering
       // and the report's y ranges stay exact.
       const ctx = this.sliceContext(this.next);
-      this.encoded.push({
-        imageBase64: await encode(ctx.canvas as OffscreenCanvas, this.format),
-        top: slice.top,
-        height: slice.height,
-        width: this.width,
-      });
+      this.encoded.push(await encodeSlice(ctx.canvas as OffscreenCanvas, this.format, slice));
       this.open.delete(this.next);
       this.next += 1;
     }
@@ -232,13 +330,8 @@ export async function sliceEncodedImage(
     const slices: CaptureSlice[] = [];
     for (const slice of plan) {
       const canvas = new OffscreenCanvas(bitmap.width, slice.height);
-      context(canvas).drawImage(bitmap, 0, -slice.top);
-      slices.push({
-        imageBase64: await encode(canvas, format),
-        top: slice.top,
-        height: slice.height,
-        width: bitmap.width,
-      });
+      context(canvas, true).drawImage(bitmap, 0, -slice.top);
+      slices.push(await encodeSlice(canvas, format, slice));
     }
     return slices;
   } finally {
