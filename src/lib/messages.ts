@@ -107,12 +107,15 @@ export const CAPTURE_TRIGGER_LABEL: Record<CaptureTrigger, string> = {
 
 /** Popup / result page / content script → service worker. */
 export type RuntimeMessage =
-  | { type: 'CAPTURE_BUNDLE' }
+  // `tabId` is the tab the popup is pointed at (NOBC-167). Without it the
+  // service worker would have to guess, and its guess is the panel window
+  // itself when the popup runs as a separate panel.
+  | { type: 'CAPTURE_BUNDLE'; tabId?: number }
   | { type: 'AGENT_CAPTURE' }
   | { type: 'AGENT_RECORD' }
-  | { type: 'RECORD_CLIP' }
-  | { type: 'CAPTURE_PAGE'; png?: boolean }
-  | { type: 'CAPTURE_SWEEP' }
+  | { type: 'RECORD_CLIP'; tabId?: number }
+  | { type: 'CAPTURE_PAGE'; png?: boolean; tabId?: number }
+  | { type: 'CAPTURE_SWEEP'; tabId?: number }
   | { type: 'GET_RESULT_IMAGE'; captureId: string; index: number }
   | { type: 'SESSION_LIST_TABS' }
   | { type: 'SESSION_START'; tabIds: number[]; reload: boolean }

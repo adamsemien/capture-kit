@@ -105,6 +105,18 @@ async function activeTab(): Promise<chrome.tabs.Tab> {
   return tab;
 }
 
+/**
+ * The tab a capture is for (NOBC-167). Every trigger that knows its tab -
+ * the toolbar icon, a shortcut, a menu item, the popup, a page - passes it,
+ * because "the active tab of the last-focused window" is a guess: it is the
+ * wrong tab whenever the person is looking at another window, and it is the
+ * panel itself when the popup runs as a separate panel window. The guess is
+ * left only for callers that genuinely have nothing better.
+ */
+async function targetTab(tabId?: number): Promise<chrome.tabs.Tab> {
+  return tabId === undefined ? activeTab() : chrome.tabs.get(tabId);
+}
+
 interface SnapshotLookup {
   snapshot: BufferSnapshot | null;
   recorderActive: boolean;
@@ -892,7 +904,7 @@ async function copyImageThroughPage(
 async function captureBundle(trigger: CaptureTrigger, targetTabId?: number): Promise<CaptureResponse> {
   const announce = trigger !== 'popup';
   try {
-    const tab = targetTabId === undefined ? await activeTab() : await chrome.tabs.get(targetTabId);
+    const tab = await targetTab(targetTabId);
     const blocked = protectedPageReason(tab.url);
     if (blocked) {
       await recordError(blocked, announce);
@@ -1011,9 +1023,9 @@ async function captureBundle(trigger: CaptureTrigger, targetTabId?: number): Pro
   }
 }
 
-async function capturePage(asPng: boolean): Promise<CaptureResponse> {
+async function capturePage(asPng: boolean, targetTabId?: number): Promise<CaptureResponse> {
   try {
-    const tab = await activeTab();
+    const tab = await targetTab(targetTabId);
     const blocked = protectedPageReason(tab.url);
     if (blocked) {
       await recordError(blocked, false);
@@ -1079,9 +1091,9 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
   }
 }
 
-async function captureResponsiveSweep(): Promise<SweepResponse> {
+async function captureResponsiveSweep(targetTabId?: number): Promise<SweepResponse> {
   try {
-    const tab = await activeTab();
+    const tab = await targetTab(targetTabId);
     const blocked = protectedPageReason(tab.url);
     if (blocked) {
       await recordError(blocked, false);
@@ -1487,7 +1499,7 @@ async function recordClip(
   if (clipRunning) return { ok: false, reason: 'A clip is already recording.' };
   clipRunning = true;
   try {
-    const tab = tabIdOverride !== undefined ? await chrome.tabs.get(tabIdOverride) : await activeTab();
+    const tab = await targetTab(tabIdOverride);
     const blocked = protectedPageReason(tab.url);
     if (blocked) {
       await recordError(blocked, announce);
@@ -1757,19 +1769,19 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
     return false;
   }
   if (message?.type === 'RECORD_CLIP') {
-    void recordClip('clip').then(sendResponse);
+    void recordClip('clip', message.tabId).then(sendResponse);
     return true;
   }
   if (message?.type === 'CAPTURE_BUNDLE') {
-    void captureBundle('popup').then(sendResponse);
+    void captureBundle('popup', message.tabId).then(sendResponse);
     return true;
   }
   if (message?.type === 'CAPTURE_PAGE') {
-    void capturePage(message.png === true).then(sendResponse);
+    void capturePage(message.png === true, message.tabId).then(sendResponse);
     return true;
   }
   if (message?.type === 'CAPTURE_SWEEP') {
-    void captureResponsiveSweep().then(sendResponse);
+    void captureResponsiveSweep(message.tabId).then(sendResponse);
     return true;
   }
   if (message?.type === 'SESSION_LIST_TABS') {
@@ -1800,9 +1812,10 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
   return false;
 });
 
-chrome.commands.onCommand.addListener((command) => {
-  if (command === 'capture-bundle') void captureBundle('shortcut');
-  if (command === 'record-clip') void recordClip('clip-shortcut');
+// Chrome names the tab the shortcut was pressed in; that tab is the target.
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command === 'capture-bundle') void captureBundle('shortcut', tab?.id);
+  if (command === 'record-clip') void recordClip('clip-shortcut', tab?.id);
 });
 
 // ------------------------------------------------------- one-click capture --
@@ -1856,7 +1869,12 @@ async function syncActionMode(): Promise<void> {
  * a small window — the pattern the session picker already uses for the same
  * reason (a popup cannot outlive the click that opened it).
  */
-async function openPanel(): Promise<void> {
+/**
+ * `fromWindowId` is the window the menu was opened in. A panel opened as its
+ * own window points its buttons at that window's active tab (NOBC-167):
+ * otherwise every capture from the panel aimed at the panel itself.
+ */
+async function openPanel(fromWindowId?: number): Promise<void> {
   try {
     if (typeof chrome.action.openPopup === 'function') {
       await chrome.action.openPopup();
@@ -1867,7 +1885,9 @@ async function openPanel(): Promise<void> {
   }
   try {
     await chrome.windows.create({
-      url: chrome.runtime.getURL(POPUP_PAGE),
+      url:
+        chrome.runtime.getURL(POPUP_PAGE) +
+        (fromWindowId === undefined ? '' : `?window=${fromWindowId}`),
       type: 'popup',
       width: 380,
       height: 560,
@@ -1877,15 +1897,15 @@ async function openPanel(): Promise<void> {
   }
 }
 
-chrome.action.onClicked.addListener(() => {
-  void captureBundle('icon');
+chrome.action.onClicked.addListener((tab) => {
+  void captureBundle('icon', tab.id);
 });
 
-chrome.contextMenus.onClicked.addListener((info) => {
-  if (info.menuItemId === PANEL_MENU_ID) void openPanel();
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === PANEL_MENU_ID) void openPanel(tab?.windowId);
   // Always in the icon's menu: with one-click capture on, the popup is a
   // right-click away and this saves the second click.
-  if (info.menuItemId === CLIP_MENU_ID) void recordClip('clip');
+  if (info.menuItemId === CLIP_MENU_ID) void recordClip('clip', tab?.id);
 });
 
 chrome.runtime.onInstalled.addListener((details) => {
