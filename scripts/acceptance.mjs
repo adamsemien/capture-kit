@@ -1035,7 +1035,72 @@ async function tabTargetingCheck(label) {
   return { label, preconditionHeld, target };
 }
 
-if (process.argv.includes('--only-a13')) {
+// --- A14: the panel window captures the tab it was opened for (NOBC-167) --
+//
+// When the popup cannot open, Capture Kit opens it as its own small window.
+// "The active tab of the last-focused window" is then the panel itself, so
+// every button aimed at the panel. The fixture waits in window A; a panel
+// opened for window A takes focus in its own window; its Capture button must
+// capture the fixture.
+async function panelTargetingCheck(label) {
+  await setSetting(options, { pageTriggerMode: 'any' });
+  const fixtureUrl =
+    `http://127.0.0.1:${HTTP_PORT}/drawer?v=${encodeURIComponent('S studio-fixed-offcanvas')}&manual=1&panel=1`;
+  const t = await openExact(fixtureUrl);
+  if (!t) return { label, verdict: 'FAIL', why: 'fixture tab never appeared' };
+  await sleep(800);
+  const origin = await options.eval('location.origin');
+  const windowId = await options.eval(
+    `chrome.tabs.query({}).then((ts) => ts.find((x) => x.url === ${JSON.stringify(fixtureUrl)})?.windowId ?? null)`,
+  );
+  const panelUrl = `${origin}/popup/popup.html?window=${windowId}`;
+  const browser = new Session((await cdp('/json/version')).webSocketDebuggerUrl);
+  await browser.open();
+  const { targetId: panelId } = await browser.send('Target.createTarget', { url: panelUrl, newWindow: true });
+  await sleep(1500);
+  // The guess the old code made. Extension pages hide their own URL from
+  // tabs.query without the tabs permission, so the window id is compared.
+  const focusedWindow = await options.eval(
+    `chrome.tabs.query({ active: true, lastFocusedWindow: true }).then((t) => t[0]?.windowId ?? null)`,
+  );
+  const panelTarget = (await cdp('/json/list')).find((x) => x.id === panelId);
+  const panel = new Session(panelTarget.webSocketDebuggerUrl);
+  await panel.open();
+  await panel.send('Runtime.enable');
+  const before = newestFile('.md');
+  await panel.eval(`document.getElementById('capture-bundle').click()`, true);
+  let status = '';
+  for (let i = 0; i < 120; i++) {
+    await sleep(500);
+    status = await panel.eval(`document.getElementById('status')?.textContent ?? ''`);
+    if (/^Saved|could|can|not|fail|error/i.test(status) && status !== 'Capturing…') break;
+  }
+  await sleep(1500);
+  const report = newestFile('.md');
+  const reportUrl =
+    report && report !== before ? (/^- \*\*URL:\*\* (.+)$/m.exec(readCapture(report))?.[1] ?? null) : null;
+  panel.close();
+  await cdp(`/json/close/${panelId}`);
+  await cdp(`/json/close/${t.id}`);
+  browser.close();
+  console.log(`[${label}] fixture in window ${windowId}; panel ${panelUrl}`);
+  console.log(`[${label}] last-focused window with the panel open: ${focusedWindow} (fixture's: ${windowId})`);
+  console.log(`[${label}] panel status: ${JSON.stringify(status)}`);
+  console.log(`[${label}] report URL: ${reportUrl}`);
+  const preconditionHeld = focusedWindow !== null && focusedWindow !== windowId;
+  const target = reportUrl === fixtureUrl ? 'fixture' : reportUrl ? 'other' : 'nothing';
+  return { label, preconditionHeld, target, status };
+}
+
+function a14Verdict(r) {
+  return !r.preconditionHeld
+    ? 'INCONCLUSIVE — the fixture\'s window was still the last-focused one, so the old guess would have worked'
+    : r.target === 'fixture'
+      ? 'PASS — the panel captured the tab it was opened for'
+      : `FAIL — panel captured ${r.target} (status: ${r.status})`;
+}
+
+if (process.argv.includes('--only-a13') || process.argv.includes('--only-tab-targeting')) {
   heading('CHECK A13 — a page-fired capture photographs the page that asked');
   const own = await tabTargetingCheck('this build');
   console.log(
@@ -1046,8 +1111,10 @@ if (process.argv.includes('--only-a13')) {
           ? 'PASS — the report names the page that fired, not the focused decoy'
           : `FAIL — captured the ${own.target}`),
   );
+  heading('CHECK A14 — the panel window captures the tab it was opened for');
+  console.log('VERDICT A14 panel pinned to its window: ' + a14Verdict(await panelTargetingCheck('this build')));
   if (process.env.CK_COMPARE_DIST) {
-    heading('CHECK A13 (falsifiability) — the same steps on the comparison build');
+    heading('CHECK A13/A14 (falsifiability) — the same steps on the comparison build');
     console.log(`comparison dist: ${process.env.CK_COMPARE_DIST}`);
     console.log(`extension id (comparison build): ${await relaunchWith(process.env.CK_COMPARE_DIST)}`);
     const old = await tabTargetingCheck('comparison build');
@@ -1056,6 +1123,13 @@ if (process.argv.includes('--only-a13')) {
         (old.preconditionHeld && old.target === 'decoy'
           ? 'PASS — the comparison build photographed the focused decoy'
           : `FAIL — comparison build captured the ${old.target}, precondition ${old.preconditionHeld}`),
+    );
+    const oldPanel = await panelTargetingCheck('comparison build');
+    console.log(
+      'VERDICT A14 is falsifiable: ' +
+        (oldPanel.preconditionHeld && oldPanel.target !== 'fixture'
+          ? `PASS — the comparison build's panel captured ${oldPanel.target} (status: ${oldPanel.status})`
+          : `FAIL — comparison build's panel captured the ${oldPanel.target}, precondition ${oldPanel.preconditionHeld}`),
     );
   }
   options.close();
@@ -2016,6 +2090,9 @@ heading('CHECK A13 — a page-fired capture photographs the page that asked');
           : `FAIL — captured the ${own.target}`),
   );
 }
+
+heading('CHECK A14 — the panel window captures the tab it was opened for');
+console.log('VERDICT A14 panel pinned to its window: ' + a14Verdict(await panelTargetingCheck('this build')));
 
 options.close();
 chrome.kill('SIGTERM');

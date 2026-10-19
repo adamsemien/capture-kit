@@ -63,9 +63,26 @@ function watchCaptureProgress(): void {
   });
 }
 
+/**
+ * The tab this popup acts on (NOBC-167). Attached to the toolbar icon, that is
+ * the active tab of the popup's own window - "current", not "last focused",
+ * which is whatever window the person touched last. Opened as a separate
+ * panel window, `?window=` names the window it was opened from, and the
+ * panel follows that window's active tab.
+ */
 async function activeTabId(): Promise<number | null> {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const fromWindow = Number(new URLSearchParams(location.search).get('window'));
+  const query: chrome.tabs.QueryInfo = Number.isInteger(fromWindow) && fromWindow > 0
+    ? { active: true, windowId: fromWindow }
+    : { active: true, currentWindow: true };
+  const [tab] = await chrome.tabs.query(query);
   return tab?.id ?? null;
+}
+
+/** The message field naming the target tab; absent when there is none to name. */
+async function targetField(): Promise<{ tabId?: number }> {
+  const tabId = await activeTabId();
+  return tabId === null ? {} : { tabId };
 }
 
 function showRecorderInactive(): void {
@@ -115,6 +132,7 @@ captureBundleBtn.addEventListener('click', () => {
     setStatus('Capturing…');
     const response = (await chrome.runtime.sendMessage({
       type: 'CAPTURE_BUNDLE',
+      ...(await targetField()),
     })) as CaptureResponse;
     if (response.ok) {
       // The page already wrote image and report; a text write here would
@@ -145,6 +163,7 @@ capturePageBtn.addEventListener('click', () => {
     const response = (await chrome.runtime.sendMessage({
       type: 'CAPTURE_PAGE',
       png: imageOnlyPngInput.checked,
+      ...(await targetField()),
     })) as CaptureResponse;
     if (response.ok) {
       setStatus(`Saved ${response.imageFilename}.`, 'ok');
@@ -161,6 +180,7 @@ responsiveSweepBtn.addEventListener('click', () => {
     setStatus('Capturing 375, 768 and 1440…');
     const response = (await chrome.runtime.sendMessage({
       type: 'CAPTURE_SWEEP',
+      ...(await targetField()),
     })) as SweepResponse;
     if (response.ok) {
       if (response.failed.length === 0) {
@@ -183,7 +203,10 @@ recordClipBtn.addEventListener('click', () => {
   void (async () => {
     setBusy(true);
     setStatus('Recording after the count-in… keep the tab in front.');
-    const response = (await chrome.runtime.sendMessage({ type: 'RECORD_CLIP' })) as ClipResponse;
+    const response = (await chrome.runtime.sendMessage({
+      type: 'RECORD_CLIP',
+      ...(await targetField()),
+    })) as ClipResponse;
     if (response.ok) {
       setStatus(
         `Saved the clip, ${response.frames} frames (sheet + full size), and the report${
