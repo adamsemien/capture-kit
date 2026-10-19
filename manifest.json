@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Capture Kit",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Full-page screenshots and clips with the console errors and failed requests behind them, ready to paste into your AI.",
   "minimum_chrome_version": "116",
   "icons": {
