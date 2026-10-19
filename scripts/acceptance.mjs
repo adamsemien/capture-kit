@@ -34,6 +34,8 @@ import {
   DRAWER_RGB,
   F_CHILD_RGB,
   H_SECTION_RGB,
+  NAV_RGB,
+  NAV_WIDTH,
   SENTINEL_RGB,
   fixture as drawerFixture,
   viewportFor,
@@ -1815,6 +1817,9 @@ const A12_COLOURS = {
   // carries the drawer colour in its list anyway, so "no drawer painted" is
   // measured here rather than assumed from the markup.
   'I sentinel-no-drawer': A12_DRAWER_AND_SENTINEL,
+  // NOBC-166: the pinned-panel shell. No drawer; the sentinel must paint, and
+  // so must the nav beside it - a blank capture fails both.
+  'J pinned-panel-shell': [...A12_DRAWER_AND_SENTINEL, named(NAV_RGB, 'nav')],
 };
 const SENTINEL_FLOOR = 1000;
 
@@ -1844,6 +1849,17 @@ for (const variant of Object.keys(A12_COLOURS)) {
         : `FAIL — ${by.drawer.pixels} drawer-colour px at x ${by.drawer.x.from}..` +
           `${by.drawer.x.to} of ${r.px.width}`),
   );
+  if (by.nav) {
+    console.log(
+      `VERDICT ${variant} nav still paints at the left: ` +
+        (by.nav.pixels >= 10000 && by.nav.x.from <= 4 && by.sentinel.x?.from >= NAV_WIDTH - 4
+          ? `PASS — nav ${by.nav.pixels} px at x ${by.nav.x.from}..${by.nav.x.to}, ` +
+            `content from x ${by.sentinel.x.from}`
+          : `FAIL — nav ${by.nav.pixels} px at ${JSON.stringify(by.nav.x)}, ` +
+            `sentinel at ${JSON.stringify(by.sentinel.x)}`),
+    );
+    console.log(`J capture mode: ${r.modeLine.find((l) => /Capture mode/.test(l)) ?? '(none)'}`);
+  }
   console.log(
     `VERDICT ${variant} scroller still expanded: ` +
       (by.sentinel.pixels >= SENTINEL_FLOOR

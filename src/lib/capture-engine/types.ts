@@ -109,6 +109,13 @@ export interface CaptureResult {
   /** Inner scrollers unrolled for this capture (expanded-inner-scroll mode only). */
   innerScrollers?: number;
   /**
+   * True when inner-scroll expansion was undone because it would have hidden
+   * the page's content; the capture is then of the page as it looks on screen.
+   */
+  innerScrollAbandoned?: boolean;
+  /** Absolutely positioned panels brought into the flow for the expansion. */
+  panelsReflowed?: number;
+  /**
    * Embedded frames kept at their on-screen height while the columns around
    * them unrolled. Their own content is not unrolled, and the report says so.
    */
