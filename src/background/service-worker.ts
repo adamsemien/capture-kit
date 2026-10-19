@@ -717,6 +717,8 @@ async function captureReport(
     heightHeld: result.heightHeld,
     innerScrollers: result.innerScrollers,
     framesHeld: result.framesHeld,
+    panelsReflowed: result.panelsReflowed,
+    innerScrollAbandoned: result.innerScrollAbandoned,
     segments: result.segments,
     imageSize: result.imageSize,
     trigger,
@@ -880,10 +882,17 @@ async function copyImageThroughPage(
   }
 }
 
-async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> {
+/**
+ * `targetTabId` pins the capture to one tab. The in-page trigger passes the
+ * tab that fired the event: "the active tab of the last-focused window" is
+ * not that tab whenever the page lives in a window the person is not using,
+ * and without the pin an agent's request photographed whatever the person
+ * had in front of them instead (NOBC-166 follow-up).
+ */
+async function captureBundle(trigger: CaptureTrigger, targetTabId?: number): Promise<CaptureResponse> {
   const announce = trigger !== 'popup';
   try {
-    const tab = await activeTab();
+    const tab = targetTabId === undefined ? await activeTab() : await chrome.tabs.get(targetTabId);
     const blocked = protectedPageReason(tab.url);
     if (blocked) {
       await recordError(blocked, announce);
@@ -967,6 +976,8 @@ async function captureBundle(trigger: CaptureTrigger): Promise<CaptureResponse> 
             result.heightHeld,
             result.innerScrollers,
             result.framesHeld,
+            result.panelsReflowed,
+            result.innerScrollAbandoned,
           ),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
@@ -1038,6 +1049,8 @@ async function capturePage(asPng: boolean): Promise<CaptureResponse> {
             result.heightHeld,
             result.innerScrollers,
             result.framesHeld,
+            result.panelsReflowed,
+            result.innerScrollAbandoned,
           ),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
@@ -1672,7 +1685,8 @@ async function agentCapture(tabId: number): Promise<void> {
     }
     // Same path as the keyboard command, so an agent gets exactly what a
     // keystroke gets — including the badge flash.
-    const response = await captureBundle('agent');
+    // Pinned to the tab that asked - never "whatever is active" (see captureBundle).
+    const response = await captureBundle('agent', tabId);
     await tellPage(
       tabId,
       response.ok

@@ -123,6 +123,13 @@ export const DRAWER_VARIANTS = {
   // regression in expansion shows up here even if every drawer variant is
   // clean.
   'I sentinel-no-drawer': null,
+  // NOBC-166, the Google Cloud console's shape: the content column is a
+  // position:absolute; top:0; bottom:0 panel pinned inside a position:relative
+  // container, under an overflow:hidden wrapper, beside a nav. Releasing the
+  // container's height collapses it to zero - the absolute panel is out of
+  // flow - and the overflow:hidden wrapper then clips the whole content area.
+  // Before the fix this captured as a header over a blank page.
+  'J pinned-panel-shell': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
   // /studio: position:fixed, off-canvas right, clipped by overflow:clip on
   // body and html, and NO dominant inner scroller — shouldExpand is false, so
@@ -162,6 +169,7 @@ const STUDIO = { left: 916, translateX: 422.4, width: 384 };
 export function fixture(variant, { reportsResult = false, manual = false } = {}) {
   if (/^S\d* /.test(variant)) return studioFixture(variant, { reportsResult, manual });
   if (variant.startsWith('H ')) return lazySectionsFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('J ')) return pinnedPanelFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
   const rows = Array.from(
     { length: ROW_COUNT },
@@ -216,6 +224,51 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   <div id="shell">
     <div id="main"><h1>repro: ${variant}</h1>${rows}${lazy}${sentinel}</div>
     ${drawer}
+  </div>
+  ${reporter}
+</body></html>`;
+}
+
+/** The nav column beside the pinned panel - must still paint, on the left. */
+export const NAV_RGB = { r: 0x2e, g: 0x7d, b: 0x32 }; // #2e7d32
+export const NAV_WIDTH = 240;
+
+function pinnedPanelFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const rows = Array.from(
+    { length: ROW_COUNT },
+    (_, i) =>
+      `<div style="height:${ROW_HEIGHT}px;background:${i % 2 ? '#e4e4e8' : '#f2f2f4'};padding:${ROW_PADDING}px;font:16px sans-serif">row ${i}</div>`,
+  ).join('');
+  const sentinel =
+    `<div id="sentinel-frame" style="background:#ffffff;padding:${SENTINEL_INSET}px">` +
+    `<div id="sentinel" style="height:${SENTINEL_HEIGHT}px;padding:${ROW_PADDING}px;` +
+    `background:${hex(SENTINEL_RGB)};color:${SENTINEL_LABEL_COLOUR};font:20px sans-serif">` +
+    `expansion sentinel - paints only if the scroller expanded to its end</div></div>`;
+  const reporter = reporterScript(reportsResult, manual);
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>
+  html,body{height:100%;margin:0;overflow:hidden}
+  #page{height:100%;display:flex;flex-direction:column}
+  #topbar{height:56px;flex:none;background:#123a6b;color:#fff;font:16px sans-serif;padding:16px;box-sizing:border-box}
+  /* The wrapper whose overflow:hidden did the clipping. */
+  #area{flex:1;min-height:0;display:flex;overflow:hidden}
+  #nav{width:${NAV_WIDTH}px;flex:none;background:${hex(NAV_RGB)};color:#fff;font:16px sans-serif;padding:12px;box-sizing:border-box}
+  /* The relative container and its pinned panel. */
+  #holder{position:relative;flex:1}
+  #pinned{position:absolute;top:0;bottom:0;left:0;right:0;display:flex;flex-direction:column}
+  #clip{flex:1;min-height:0;display:flex;overflow:hidden}
+  #main{flex:1;overflow-y:auto}
+</style></head>
+<body>
+  <div id="page">
+    <div id="topbar">repro: ${variant}</div>
+    <div id="area">
+      <nav id="nav">nav column - must paint at the left</nav>
+      <div id="holder"><div id="pinned"><div id="clip">
+        <div id="main"><h1>pinned panel</h1>${rows}${sentinel}</div>
+      </div></div></div>
+    </div>
   </div>
   ${reporter}
 </body></html>`;

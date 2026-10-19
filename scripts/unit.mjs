@@ -424,6 +424,9 @@ const injectedCss = new Function(
   'ATTR_FB',
   'ATTR_IF',
   'FRAME_VAR',
+  'ATTR_POS',
+  'POS_X_VAR',
+  'POS_W_VAR',
   `return ${assignment[1]};`,
 )(
   'data-capture-kit-expand',
@@ -431,6 +434,9 @@ const injectedCss = new Function(
   'data-capture-kit-expand-fb',
   'data-capture-kit-expand-frame',
   '--capture-kit-frame-h',
+  'data-capture-kit-expand-pos',
+  '--capture-kit-pos-x',
+  '--capture-kit-pos-w',
 );
 
 /** One rule body by selector substring, e.g. `="ancestor"`. */
@@ -462,6 +468,18 @@ test('the ancestor rule still releases height', () => {
   const rule = ruleFor('="ancestor"');
   assert.match(rule, /height:auto/);
   assert.match(rule, /max-height:none/);
+});
+
+test('a pinned panel joins the flow where it was, at its own width (NOBC-166)', () => {
+  const rule = ruleFor('[data-capture-kit-expand-pos]{');
+  assert.match(rule, /position:relative !important/);
+  assert.match(rule, /top:auto !important/);
+  assert.match(rule, /bottom:auto !important/);
+  assert.match(rule, /left:var\(--capture-kit-pos-x,0px\)/);
+  assert.match(rule, /flex:none/);
+  assert.ok(!/overflow/.test(rule), `the pinned-panel rule must not touch overflow, got: ${rule}`);
+  const width = ruleFor(':not([data-capture-kit-expand-h])');
+  assert.match(width, /width:var\(--capture-kit-pos-w\)/);
 });
 
 test('the horizontal rule releases width for both roles', () => {
@@ -1414,6 +1432,27 @@ test('a trimmed slice table names the columns each slice shows', () => {
   assert.match(text, /\| x_slices\/slice-01\.jpg \| 0–3200 \| 464–2096 \|/);
   assert.match(text, /\| x_slices\/slice-02\.jpg \| 3136–6336 \| 0–2560 \|/);
   assert.match(text, /3200 px tall each/);
+});
+
+// --- NOBC-166: app shells that blank on expansion ---------------------------
+test('pinned panels brought into the flow are named in the capture mode', () => {
+  assert.equal(
+    mod.captureModeLabel('expanded-inner-scroll', 0, 1, 0, 1, 0, 5),
+    'expanded inner scroll (5 pinned panels brought into the flow), single-shot',
+  );
+  assert.equal(
+    mod.captureModeLabel('expanded-inner-scroll', 0, 1, 0, 2, 0, 1),
+    'expanded inner scroll (2 scrollers, 1 pinned panel brought into the flow), single-shot',
+  );
+});
+test('an undone expansion says the capture is one screen, and why', () => {
+  assert.equal(
+    mod.captureModeLabel('standard', 0, 1, 0, 1, 0, 0, true),
+    'standard (inner-scroll expansion undone - it would have hidden the page, so this is the page as it looks on screen), single-shot',
+  );
+});
+test('a plain standard capture is unchanged', () => {
+  assert.equal(mod.captureModeLabel('standard', 0, 1), 'standard, single-shot');
 });
 
 rmSync(dir, { recursive: true, force: true });

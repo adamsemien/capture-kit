@@ -11,6 +11,10 @@ import { CdpFullPageStrategy } from './cdp-fullpage';
  * existing CDP pipeline, which re-measures and picks single-shot vs
  * segmented as usual. All style changes are restored in a finally.
  *
+ * If the expansion would hide the content instead (an app shell built on
+ * absolutely positioned panels that collapse once heights are released), it is
+ * undone and the page is captured as it looks on screen (NOBC-166).
+ *
  * Known limits (documented in README): virtualized lists render only the
  * visible rows, so expanded regions capture placeholders/empty space;
  * canvas-rendered apps (Figma, Sheets) are out of scope entirely.
@@ -22,7 +26,7 @@ type PageAction = 'detect' | 'expand' | 'restore';
 // self-contained (no outer-scope references survive serialization).
 function innerScrollPage(
   action: PageAction,
-): { shouldExpand: boolean; count: number; framesHeld: number } {
+): { shouldExpand: boolean; count: number; framesHeld: number; abandoned: boolean; reflowed: number } {
   const STYLE_ID = '__capture_kit_expand__';
   const ATTR = 'data-capture-kit-expand';
   const ATTR_H = 'data-capture-kit-expand-h';
@@ -30,15 +34,28 @@ function innerScrollPage(
   const ATTR_IF = 'data-capture-kit-expand-frame';
   const ATTR_IF_NOSTYLE = 'data-capture-kit-expand-frame-nostyle';
   const FRAME_VAR = '--capture-kit-frame-h';
+  const ATTR_POS = 'data-capture-kit-expand-pos';
+  const ATTR_POS_NOSTYLE = 'data-capture-kit-expand-pos-nostyle';
+  const POS_W_VAR = '--capture-kit-pos-w';
+  const POS_X_VAR = '--capture-kit-pos-x';
 
   const restore = () => {
     document.getElementById(STYLE_ID)?.remove();
     for (const el of Array.from(
-      document.querySelectorAll(`[${ATTR}], [${ATTR_H}], [${ATTR_FB}], [${ATTR_IF}]`),
+      document.querySelectorAll(`[${ATTR}], [${ATTR_H}], [${ATTR_FB}], [${ATTR_IF}], [${ATTR_POS}]`),
     )) {
       el.removeAttribute(ATTR);
       el.removeAttribute(ATTR_H);
       el.removeAttribute(ATTR_FB);
+      if (el.hasAttribute(ATTR_POS)) {
+        el.removeAttribute(ATTR_POS);
+        (el as HTMLElement).style.removeProperty(POS_W_VAR);
+        (el as HTMLElement).style.removeProperty(POS_X_VAR);
+        if (el.hasAttribute(ATTR_POS_NOSTYLE)) {
+          el.removeAttribute(ATTR_POS_NOSTYLE);
+          if (!el.getAttribute('style')) el.removeAttribute('style');
+        }
+      }
       if (el.hasAttribute(ATTR_IF)) {
         el.removeAttribute(ATTR_IF);
         (el as HTMLElement).style.removeProperty(FRAME_VAR);
@@ -51,7 +68,7 @@ function innerScrollPage(
   };
   if (action === 'restore') {
     restore();
-    return { shouldExpand: false, count: 0, framesHeld: 0 };
+    return { shouldExpand: false, count: 0, framesHeld: 0, abandoned: false, reflowed: 0 };
   }
 
   // Tiny scrollboxes (code snippets, dropdowns) are never the page's content.
@@ -142,7 +159,7 @@ function innerScrollPage(
 
   const shouldExpand = picked.length > 0 && docBarelyScrolls;
   if (action === 'detect' || !shouldExpand) {
-    return { shouldExpand, count: picked.length, framesHeld: 0 };
+    return { shouldExpand, count: picked.length, framesHeld: 0, abandoned: false, reflowed: 0 };
   }
 
   restore(); // idempotency if a previous capture died before restoring
@@ -215,6 +232,39 @@ function innerScrollPage(
     columnItems.push(el);
   }
   for (const el of columnItems) el.setAttribute(ATTR_FB, '');
+
+  // Positioned links in the chain (NOBC-166). An app shell that pins a panel
+  // with position:absolute; top:0; bottom:0 inside a position:relative parent
+  // takes the panel's height from the parent, and the parent's from the panel
+  // never - an absolute child is out of flow. Release the parent's height and
+  // it collapses to zero; every overflow:hidden ancestor above it then clips
+  // the whole content area away. The Google Cloud console is built exactly
+  // like this, and its capture came back as a header over a blank page.
+  //
+  // So a positioned link joins the flow for the capture: position:relative,
+  // its on-screen width held, no flex resizing. Where it sat is measured now
+  // and restored below with a relative offset, which moves its paint without
+  // moving anything else.
+  const positioned: { el: HTMLElement; left: number }[] = [];
+  for (const el of Array.from(document.querySelectorAll(`[${ATTR}]`)) as HTMLElement[]) {
+    let pos = '';
+    try {
+      pos = getComputedStyle(el).position;
+    } catch {
+      continue;
+    }
+    if (pos !== 'absolute' && pos !== 'fixed') continue;
+    const rect = el.getBoundingClientRect();
+    if (!el.hasAttribute('style')) el.setAttribute(ATTR_POS_NOSTYLE, '');
+    el.style.setProperty(POS_W_VAR, rect.width + 'px');
+    positioned.push({ el, left: rect.left });
+  }
+  for (const { el } of positioned) el.setAttribute(ATTR_POS, '');
+
+  // What the check after expansion compares against: each scroller's box on
+  // screen, before anything moved.
+  const before = picked.map(({ el }) => ({ el, clientHeight: el.clientHeight }));
+
   const styleEl = document.createElement('style');
   styleEl.id = STYLE_ID;
   // The scroller has to release its own scroll, so it keeps overflow:visible.
@@ -240,9 +290,57 @@ function innerScrollPage(
     `[${ATTR_FB}]{flex-basis:auto !important;}` +
     `[${ATTR_IF}]{height:var(${FRAME_VAR}) !important;min-height:0 !important;` +
     `max-height:none !important;}` +
-    `[${ATTR_IF}="column"]{flex-grow:0 !important;flex-basis:auto !important;}`;
+    `[${ATTR_IF}="column"]{flex-grow:0 !important;flex-basis:auto !important;}` +
+    `[${ATTR_POS}]{position:relative !important;top:auto !important;bottom:auto !important;` +
+    `right:auto !important;left:var(${POS_X_VAR},0px) !important;flex:none !important;}` +
+    // A panel that is also widening for a sideways scroller keeps width:auto.
+    `[${ATTR_POS}]:not([${ATTR_H}]){width:var(${POS_W_VAR}) !important;}`;
   document.documentElement.appendChild(styleEl);
-  return { shouldExpand: true, count: picked.length, framesHeld: frames.length };
+
+  // Put each positioned link back where it was across the page, outermost
+  // first: an inner one's position depends on its ancestors' being settled.
+  // Document order is outermost-first.
+  for (const { el, left } of positioned) {
+    const now = el.getBoundingClientRect().left;
+    const shift = left - now;
+    if (Math.abs(shift) >= 0.5) el.style.setProperty(POS_X_VAR, shift + 'px');
+  }
+
+  // Never blank. If anything still hides a scroller after the expansion - it
+  // came out shorter than it was on screen, or an ancestor that clips now
+  // shows less of it than the screen did - undo everything. The capture then
+  // runs on the page as it looks, and the report says so: one honest screen
+  // beats a picture of nothing.
+  const collapsed = before.some(({ el, clientHeight }) => {
+    const rect = el.getBoundingClientRect();
+    const need = Math.min(clientHeight, viewportH) - 2;
+    if (rect.height < need) return true;
+    for (let node: Element | null = el.parentElement; node; node = node.parentElement) {
+      if (node === document.documentElement || node === document.body) break;
+      let cs: CSSStyleDeclaration;
+      try {
+        cs = getComputedStyle(node);
+      } catch {
+        continue;
+      }
+      if (cs.overflowY === 'visible' && cs.overflowX === 'visible') continue;
+      const box = node.getBoundingClientRect();
+      const shown = Math.min(box.bottom, rect.bottom) - Math.max(box.top, rect.top);
+      if (shown < need) return true;
+    }
+    return false;
+  });
+  if (collapsed) {
+    restore();
+    return { shouldExpand: false, count: picked.length, framesHeld: 0, abandoned: true, reflowed: 0 };
+  }
+  return {
+    shouldExpand: true,
+    count: picked.length,
+    framesHeld: frames.length,
+    abandoned: false,
+    reflowed: positioned.length,
+  };
 }
 
 interface InnerScrollOutcome {
@@ -251,6 +349,10 @@ interface InnerScrollOutcome {
   count: number;
   /** Embedded frames held at their on-screen height (expand only). */
   framesHeld: number;
+  /** Expansion undone because it would have hidden the content (expand only). */
+  abandoned: boolean;
+  /** Absolutely positioned panels brought into the flow (expand only). */
+  reflowed: number;
 }
 
 async function runInnerScrollScript(
@@ -267,6 +369,8 @@ async function runInnerScrollScript(
       shouldExpand: false,
       count: 0,
       framesHeld: 0,
+      abandoned: false,
+      reflowed: 0,
     }
   );
 }
@@ -281,12 +385,12 @@ export async function detectInnerScroll(tabId: number): Promise<boolean> {
   }
 }
 
-/** Unrolls every qualifying scroller; returns how many, and how many frames it held. */
+/** Unrolls every qualifying scroller; returns how many, how many frames it held, and whether it gave up. */
 export async function applyInnerScrollExpansion(
   tabId: number,
-): Promise<{ count: number; framesHeld: number }> {
-  const { count, framesHeld } = await runInnerScrollScript(tabId, 'expand');
-  return { count, framesHeld };
+): Promise<{ count: number; framesHeld: number; abandoned: boolean; reflowed: number }> {
+  const { count, framesHeld, abandoned, reflowed } = await runInnerScrollScript(tabId, 'expand');
+  return { count, framesHeld, abandoned, reflowed };
 }
 
 export async function restoreInnerScrollExpansion(tabId: number): Promise<void> {
@@ -302,10 +406,15 @@ export class InnerScrollExpansionStrategy implements CaptureStrategy {
   private readonly inner = new CdpFullPageStrategy();
 
   async capture(request: CaptureRequest): Promise<CaptureResult> {
-    const { count: innerScrollers, framesHeld } = await applyInnerScrollExpansion(request.tabId);
+    const { count: innerScrollers, framesHeld, abandoned, reflowed } = await applyInnerScrollExpansion(
+      request.tabId,
+    );
     try {
       const result = await this.inner.capture(request);
-      return { ...result, mode: 'expanded-inner-scroll', innerScrollers, framesHeld };
+      // Expansion would have blanked the page and was undone: this is a
+      // standard capture of what is on screen, and the report says why.
+      if (abandoned) return { ...result, mode: 'standard', innerScrollAbandoned: true };
+      return { ...result, mode: 'expanded-inner-scroll', innerScrollers, framesHeld, panelsReflowed: reflowed };
     } finally {
       await restoreInnerScrollExpansion(request.tabId);
     }

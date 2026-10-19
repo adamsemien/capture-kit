@@ -36,6 +36,10 @@ export interface BundleInput {
   innerScrollers?: number;
   /** Embedded frames kept at their on-screen height (expanded-inner-scroll mode only). */
   framesHeld?: number;
+  /** Pinned (absolutely positioned) panels brought into the flow for the expansion. */
+  panelsReflowed?: number;
+  /** Inner-scroll expansion undone because it would have hidden the page. */
+  innerScrollAbandoned?: boolean;
   /** Segments stitched for the image (1 = true single-shot). */
   segments: number;
   /** Dimensions of the file on disk, footer included. */
@@ -130,6 +134,8 @@ export function captureModeLabel(
   heightHeld = 0,
   innerScrollers = 0,
   framesHeld = 0,
+  panelsReflowed = 0,
+  innerScrollAbandoned = false,
 ): string {
   // The counts say how many columns were unrolled and how many embedded
   // pages were not - a reader comparing a three-column app to its capture
@@ -139,12 +145,19 @@ export function captureModeLabel(
   if (framesHeld > 0) {
     parts.push(`${framesHeld} embedded ${framesHeld === 1 ? 'frame' : 'frames'} kept at screen height`);
   }
+  if (panelsReflowed > 0) {
+    parts.push(`${panelsReflowed} pinned ${panelsReflowed === 1 ? 'panel' : 'panels'} brought into the flow`);
+  }
+  // Undone rather than blank (NOBC-166): the reader must know this is one
+  // screen of a longer page, and why.
   const strategy =
     mode === 'expanded-inner-scroll'
       ? parts.length > 0
         ? `expanded inner scroll (${parts.join(', ')})`
         : 'expanded inner scroll'
-      : 'standard';
+      : innerScrollAbandoned
+        ? 'standard (inner-scroll expansion undone - it would have hidden the page, so this is the page as it looks on screen)'
+        : 'standard';
   const path = segments > 1 ? `segmented, ${segments} segments` : 'single-shot';
   const reveal = revealForced > 0 ? ` + reveal-forced (${revealForced} elements)` : '';
   // Says the page was altered for the capture, and how: viewport-unit lengths
@@ -392,6 +405,8 @@ export function buildBundleMarkdown(input: BundleInput): string {
           input.heightHeld,
           input.innerScrollers,
           input.framesHeld,
+          input.panelsReflowed,
+          input.innerScrollAbandoned,
         ),
         trigger: input.trigger,
         recorderActive: input.recorderActive,
