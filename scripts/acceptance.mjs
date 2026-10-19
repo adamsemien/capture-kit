@@ -406,7 +406,14 @@ function startHttp() {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(drawerFixture(url.searchParams.get('v') ?? 'S studio-fixed-offcanvas', {
         reportsResult: true,
+        manual: url.searchParams.get('manual') === '1',
       }));
+      return;
+    }
+    // CHECK A13's decoy: the page the person is "looking at" in another window.
+    if (url.pathname === '/decoy') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><title>DECOY</title><body style="margin:0;background:#c62828;height:100vh">decoy</body>');
       return;
     }
     if (url.pathname === '/inspect') {
@@ -975,6 +982,88 @@ killStrays();
     http.close();
     process.exit(1);
   }
+}
+
+// --- A13: a page-fired capture photographs the page that asked ---------
+//
+// The in-page trigger used to capture "the active tab of the last-focused
+// window". When the asking page sat in a window the person was not using,
+// the capture photographed the person's own tab instead - on a real machine
+// that was an open dialog showing a client secret. The fixture waits in
+// window A; a decoy opens in a new, focused window B; then the fixture fires.
+// The report must name the fixture, never the decoy.
+async function tabTargetingCheck(label) {
+  await setSetting(options, { pageTriggerMode: 'any' });
+  const fixtureUrl =
+    `http://127.0.0.1:${HTTP_PORT}/drawer?v=${encodeURIComponent('S studio-fixed-offcanvas')}&manual=1`;
+  const decoyUrl = `http://127.0.0.1:${HTTP_PORT}/decoy`;
+  const t = await openExact(fixtureUrl);
+  if (!t) return { label, verdict: 'FAIL', why: 'fixture tab never appeared' };
+  const browser = new Session((await cdp('/json/version')).webSocketDebuggerUrl);
+  await browser.open();
+  const { targetId: decoyId } = await browser.send('Target.createTarget', {
+    url: decoyUrl,
+    newWindow: true,
+  });
+  await sleep(1500);
+  const wA = (await browser.send('Browser.getWindowForTarget', { targetId: t.id })).windowId;
+  const wB = (await browser.send('Browser.getWindowForTarget', { targetId: decoyId })).windowId;
+  // What the extension itself would call "the active tab" right now.
+  const focusedUrl = await options.eval(
+    `chrome.tabs.query({ active: true, lastFocusedWindow: true }).then((t) => t[0]?.url ?? null)`,
+  );
+  const before = newestFile('.md');
+  const live = new Session(t.webSocketDebuggerUrl);
+  await live.open();
+  await live.send('Runtime.enable');
+  await live.eval('window.__ckFire()');
+  live.close();
+  const detail = await waitForResult(t.id, 90000);
+  await sleep(1500);
+  const report = newestFile('.md');
+  const reportUrl =
+    report && report !== before ? (/^- \*\*URL:\*\* (.+)$/m.exec(readCapture(report))?.[1] ?? null) : null;
+  await cdp(`/json/close/${decoyId}`);
+  await cdp(`/json/close/${t.id}`);
+  browser.close();
+  console.log(`[${label}] fixture window ${wA}, decoy window ${wB}`);
+  console.log(`[${label}] extension's active tab before firing: ${focusedUrl}`);
+  console.log(`[${label}] capture-kit:capture-complete → ${JSON.stringify(detail)}`);
+  console.log(`[${label}] report URL: ${reportUrl}`);
+  const preconditionHeld = wA !== wB && focusedUrl === decoyUrl;
+  const target = reportUrl === fixtureUrl ? 'fixture' : reportUrl === decoyUrl ? 'decoy' : 'neither';
+  return { label, preconditionHeld, target };
+}
+
+if (process.argv.includes('--only-a13')) {
+  heading('CHECK A13 — a page-fired capture photographs the page that asked');
+  const own = await tabTargetingCheck('this build');
+  console.log(
+    'VERDICT A13 capture pinned to the asking tab: ' +
+      (!own.preconditionHeld
+        ? 'INCONCLUSIVE — the decoy window never became the extension\'s active tab'
+        : own.target === 'fixture'
+          ? 'PASS — the report names the page that fired, not the focused decoy'
+          : `FAIL — captured the ${own.target}`),
+  );
+  if (process.env.CK_COMPARE_DIST) {
+    heading('CHECK A13 (falsifiability) — the same steps on the comparison build');
+    console.log(`comparison dist: ${process.env.CK_COMPARE_DIST}`);
+    console.log(`extension id (comparison build): ${await relaunchWith(process.env.CK_COMPARE_DIST)}`);
+    const old = await tabTargetingCheck('comparison build');
+    console.log(
+      'VERDICT A13 is falsifiable: ' +
+        (old.preconditionHeld && old.target === 'decoy'
+          ? 'PASS — the comparison build photographed the focused decoy'
+          : `FAIL — comparison build captured the ${old.target}, precondition ${old.preconditionHeld}`),
+    );
+  }
+  options.close();
+  chrome.kill('SIGTERM');
+  killStrays();
+  await sleep(2000);
+  http.close();
+  process.exit(0);
 }
 
 // --- A1: the toolbar icon's popup follows the setting -------------------
@@ -1912,6 +2001,19 @@ if (!OWN_BUILD) {
           `beacon ${aOn.unclipRestored}`
         : `FAIL — ${aOnDrawer} drawer px, sentinel ${aOnSentinel} px, ` +
           `beacon ${aOn.unclipRestored}`),
+  );
+}
+
+heading('CHECK A13 — a page-fired capture photographs the page that asked');
+{
+  const own = await tabTargetingCheck('this build');
+  console.log(
+    'VERDICT A13 capture pinned to the asking tab: ' +
+      (!own.preconditionHeld
+        ? 'INCONCLUSIVE — the decoy window never became the extension\'s active tab'
+        : own.target === 'fixture'
+          ? 'PASS — the report names the page that fired, not the focused decoy'
+          : `FAIL — captured the ${own.target}`),
   );
 }
 
