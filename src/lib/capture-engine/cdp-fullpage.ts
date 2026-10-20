@@ -117,6 +117,40 @@ const FORCE_REVEAL_SCRIPT = `(() => {
     (el.tagName === 'DIALOG' && !el.open) ||
     (!!el.id && collapsedIds.has(el.id));
 
+  // The page saying it with a class name. A utility class called hidden or
+  // invisible is the page stating the element is meant to be hidden, the
+  // same evidence as aria-hidden, just in CSS. status.sentry.io keeps an
+  // outage icon in every component row as <i class="component-status hidden">
+  // (visibility:hidden), and forcing it painted a stray "x" above the list.
+  // Scroll-reveal libraries name their waiting state differently (aos-init,
+  // wow, not-in-view, opacity-0), so none of them match this.
+  const HIDDEN_CLASS = /^(hidden|invisible|is-hidden|is-invisible|visually-hidden|sr-only)$/;
+  const hiddenByClass = (el) => {
+    for (const c of el.classList) if (HIDDEN_CLASS.test(c)) return true;
+    return false;
+  };
+
+  // Parked off the page. Third-party widgets keep hidden layers waiting
+  // outside the document - Google's reCAPTCHA challenge sits in an absolute
+  // box at top:-10000px, opacity 0, visibility hidden, holding full-viewport
+  // position:fixed white overlays. A scroll-reveal section lives in the
+  // document flow; this does not. Forcing it visible made its fixed overlays
+  // visible too, and UNSTICK then re-anchored them to the top of the image:
+  // status.sentry.io captured with its first screen washed out and a blank
+  // challenge box above it (2026-10-20). Only out-of-flow, untransformed
+  // boxes are judged here - a reveal element translated off-canvas for its
+  // slide-in is transformed and is never vetoed by this.
+  const docW = Math.max(document.documentElement.scrollWidth, innerWidth);
+  const docH = Math.max(document.documentElement.scrollHeight, innerHeight);
+  const parkedOffPage = (el, cs) => {
+    if (cs.position !== 'absolute') return false;
+    if (cs.transform !== 'none') return false;
+    const r = el.getBoundingClientRect();
+    const top = r.top + scrollY;
+    const left = r.left + scrollX;
+    return top + r.height <= 0 || left + r.width <= 0 || top >= docH || left >= docW;
+  };
+
   // Top-down, so a veto takes the whole subtree with it. The flat
   // querySelectorAll('*') scan this replaced could not: visibility inherits, so
   // every child of a closed visibility:hidden drawer computed
@@ -140,7 +174,9 @@ const FORCE_REVEAL_SCRIPT = `(() => {
     if (cs.position === 'fixed') continue;
     if (cs.display === 'none') continue;
     if (declaredClosed(el)) continue;
-    const hidden = parseFloat(cs.opacity) === 0 || cs.visibility === 'hidden';
+    if (parkedOffPage(el, cs)) continue;
+    if (hiddenByClass(el)) continue;
+    const hidden =parseFloat(cs.opacity) === 0 || cs.visibility === 'hidden';
     if (hidden) {
       el.setAttribute(ATTR, '');
       count += 1;
@@ -292,6 +328,24 @@ const UNSTICK_SCRIPT = `(() => {
     );
   };
 
+  // Painted nothing on the live page: hidden, or fully transparent through
+  // itself or any ancestor. Sitting on screen is not the same as being seen -
+  // a closed reCAPTCHA challenge keeps a full-viewport fixed white overlay
+  // exactly where the user is looking, invisible. Re-anchoring it to absolute
+  // puts it into the document, and the badge beside it (fixed at the right
+  // edge, half off screen) widened status.sentry.io from 1440 to 1611px.
+  // Neither visibility nor opacity depends on the viewport, so both passes
+  // can trust this, unlike geometry.
+  const notPainted = (el, cs) => {
+    if (cs.visibility === 'hidden') return true;
+    for (let node = el; node; node = node.parentElement) {
+      let ncs;
+      try { ncs = node === el ? cs : getComputedStyle(node); } catch { return false; }
+      if (parseFloat(ncs.opacity) === 0) return true;
+    }
+    return false;
+  };
+
   // Inner scrollers (a docs sidebar with its own overflow) go back to the top
   // first, so their sticky children resolve where they belong and every rect
   // measured below is the unscrolled one. Originals recorded for restore.
@@ -349,7 +403,7 @@ const UNSTICK_SCRIPT = `(() => {
     // declares. Legitimate chrome — a header, a toolbar, a bottom bar — is
     // on screen at the unscrolled viewport and carries no closed marker, so
     // neither arm touches it.
-    if (markersOnly ? declaredClosed(el) : !onScreen(rect)) {
+    if (notPainted(el, cs) || (markersOnly ? declaredClosed(el) : !onScreen(rect))) {
       vetoed.push(el);
       continue;
     }
