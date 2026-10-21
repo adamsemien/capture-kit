@@ -189,6 +189,31 @@ const CLIP_BOX_JS = `
       x0 = Math.max(x0, l); y0 = Math.max(y0, t);
       x1 = Math.min(x1, l + n.clientWidth); y1 = Math.min(y1, t + n.clientHeight);
     }
+    // Bars outside the panel that sit over its top or bottom edge - a page's
+    // sticky header, a fixed bar UNSTICK pinned in place - stay put while the
+    // panel scrolls, so they would repeat in every frame over the panel's
+    // rows. The frame stops at them instead (Codex review on #27). Ones in
+    // the middle (a floating button) are left to show once per frame, as
+    // they do on screen.
+    const pinned = document.querySelectorAll('[data-capture-kit-position]');
+    const candidates = new Set(pinned);
+    for (const n of document.body ? document.body.querySelectorAll('*') : []) {
+      let p;
+      try { p = getComputedStyle(n).position; } catch { continue; }
+      if (p === 'fixed' || p === 'sticky') candidates.add(n);
+    }
+    for (const n of candidates) {
+      if (n === el || n.contains(el) || el.contains(n)) continue;
+      const r = n.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      let cs;
+      try { cs = getComputedStyle(n); } catch { continue; }
+      if (cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0 || cs.display === 'none') continue;
+      const overlapX = Math.min(r.right, x1) - Math.max(r.left, x0);
+      if (overlapX < (x1 - x0) * 0.3) continue;
+      if (r.top <= y0 + 1 && r.bottom > y0) y0 = Math.min(y1, r.bottom);
+      else if (r.bottom >= y1 - 1 && r.top < y1) y1 = Math.max(y0, r.top);
+    }
     return { x0, y0, x1, y1 };
   };`;
 
@@ -206,6 +231,12 @@ const ALIGN_PANEL_SCRIPT = `(() => {
     // Scrolls the page and every container around the panel, as needed.
     el.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
     v = view();
+    // Aligned to the window's top, it can sit under a sticky header: move
+    // the page back by what still covers it.
+    if (v.top < v.box.y0) {
+      window.scrollBy({ left: 0, top: v.top - v.box.y0, behavior: 'instant' });
+      v = view();
+    }
   }
   return Math.max(0, v.box.y0 - v.top);
 })()`;
@@ -215,8 +246,10 @@ const ANCESTORS_KEY = "Symbol.for('capture-kit.stitch-ancestors')";
 const SAVE_ANCESTORS_SCRIPT = `(() => {
   const el = document.querySelector('[${TARGET_ATTR}]');
   const list = [];
+  // Every ancestor, at zero too: scrollIntoView can move one that started
+  // at the top (Codex review on #27).
   for (let n = el ? el.parentElement : null; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
-    if (n.scrollTop || n.scrollLeft) list.push([n, n.scrollTop, n.scrollLeft]);
+    list.push([n, n.scrollTop, n.scrollLeft]);
   }
   window[${ANCESTORS_KEY}] = list;
   return list.length;

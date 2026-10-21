@@ -125,6 +125,8 @@ export const X_RGB = {
 // Variant R: the X panel mostly below the window, its content ending in a
 // strip that only a capture reaching the panel's last rows can contain.
 export const R_RGB = { ...X_RGB, tail: { r: 0xfd, g: 0xd8, b: 0x35 } }; // #fdd835
+// Variant O adds the page's sticky header, which must not appear in a panel stitch.
+export const O_RGB = { ...R_RGB, header: { r: 0x3e, g: 0x27, b: 0x23 } }; // #3e2723
 export const Y_RGB = {
   header: { r: 0x37, g: 0x47, b: 0x4f }, // #37474f - sticky header, must appear once
   end: { r: 0xfd, g: 0xd8, b: 0x35 }, // #fdd835 - last block on the page
@@ -196,6 +198,9 @@ export const DRAWER_VARIANTS = {
   // A panel inside another scrolling container that is scrolled to it: the
   // inner panel must be stitched whole and the outer one left where it was.
   'N nested-panel': null,
+  // A page with a sticky header; the panel sits low inside a container that
+  // has not been scrolled, so bringing it into view scrolls that container.
+  'O sticky-page-panel': null,
   // A long page with a sticky header. Stitched, the header must appear once.
   'Y sticky-header-page': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
@@ -244,6 +249,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('X ')) return pointerPanelFixture(variant, { reportsResult, manual });
   if (variant.startsWith('Q ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 1500 });
   if (variant.startsWith('N ')) return nestedPanelFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('O ')) return nestedPanelFixture(variant, { reportsResult, manual, header: true });
   if (variant.startsWith('R ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 'calc(100vh - 120px)', tail: true });
   if (variant.startsWith('Y ')) return stickyHeaderFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
@@ -472,7 +478,7 @@ function canvasAppFixture(variant, { reportsResult = false, manual = false } = {
 </body></html>`;
 }
 
-function nestedPanelFixture(variant, { reportsResult = false, manual = false } = {}) {
+function nestedPanelFixture(variant, { reportsResult = false, manual = false, header = false } = {}) {
   const reporter = reporterScript(reportsResult, manual);
   const blocks = [X_RGB.d, X_RGB.e, X_RGB.f]
     .map((c) => `<div style="height:500px;background:${hex(c)}"></div>`)
@@ -486,8 +492,13 @@ function nestedPanelFixture(variant, { reportsResult = false, manual = false } =
   #panel{height:260px;overflow:auto;margin:0 16px;border:1px solid #ccc;background:#fff}
 </style></head>
 <body>
-  <header>repro: ${variant}</header>
-  <div id="outer"><div style="height:500px"></div><div id="panel">${blocks}</div><div style="height:500px"></div></div>
+  ${header
+    ? `<header style="position:sticky;top:0;z-index:5;height:60px;padding:0;background:${hex(O_RGB.header)};color:#fff">repro: ${variant}</header>
+  <div style="height:300px"></div>
+  <div id="outer"><div style="height:240px"></div><div id="panel">${blocks}</div><div style="height:500px"></div></div>
+  <div style="height:2000px"></div>`
+    : `<header>repro: ${variant}</header>
+  <div id="outer"><div style="height:500px"></div><div id="panel">${blocks}</div><div style="height:500px"></div></div>`}
   ${reporter}
 </body></html>`;
 }

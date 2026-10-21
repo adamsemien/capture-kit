@@ -42,6 +42,7 @@ import {
   W_RGB,
   X_RGB,
   R_RGB,
+  O_RGB,
   Y_RGB,
   fixture as drawerFixture,
   viewportFor,
@@ -1151,6 +1152,7 @@ const X_VARIANT = 'X pointer-panel';
 const Q_VARIANT = 'Q low-panel';
 const R_VARIANT = 'R clipped-panel';
 const N_VARIANT = 'N nested-panel';
+const O_VARIANT = 'O sticky-page-panel';
 const Y_VARIANT = 'Y sticky-header-page';
 const named18 = (obj) => Object.entries(obj).map(([name, c]) => ({ name, r: c.r, g: c.g, b: c.b }));
 async function scrollCaptureVariant(variant, colours, hover, { scrollTo = 0, leave = false, setup = null, probe = null } = {}) {
@@ -1172,6 +1174,10 @@ async function scrollCaptureVariant(variant, colours, hover, { scrollTo = 0, lea
   if (scrollTo) {
     await live.send('Runtime.evaluate', { expression: `window.scrollTo(0, ${scrollTo})` });
     await sleep(300);
+  }
+  if (typeof hover === 'string') {
+    // An expression giving [x, y] - for a target whose position is only known in the page.
+    hover = (await live.send('Runtime.evaluate', { expression: hover, returnByValue: true })).result.value;
   }
   if (hover) {
     // A negative y counts up from the bottom of the window.
@@ -1213,7 +1219,14 @@ async function stitchCheck() {
     setup: `document.getElementById('outer').scrollTop = 460`,
     probe: `({ outer: document.getElementById('outer').scrollTop, panel: document.getElementById('panel').scrollTop })`,
   });
-  return { w, x, y, q, r: rr, n };
+  // Page scrolled to 250 under its sticky header; the panel peeks out of the bottom of an unscrolled container.
+  const o = await scrollCaptureVariant(O_VARIANT, named18(O_RGB),
+    `(() => { const p = document.getElementById('panel').getBoundingClientRect(); const c = document.getElementById('outer').getBoundingClientRect(); return [p.left + 60, Math.round((Math.max(p.top, c.top) + Math.min(p.bottom, c.bottom, innerHeight)) / 2)]; })()`,
+    {
+      scrollTo: 250,
+      probe: `({ page: window.scrollY, outer: document.getElementById('outer').scrollTop, panel: document.getElementById('panel').scrollTop })`,
+    });
+  return { w, x, y, q, r: rr, n, o };
 }
 function colourMap(px) {
   return Object.fromEntries((px?.colours ?? []).map((c) => [c.name, c.pixels]));
@@ -1232,10 +1245,14 @@ function a18Verdict(r) {
   if (r.q.after?.page !== 1400 || r.q.after?.panel !== 0) problems.push(`low panel capture left the page at ${r.q.after?.page} and the panel at ${r.q.after?.panel} (want 1400 and 0)`);
   const rc = colourMap(r.r.px);
   if (!['d', 'e', 'f', 'tail'].every((k) => (rc[k] ?? 0) > 200)) problems.push(`clipped panel lost rows: ${JSON.stringify(rc)}`);
-  for (const k of ['x', 'y', 'q', 'r', 'n']) {
+  for (const k of ['x', 'y', 'q', 'r', 'n', 'o']) {
     if (r[k]?.response?.ok !== true) problems.push(`${k}: the capture itself failed (${r[k]?.response?.reason ?? r[k]?.response?.error ?? JSON.stringify(r[k]?.response)})`);
   }
   if ((r.n.modeLine ?? []).join(' ') === (r.r.modeLine ?? []).join(' ')) problems.push('nested panel report is the clipped panel report again - no new capture');
+  const oc = colourMap(r.o.px);
+  if (!['d', 'e', 'f', 'tail'].every((k) => (oc[k] ?? 0) > 200)) problems.push(`panel under a sticky page header lost rows: ${JSON.stringify(oc)}`);
+  if ((oc.header ?? 0) > 50) problems.push(`the page's sticky header was stitched into the panel (${oc.header} px)`);
+  if (r.o.after?.page !== 250 || r.o.after?.outer !== 0 || r.o.after?.panel !== 0) problems.push(`sticky-page panel capture left page/outer/panel at ${r.o.after?.page}/${r.o.after?.outer}/${r.o.after?.panel} (want 250/0/0)`);
   const nc = colourMap(r.n.px);
   if (!['d', 'e', 'f', 'tail'].every((k) => (nc[k] ?? 0) > 200)) problems.push(`nested panel lost rows: ${JSON.stringify(nc)}`);
   if (!/panel under your pointer/.test((r.n.modeLine ?? []).join(' '))) problems.push('nested panel was not the target');
@@ -1244,13 +1261,13 @@ function a18Verdict(r) {
   if ((y.end ?? 0) < 100) problems.push(`sticky page lost its last block (${y.end ?? 0} px)`);
   return problems.length
     ? `FAIL — ${problems.join('; ')}`
-    : `PASS — canvas app stitched automatically with all 3 bands; pointer panel stitched whole; clipped panel complete to its last rows (tail ${colourMap(r.r.px).tail ?? 0}); nested panel complete (tail ${colourMap(r.n.px).tail ?? 0}) and outer container left at ${r.n.after?.outer}; low panel stitched with the pointer gone and page/panel left at ${r.q.after?.page}/${r.q.after?.panel} (hover after leaving: ${r.q.hoverLeft || "none"}); sticky page complete (a/b/c ${w.a}/${w.b}/${w.c}, d/e/f ${x.d}/${x.e}/${x.f}, end ${y.end})`;
+    : `PASS — canvas app stitched automatically with all 3 bands; pointer panel stitched whole; clipped panel complete to its last rows (tail ${colourMap(r.r.px).tail ?? 0}); nested panel complete (tail ${colourMap(r.n.px).tail ?? 0}) and outer container left at ${r.n.after?.outer}; under a sticky page header: header ${colourMap(r.o.px).header ?? 0} px, tail ${colourMap(r.o.px).tail ?? 0}, page/outer left at ${r.o.after?.page}/${r.o.after?.outer}; low panel stitched with the pointer gone and page/panel left at ${r.q.after?.page}/${r.q.after?.panel} (hover after leaving: ${r.q.hoverLeft || "none"}); sticky page complete (a/b/c ${w.a}/${w.b}/${w.c}, d/e/f ${x.d}/${x.e}/${x.f}, end ${y.end})`;
 }
 
 if (process.argv.includes('--only-stitch')) {
   heading('CHECK A18 — scroll and stitch');
   const r = await stitchCheck();
-  for (const k of ['w', 'x', 'y', 'q', 'r', 'n']) console.log(`${k}: ` + JSON.stringify({ mode: r[k].modeLine, px: r[k].px?.colours?.map((c) => [c.name, c.pixels]) }));
+  for (const k of ['w', 'x', 'y', 'q', 'r', 'n', 'o']) console.log(`${k}: ` + JSON.stringify({ mode: r[k].modeLine, px: r[k].px?.colours?.map((c) => [c.name, c.pixels]) }));
   console.log('VERDICT A18 scroll and stitch: ' + a18Verdict(r));
   if (process.env.CK_COMPARE_DIST) {
     heading('CHECK A18 (falsifiability) — the canvas app on the comparison build');
