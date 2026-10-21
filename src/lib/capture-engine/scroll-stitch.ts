@@ -317,6 +317,8 @@ function scrollScript(kind: 'page' | 'panel', y: number, settleMs: number): stri
 }
 
 const STICKY_ATTR = 'data-capture-kit-sticky';
+const STICKY_BOTTOM_ATTR = 'data-capture-kit-sticky-bottom';
+const STICKY_BOTTOM_STYLE = 'capture-kit-sticky-bottom-style';
 
 /**
  * Marks the top-sticky elements inside the target (or the whole page), once,
@@ -330,9 +332,22 @@ function markStickyScript(kind: 'page' | 'panel'): string {
   for (const el of root.querySelectorAll('*')) {
     let cs;
     try { cs = getComputedStyle(el); } catch { continue; }
-    if (cs.position !== 'sticky' || !Number.isFinite(parseFloat(cs.top))) continue;
-    el.setAttribute('${STICKY_ATTR}', '');
-    n += 1;
+    if (cs.position !== 'sticky') continue;
+    if (Number.isFinite(parseFloat(cs.top))) {
+      el.setAttribute('${STICKY_ATTR}', '');
+      n += 1;
+    } else if (Number.isFinite(parseFloat(cs.bottom))) {
+      // Stuck to the bottom (a sticky footer): it would sit over the same
+      // rows in every frame. Back in the flow for the capture, it appears
+      // once, where it belongs at the end (Codex review on #27).
+      el.setAttribute('${STICKY_BOTTOM_ATTR}', '');
+    }
+  }
+  if (root.querySelector('[${STICKY_BOTTOM_ATTR}]') && !document.getElementById('${STICKY_BOTTOM_STYLE}')) {
+    const style = document.createElement('style');
+    style.id = '${STICKY_BOTTOM_STYLE}';
+    style.textContent = '[${STICKY_BOTTOM_ATTR}]{position:static !important}';
+    document.documentElement.appendChild(style);
   }
   return n;
 })()`;
@@ -399,6 +414,8 @@ const CLEAR_TARGET_SCRIPT = `(() => {
   for (const el of document.querySelectorAll('[${TARGET_ATTR}]')) el.removeAttribute('${TARGET_ATTR}');
   for (const el of document.querySelectorAll('[${STICKY_ATTR}]')) el.removeAttribute('${STICKY_ATTR}');
   for (const el of document.querySelectorAll('[data-capture-kit-canvas-panel]')) el.removeAttribute('data-capture-kit-canvas-panel');
+  for (const el of document.querySelectorAll('[${STICKY_BOTTOM_ATTR}]')) el.removeAttribute('${STICKY_BOTTOM_ATTR}');
+  document.getElementById('${STICKY_BOTTOM_STYLE}')?.remove();
 })()`;
 
 interface ScreenshotResult {

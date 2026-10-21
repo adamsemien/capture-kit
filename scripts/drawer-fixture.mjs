@@ -129,6 +129,13 @@ export const R_RGB = { ...X_RGB, tail: { r: 0xfd, g: 0xd8, b: 0x35 } }; // #fdd8
 // the X colours, the right half in one colour - and the panel is scrolled
 // all the way right before the capture.
 export const T_RGB = { right: { r: 0x2e, g: 0x7d, b: 0x32 } }; // #2e7d32
+// Variant M: a page stitch with a footer stuck to the bottom and a carousel
+// scrolled to its second half.
+export const M_RGB = {
+  foot: { r: 0x88, g: 0x0e, b: 0x4f }, // #880e4f - sticky footer, MUST appear once
+  slideOne: { r: 0x01, g: 0x57, b: 0x9b }, // #01579b - carousel first half, MUST NOT appear
+  slideTwo: { r: 0xff, g: 0x8f, b: 0x00 }, // #ff8f00 - carousel second half, MUST appear
+};
 // Variant O adds the page's sticky header, which must not appear in a panel stitch.
 export const O_RGB = { ...R_RGB, header: { r: 0x3e, g: 0x27, b: 0x23 } }; // #3e2723
 export const Y_RGB = {
@@ -210,6 +217,7 @@ export const DRAWER_VARIANTS = {
   // has not been scrolled, so bringing it into view scrolls that container.
   'O sticky-page-panel': null,
   'T wide-panel': null,
+  'M footer-and-carousel': null,
   // A long page with a sticky header. Stitched, the header must appear once.
   'Y sticky-header-page': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
@@ -260,6 +268,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('Q ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 1500 });
   if (variant.startsWith('N ')) return nestedPanelFixture(variant, { reportsResult, manual });
   if (variant.startsWith('O ')) return nestedPanelFixture(variant, { reportsResult, manual, header: true });
+  if (variant.startsWith('M ')) return footerCarouselFixture(variant, { reportsResult, manual });
   if (variant.startsWith('T ')) return pointerPanelFixture(variant, { reportsResult, manual, wide: true });
   if (variant.startsWith('R ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 'calc(100vh - 120px)', tail: true });
   if (variant.startsWith('Y ')) return stickyHeaderFixture(variant, { reportsResult, manual });
@@ -486,6 +495,26 @@ function canvasAppFixture(variant, { reportsResult = false, manual = false, besi
     sc.addEventListener('scroll', draw, { passive: true });
     addEventListener('resize', () => { layout(); draw(); });
   </script>
+  ${reporter}
+</body></html>`;
+}
+
+function footerCarouselFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>
+  html,body{margin:0;font:16px sans-serif;background:#fff}
+  #carousel{overflow-x:auto;overflow-y:hidden;margin:16px;height:200px}
+  #track{display:flex;width:200%;height:100%}
+  #track div{flex:1}
+  footer{position:sticky;bottom:0;height:60px;background:${hex(M_RGB.foot)};color:#fff}
+</style></head>
+<body>
+  <header style="padding:16px">repro: ${variant}</header>
+  <div id="carousel"><div id="track"><div style="background:${hex(M_RGB.slideOne)}"></div><div style="background:${hex(M_RGB.slideTwo)}"></div></div></div>
+  <div style="height:2600px;background:#f5f5f5"></div>
+  <footer>footer</footer>
   ${reporter}
 </body></html>`;
 }

@@ -410,7 +410,10 @@ export const UNSTICK_SCRIPT = `(() => {
   // Inner scrollers (a docs sidebar with its own overflow) go back to the top
   // first, so their sticky children resolve where they belong and every rect
   // measured below is the unscrolled one. Originals recorded for restore.
-  for (const el of document.querySelectorAll('*')) {
+  // Not for scroll capture: it photographs the page as it sits and scrolls
+  // only its own target, so a code pane or carousel scrolled sideways inside
+  // the area must stay where you had it (Codex review on #27).
+  if (!fixedOnly) for (const el of document.querySelectorAll('*')) {
     if (el.hasAttribute(SCROLL_ATTR)) continue;
     const top = el.scrollTop;
     const left = el.scrollLeft;
