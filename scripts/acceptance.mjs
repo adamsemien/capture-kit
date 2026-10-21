@@ -1209,8 +1209,9 @@ async function scrollCaptureVariant(variant, colours, hover, { scrollTo = 0, lea
   const report = newestFile('.md');
   const modeLine = report ? readCapture(report).split('\n').filter((l) => /Full page:|Capture mode:/.test(l)) : [];
   const px = await inspectColours(image, colours);
-  await cdp(`/json/close/${t.id}`);
+  // Zoom is per site in Chrome, so it is put back while the tab still exists.
   if (zoom !== 1) await options.eval(`chrome.tabs.setZoom(${tabId}, 1).then(() => true)`);
+  await cdp(`/json/close/${t.id}`);
   return { response, modeLine, px, after: after && typeof after === 'object' ? { ...after, zoom: zoomAfter } : after, hoverLeft };
 }
 async function stitchCheck() {
@@ -1256,7 +1257,7 @@ function a18Verdict(r) {
   if (r.q.after?.page !== 1400 || r.q.after?.panel !== 0) problems.push(`low panel capture left the page at ${r.q.after?.page} and the panel at ${r.q.after?.panel} (want 1400 and 0)`);
   const rc = colourMap(r.r.px);
   if (!['d', 'e', 'f', 'tail'].every((k) => (rc[k] ?? 0) > 200)) problems.push(`clipped panel lost rows: ${JSON.stringify(rc)}`);
-  for (const k of ['x', 'y', 'q', 'r', 'n', 'o']) {
+  for (const k of ['x', 'y', 'q', 'r', 'n', 'o', 'qz']) {
     if (r[k]?.response?.ok !== true) problems.push(`${k}: the capture itself failed (${r[k]?.response?.reason ?? r[k]?.response?.error ?? JSON.stringify(r[k]?.response)})`);
   }
   if ((r.n.modeLine ?? []).join(' ') === (r.r.modeLine ?? []).join(' ')) problems.push('nested panel report is the clipped panel report again - no new capture');
@@ -1265,6 +1266,7 @@ function a18Verdict(r) {
     problems.push(`at 150% zoom the panel under the pointer was not stitched: ${JSON.stringify(qzc)} ${(r.qz.modeLine ?? []).join(' ')}`);
   }
   if (r.qz.after?.zoom !== 1.5 || r.qz.after?.panel !== 0) problems.push(`at 150% zoom the capture left zoom/panel at ${r.qz.after?.zoom}/${r.qz.after?.panel}`);
+  if (r.u.error || r.u.px?.error) problems.push(`u: the capture itself failed (${r.u.error ?? r.u.px.error})`);
   const uc = colourMap(r.u.px);
   if (!['a', 'b', 'c'].every((k) => (uc[k] ?? 0) > 200) || !/div#scroller/.test((r.u.modeLine ?? []).join(' '))) {
     problems.push(`canvas beside a larger list: stitched the wrong panel (${(r.u.modeLine ?? []).join(' ')}; ${JSON.stringify(uc)})`);
