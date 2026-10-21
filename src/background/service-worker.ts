@@ -33,6 +33,8 @@ import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
 import { ICON_MODE_KEY, getSettings } from '../lib/settings';
 import { decidePageTrigger } from '../lib/site-access';
+import { compareCapture, type Comparison } from '../lib/compare';
+import { clearPages } from '../lib/compare/store';
 import type { Settings } from '../lib/settings';
 import { outputDirHasFile, outputDirStatus, writeToOutputDir } from '../lib/output-dir';
 import { redactPage, redactText } from '../lib/redact';
@@ -641,6 +643,8 @@ interface ReportArtifacts {
    * pointed at, and a reference out of it fails silently.
    */
   mirrorMarkdown: string | null;
+  /** The outlined "what changed" image for the mirror, as NN_changes.png. */
+  mirrorChangesBase64: string | null;
   /** Numbered image name the mirror markdown points at, e.g. "01.jpg". */
   mirrorImageFilename: string | null;
   clipboardMarkdown: string;
@@ -705,6 +709,27 @@ async function captureReport(
 
   const basename = captureBasename(page.meta.title, page.meta.url, capturedAt);
   const isJpeg = result.format === 'jpeg';
+  // Before/after against the last capture of this page. Never fails the
+  // capture: anything wrong here just means no comparison this time.
+  let comparison: Comparison | null = null;
+  if (settings.compareWithPrevious) {
+    try {
+      comparison = await compareCapture({
+        url: page.meta.url,
+        capturedAt,
+        imageBase64: result.imageBase64,
+        imageMime: isJpeg ? 'image/jpeg' : 'image/png',
+        pageWidth: result.fullSize.width,
+        pageHeight: result.fullSize.height,
+        viewportWidth: page.meta.viewport.width,
+        consoleEntries: page.console,
+        networkFailures: page.network,
+        recorderActive,
+      });
+    } catch (error) {
+      console.warn('[capture-kit] comparison with the last capture skipped:', error);
+    }
+  }
   const imageFilename = `${basename}.${isJpeg ? 'jpg' : 'png'}`;
   const markdownFilename = `${basename}.md`;
   const meta = page.meta;
@@ -747,17 +772,19 @@ async function captureReport(
   // The session mirror writes its slices as NN_slices/slice-01.jpg, so its
   // copy of the report points there - every path in the mirror resolves
   // inside the mirror.
-  const mirrorMarkdown = mirrorImageFilename
+  const mirrorSliceRefs = slices.map((slice, i) => ({
+    path: `${mirrorBasename}_slices/${sliceFilename(i, result.format)}`,
+    top: slice.top,
+    height: slice.height,
+    width: slice.width,
+    left: slice.left,
+  }));
+  // Rebuilt below once the comparison is known, so the mirror carries it too.
+  let mirrorMarkdown = mirrorImageFilename
     ? buildBundleMarkdown({
         ...markdownInput,
         imageFilename: mirrorImageFilename,
-        slices: slices.map((slice, i) => ({
-          path: `${mirrorBasename}_slices/${sliceFilename(i, result.format)}`,
-          top: slice.top,
-          height: slice.height,
-          width: slice.width,
-          left: slice.left,
-        })),
+        slices: mirrorSliceRefs,
       })
     : null;
 
@@ -799,6 +826,19 @@ async function captureReport(
       });
     }
   });
+  // The outlined "what changed" copy, beside the image.
+  if (comparison?.summary && comparison.diffImageBase64 && comparison.summary.picture.compared) {
+    try {
+      const diffWrite = await writeBundleFile(
+        `${folder}${basename}_changes.png`,
+        'image/png',
+        comparison.diffImageBase64,
+      );
+      comparison.summary.picture.diffImageFilename = diffWrite.filename;
+    } catch (error) {
+      console.warn('[capture-kit] could not write the changes image:', error);
+    }
+  }
   // The report is written after the image and names the file that actually
   // landed. A collision renames the new image to "… (1).jpg", and a report
   // still pointing at "….jpg" would send its reader to the PREVIOUS capture's
@@ -807,12 +847,43 @@ async function captureReport(
     ...markdownInput,
     imageFilename: imageWrite.filename,
     slices: sliceRefs,
+    changes: comparison?.summary ?? undefined,
   });
   const markdownWrite = await writeBundleFile(
     `${folder}${markdownFilename}`,
     'text/markdown',
     textToBase64(markdown),
   );
+  // The session mirror's copy, with the comparison and its own outlined image
+  // name (NN_changes.png), which runSession writes beside it (Codex review
+  // on #29).
+  let mirrorChangesBase64: string | null = null;
+  if (mirrorImageFilename && comparison?.summary) {
+    const pic = comparison.summary.picture;
+    const outlined = pic.compared && pic.diffImageFilename ? `${mirrorBasename}_changes.png` : undefined;
+    if (outlined) mirrorChangesBase64 = comparison.diffImageBase64;
+    mirrorMarkdown = buildBundleMarkdown({
+      ...markdownInput,
+      imageFilename: mirrorImageFilename,
+      slices: mirrorSliceRefs,
+      changes: { ...comparison.summary, picture: pic.compared ? { ...pic, diffImageFilename: outlined } : pic },
+    });
+  }
+  // This capture becomes the one the next capture of the page is compared
+  // with - unless the setting was switched off while it ran. Checked again
+  // after saving too: a switch-off that lands mid-save clears before this
+  // save finishes, so the save would otherwise outlive it (Codex review on
+  // #29).
+  if (comparison) {
+    try {
+      if ((await getSettings()).compareWithPrevious) {
+        await comparison.save(imageWrite.filename);
+        if (!(await getSettings()).compareWithPrevious) await clearPages();
+      }
+    } catch (error) {
+      console.warn('[capture-kit] could not save this capture for the next comparison:', error);
+    }
+  }
 
   return {
     capturedAt,
@@ -824,6 +895,7 @@ async function captureReport(
     markdownFilename: markdownWrite.filename,
     markdown,
     mirrorMarkdown,
+    mirrorChangesBase64,
     mirrorImageFilename,
     clipboardMarkdown: buildClipboardMarkdown(markdown, imageWrite.filename),
     contents: buildContentsLine({
@@ -1358,6 +1430,9 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
             );
           }
         });
+        if (report.mirrorChangesBase64) {
+          await downloadPointerFile(`${pointer}${ordinal}_changes.png`, 'image/png', report.mirrorChangesBase64);
+        }
         await downloadPointerFile(
           `${pointer}${ordinal}.md`,
           'text/markdown',
@@ -1942,6 +2017,16 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 chrome.runtime.onStartup.addListener(() => {
   void syncActionMode();
+});
+
+// Turning "Compare with my last capture" off - here or on another synced
+// Chrome - removes what was kept, as PRIVACY.md says. Handled here rather
+// than only on the settings page, which a synced change never touches
+// (Codex review on #29).
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'sync' && changes.compareWithPrevious?.newValue === false) {
+    void clearPages().catch((error) => console.warn('[capture-kit] could not clear saved comparisons:', error));
+  }
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {

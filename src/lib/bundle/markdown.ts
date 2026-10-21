@@ -1,3 +1,4 @@
+import type { ChangeSummary } from '../compare';
 import type { CaptureTrigger, ConsoleEntry, NetworkFailure, PageMeta } from '../messages';
 import { CAPTURE_TRIGGER_LABEL, CONSOLE_LOGS_IN_BUNDLE } from '../messages';
 import type { CaptureMode, PageDimensions, StampInfo } from '../capture-engine/types';
@@ -34,6 +35,8 @@ export interface BundleInput {
   heightHeld?: number;
   /** Virtualized content: captured under a full-height viewport so it all drew. */
   drawnOnScroll?: boolean;
+  /** What changed since the last capture of the same page; absent on a first capture or with the setting off. */
+  changes?: ChangeSummary;
   /** Inner scrollers unrolled (expanded-inner-scroll mode only). */
   innerScrollers?: number;
   /** Embedded frames kept at their on-screen height (expanded-inner-scroll mode only). */
@@ -177,6 +180,79 @@ export function captureModeLabel(
   const held = heightHeld > 0 ? ` + viewport heights held (${heightHeld} elements)` : '';
   const drawn = drawnOnScroll ? ' + page redraws as it scrolls' : '';
   return `${strategy}, ${path}${reveal}${held}${drawn}`;
+}
+
+/** "14 minutes ago", "2 days ago" - a reader cares how stale the comparison is, not the timestamp. */
+export function agoLabel(thenMs: number, now: Date): string {
+  const s = Math.max(0, Math.round((now.getTime() - thenMs) / 1000));
+  const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+  if (s < 60) return plural(s, 'second');
+  if (s < 3600) return plural(Math.round(s / 60), 'minute');
+  if (s < 86400) return plural(Math.round(s / 3600), 'hour');
+  return plural(Math.round(s / 86400), 'day');
+}
+
+const LISTED = 5;
+
+function codeText(text: string): string {
+  return '`' + text.replace(/`/g, "'") + '`';
+}
+
+function listed(label: string, items: { text: string }[]): string[] {
+  const out = items.slice(0, LISTED).map((item) => `  - ${label}: ${codeText(item.text)}`);
+  if (items.length > LISTED) out.push(`  - …and ${items.length - LISTED} more`);
+  return out;
+}
+
+/**
+ * "## Changes since the last capture of this page" (NOBC-82, before/after).
+ * Leads with the picture, then the console and the network, each as
+ * new / gone / still there, so "did my fix work" reads in one place.
+ */
+export function changesSection(changes: ChangeSummary, capturedAt: Date): string[] {
+  const lines: string[] = [
+    `Compared with the capture from ${agoLabel(changes.previous.capturedAt, capturedAt)} (${changes.previous.imageFilename}).`,
+    '',
+  ];
+  const p = changes.picture;
+  const where = p.compared && p.comparedTo ? `the top ${p.comparedTo} px` : 'the page';
+  if (!p.compared) {
+    lines.push(`- **Picture:** not compared - ${p.reason}.`);
+  } else if (p.boxes.length === 0) {
+    lines.push(p.comparedTo ? `- **Picture:** no visible change in ${where}.` : '- **Picture:** no visible change.');
+  } else {
+    const pct = p.share * 100;
+    const pctText = pct < 1 ? 'under 1%' : `about ${Math.round(pct)}%`;
+    lines.push(
+      `- **Picture:** ${p.boxes.length} ${p.boxes.length === 1 ? 'area' : 'areas'} changed, ${pctText} of ${where}` +
+        (p.diffImageFilename ? ` - outlined in ${p.diffImageFilename}.` : '.'),
+    );
+    for (const box of p.boxes.slice(0, 8)) {
+      lines.push(`  - x ${box.x}-${box.x + box.width}, y ${box.y}-${box.y + box.height} (CSS px)`);
+    }
+    if (p.boxes.length > 8) lines.push(`  - …and ${p.boxes.length - 8} more`);
+  }
+  if (p.compared && p.comparedTo) {
+    lines.push(
+      p.heightAfter > p.heightBefore && p.comparedTo >= p.heightBefore - 24
+        ? `- **Not compared:** below ${p.comparedTo} px - the page is longer than at the last capture, and that part is new.`
+        : `- **Not compared:** below ${p.comparedTo} px - the page is too tall to compare whole.`,
+    );
+  }
+  if (p.compared && Math.abs(p.heightAfter - p.heightBefore) > 2) {
+    lines.push(`- **Page height:** ${p.heightAfter} px (was ${p.heightBefore} px) - areas below a height change may be content that moved, not changed.`);
+  }
+  if (changes.logsNotCompared) {
+    lines.push(`- **Console errors and failed requests:** not compared - ${changes.logsNotCompared}.`);
+    return ['## Changes since the last capture of this page', lines.join('\n')];
+  }
+  const e = changes.errors;
+  lines.push(`- **Console errors:** ${e.added.length} new, ${e.removed.length} gone, ${e.kept} still there`);
+  lines.push(...listed('New', e.added), ...listed('Gone', e.removed));
+  const f = changes.failures;
+  lines.push(`- **Failed requests:** ${f.added.length} new, ${f.removed.length} gone, ${f.kept} still there`);
+  lines.push(...listed('New', f.added), ...listed('Gone', f.removed));
+  return ['## Changes since the last capture of this page', lines.join('\n')];
 }
 
 /**
@@ -440,6 +516,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
     );
   }
   parts.push(...tallPageSections(input));
+  if (input.changes) parts.push(...changesSection(input.changes, input.capturedAt));
 
   parts.push(...consoleAndNetworkSections({
     recorderActive: input.recorderActive,

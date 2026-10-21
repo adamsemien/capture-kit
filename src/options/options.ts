@@ -6,6 +6,7 @@ import {
   requestOutputDirPermission,
   saveOutputDir,
 } from '../lib/output-dir';
+import { clearPages, countPages } from '../lib/compare/store';
 
 const segmentInput = document.getElementById('segment-size') as HTMLInputElement;
 const includeLogsInput = document.getElementById('include-logs') as HTMLInputElement;
@@ -23,6 +24,9 @@ const iconCapturesInput = document.getElementById('icon-captures') as HTMLInputE
 const stampUrlInput = document.getElementById('stamp-url') as HTMLInputElement;
 const autoCopyInput = document.getElementById('auto-copy-image') as HTMLInputElement;
 const imageOnlyInput = document.getElementById('clipboard-image-only') as HTMLInputElement;
+const comparePreviousInput = document.getElementById('compare-previous') as HTMLInputElement;
+const compareForgetBtn = document.getElementById('compare-forget') as HTMLButtonElement;
+const compareCountEl = document.getElementById('compare-count') as HTMLElement;
 const clipSecondsInput = document.getElementById('clip-seconds') as HTMLInputElement;
 const clipDelayInput = document.getElementById('clip-delay') as HTMLInputElement;
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
@@ -48,6 +52,7 @@ async function load(): Promise<void> {
   stampUrlInput.checked = settings.stampUrlOnImage;
   autoCopyInput.checked = settings.autoCopyImage;
   imageOnlyInput.checked = settings.clipboardImageOnly;
+  comparePreviousInput.checked = settings.compareWithPrevious;
   clipSecondsInput.value = String(settings.clipSeconds);
   clipDelayInput.value = String(settings.clipDelaySeconds);
   syncAutoCopy();
@@ -146,6 +151,7 @@ async function save(): Promise<void> {
     stampUrlOnImage: stampUrlInput.checked,
     autoCopyImage: autoCopyInput.checked,
     clipboardImageOnly: imageOnlyInput.checked,
+    compareWithPrevious: comparePreviousInput.checked,
     clipSeconds: clipSecondsInput.value ? Number(clipSecondsInput.value) : clipSeconds,
     clipDelaySeconds: clipDelayInput.value ? Number(clipDelayInput.value) : clipDelaySeconds,
   });
@@ -199,7 +205,42 @@ iconCapturesInput.addEventListener('change', () => void save());
 stampUrlInput.addEventListener('change', () => void save());
 autoCopyInput.addEventListener('change', () => void save());
 imageOnlyInput.addEventListener('change', () => void save());
+comparePreviousInput.addEventListener('change', () => {
+  void (async () => {
+    await save();
+    // Off means nothing is kept, as PRIVACY.md says - not just nothing new.
+    if (!comparePreviousInput.checked) {
+      await clearPages();
+      await renderCompareCount();
+    }
+  })();
+});
 clipSecondsInput.addEventListener('change', () => void save());
+
+async function renderCompareCount(): Promise<void> {
+  try {
+    const n = await countPages();
+    compareCountEl.textContent = n === 0 ? 'Nothing saved.' : `${n} ${n === 1 ? 'page' : 'pages'} saved.`;
+  } catch {
+    compareCountEl.textContent = '';
+  }
+}
+compareForgetBtn.addEventListener('click', () => {
+  void (async () => {
+    await clearPages();
+    await renderCompareCount();
+    flashStatus('Forgotten');
+  })();
+});
+void renderCompareCount();
+// Switched off on another synced Chrome while this page is open: show it, or
+// the next save of any other option here would write the old tick back and
+// turn comparison on again (Codex review on #29).
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'sync' || !changes.compareWithPrevious) return;
+  comparePreviousInput.checked = changes.compareWithPrevious.newValue !== false;
+  void renderCompareCount();
+});
 clipDelayInput.addEventListener('change', () => void save());
 for (const input of formatInputs) {
   input.addEventListener('change', () => void save());

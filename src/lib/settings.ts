@@ -71,6 +71,14 @@ export interface Settings {
    * OFF, so anyone who relied on the report riding along keeps it.
    */
   clipboardImageOnly: boolean;
+  /**
+   * Compare each report with the last capture of the same page and add a
+   * "Changes since the last capture" section (NOBC-82). Default ON: it is
+   * what makes capture, fix, capture again tell you whether the fix worked.
+   * Keeps a small copy of the last capture of each page in the extension's
+   * own storage on this computer, up to 50 pages.
+   */
+  compareWithPrevious: boolean;
   /** How long "Record clip" records, in seconds. Capped in clip/frames.ts. */
   clipSeconds: number;
   /** Seconds between the trigger and the recording starting. */
@@ -90,6 +98,7 @@ export const DEFAULT_SETTINGS: Settings = {
   stampUrlOnImage: false,
   autoCopyImage: false,
   clipboardImageOnly: false,
+  compareWithPrevious: true,
   clipSeconds: CLIP_SECONDS_DEFAULT,
   clipDelaySeconds: CLIP_DELAY_DEFAULT,
 };
@@ -141,6 +150,7 @@ export async function getSettings(): Promise<Settings> {
     stampUrlOnImage: stored.stampUrlOnImage === true,
     autoCopyImage: stored.autoCopyImage === true,
     clipboardImageOnly: stored.clipboardImageOnly === true,
+    compareWithPrevious: stored.compareWithPrevious !== false,
     clipSeconds: clampClipSeconds(Number(stored.clipSeconds)),
     clipDelaySeconds: clampClipDelay(Number(stored.clipDelaySeconds)),
   };
@@ -160,6 +170,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     stampUrlOnImage: settings.stampUrlOnImage === true,
     autoCopyImage: settings.autoCopyImage === true,
     clipboardImageOnly: settings.clipboardImageOnly === true,
+    compareWithPrevious: settings.compareWithPrevious !== false,
     clipSeconds: clampClipSeconds(settings.clipSeconds),
     clipDelaySeconds: clampClipDelay(settings.clipDelaySeconds),
   });
