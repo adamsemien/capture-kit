@@ -14,6 +14,7 @@ export function header(meta) {
     lines.push(`Slices (screen-sized pieces of a tall page, top to bottom):`);
     for (const s of meta.slices) lines.push(`  ${s.path}`);
   }
+  for (const extra of meta.extras ?? []) lines.push(`Image (${extra.label}): ${extra.path}`);
   if (meta.changesPath) lines.push(`What changed since the last capture of this page: ${meta.changesPath}`);
   return lines.join('\n');
 }
@@ -24,7 +25,8 @@ export function listLine(meta) {
     meta.errors ? `${meta.errors} error${meta.errors === 1 ? '' : 's'}` : null,
     meta.failures ? `${meta.failures} failed request${meta.failures === 1 ? '' : 's'}` : null,
   ].filter(Boolean).join(', ');
-  return `${meta.id}  ${when}  ${meta.url}${issues ? `  [${issues}]` : ''}`;
+  const kind = meta.kind && meta.kind !== 'page' ? `  (${meta.kind})` : '';
+  return `${meta.id}  ${when}  ${meta.url}${kind}${issues ? `  [${issues}]` : ''}`;
 }
 
 /** Bytes on disk, or Infinity when unreadable. */

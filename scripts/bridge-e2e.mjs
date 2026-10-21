@@ -11,6 +11,9 @@
 //   E5 the MCP server's capture_tab returns the report and the image
 //   E6 with agent captures off, a capture request is refused, plainly
 //   E7 a wrong pairing code is refused and the status says so
+//   E9 a responsive sweep reaches the agent with every width
+//   E10 a tab that moves to a site agents may not capture, as it comes to
+//       the front, is refused - the agent gets nothing
 
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -44,11 +47,26 @@ if (!CHROME || !existsSync(CHROME)) {
 // A page on an allowed site (127.0.0.1 is in the default allowed list).
 const pages = createServer((req, res) => {
   if (req.url.startsWith('/missing')) return res.writeHead(404).end('missing');
+  if (req.url === '/hop') {
+    // Leaves for a site agents may not capture the moment it is shown.
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(`<!doctype html><title>hop</title><body>hop<script>
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') location.replace('http://127.0.0.2:${PAGE_PORT}/');
+      });</script></body>`);
+  }
   res.writeHead(200, { 'content-type': 'text/html' });
   res.end(`<!doctype html><title>bridge e2e ${req.url}</title><body style="font:20px sans-serif;height:1400px;background:#e3f2fd">
     <h1>bridge e2e page ${req.url}</h1><script>console.error('E2E boom'); fetch('/missing-e2e');</script></body>`);
 });
 pages.listen(PAGE_PORT, '127.0.0.1');
+// The same pages on 127.0.0.2: a loopback address that is NOT on the allowed list.
+const elsewhere = createServer((req, res) => {
+  res.writeHead(200, { 'content-type': 'text/html' });
+  res.end('<!doctype html><title>not allowed</title><body style="background:#000">not an allowed site</body>');
+});
+elsewhere.listen(PAGE_PORT, '127.0.0.2');
+const hopUrl = `http://127.0.0.1:${PAGE_PORT}/hop`;
 
 const ck = (...args) =>
   new Promise((resolve) => {
@@ -112,6 +130,7 @@ async function cleanup() {
   try { chrome.kill('SIGTERM'); } catch {}
   await ck('stop');
   pages.close();
+  elsewhere.close();
   for (const d of [HOME, PROFILE, DOWNLOADS]) rmSync(d, { recursive: true, force: true });
 }
 
@@ -195,6 +214,28 @@ try {
     !viaMcp.isError && /# Capture —/.test(viaMcp.content?.[0]?.text ?? '') && image?.mimeType === 'image/jpeg' && image.data.length > 1000,
     `isError ${viaMcp.isError ?? false}, image ${image ? `${image.mimeType}, ${image.data.length} b64 chars` : 'none'}`);
   await mcp.close();
+
+  // E9
+  const sweepTaken = await options.eval(`chrome.tabs.update(${tabId}, { active: true }).then(() => chrome.runtime.sendMessage({ type: 'CAPTURE_SWEEP', tabId: ${tabId} }))`);
+  await sleep(1000);
+  const sweep = JSON.parse((await ck('latest', '--json')).out || '{}');
+  verdict('E9 a sweep reaches the agent with every width',
+    sweepTaken?.ok === true && sweep.kind === 'sweep' && existsSync(sweep.imagePath ?? '') &&
+      (sweep.extras ?? []).length === 2 && sweep.extras.every((x) => existsSync(x.path)),
+    `kind ${sweep.kind}, first image ${existsSync(sweep.imagePath ?? '')}, other widths ${(sweep.extras ?? []).map((x) => x.label).join(', ')}`);
+
+  // E10: the hop tab sits behind another, so asking for it brings it to the front.
+  await cdp(`/json/new?${encodeURIComponent(hopUrl)}`, 'PUT');
+  await sleep(1000);
+  await cdp(`/json/new?${encodeURIComponent('about:blank')}`, 'PUT');
+  await sleep(500);
+  const before = JSON.parse((await ck('latest', '--json')).out || '{}').id;
+  const hopped = await ck('capture', `127.0.0.1:${PAGE_PORT}/hop`);
+  await sleep(500);
+  const after10 = JSON.parse((await ck('latest', '--json')).out || '{}');
+  verdict('E10 a tab that leaves for a site agents may not capture is refused',
+    hopped.code !== 0 && /not on a site agents may capture/.test(hopped.err) && after10.id === before && !/127\.0\.0\.2/.test(after10.url ?? ''),
+    `exit ${hopped.code}: ${hopped.err.trim()} - latest still ${after10.id === before ? 'the sweep' : after10.url}`);
 
   // E6
   await options.eval(`chrome.storage.local.set({ bridgeCaptureMode: 'off' })`);

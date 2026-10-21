@@ -33,7 +33,7 @@ import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
 import { ICON_MODE_KEY, getSettings } from '../lib/settings';
 import { decidePageTrigger } from '../lib/site-access';
-import { bridgeConnected, initBridge, pushCapture } from './bridge';
+import { bridgeConnected, initBridge, pushCapture, type BridgeRecord } from './bridge';
 import { getBridgeSettings } from '../lib/bridge-settings';
 import type { Settings } from '../lib/settings';
 import { outputDirHasFile, outputDirStatus, writeToOutputDir } from '../lib/output-dir';
@@ -918,15 +918,56 @@ async function copyImageThroughPage(
  * and without the pin an agent's request photographed whatever the person
  * had in front of them instead (NOBC-166 follow-up).
  */
+const AGENT_SITE_REFUSAL =
+  "That tab is not on a site agents may capture. In Capture Kit's settings, Agent bridge decides which sites they may.";
+
+/**
+ * One report as the agent bridge receives it. The id is the written image
+ * name without its extension - the same id a bridge capture request is
+ * answered with, suffix and all.
+ */
+function bridgeRecord(report: ReportArtifacts, trigger: CaptureTrigger): BridgeRecord {
+  return {
+    id: report.imageFilename.replace(/\.[^.]+$/, ''),
+    capturedAt: report.capturedAt.getTime(),
+    url: report.url,
+    title: report.title,
+    trigger,
+    markdown: report.markdown,
+    markdownFilename: report.markdownFilename,
+    image: {
+      filename: report.imageFilename,
+      mime: report.imageMime,
+      base64: report.result.imageBase64,
+      width: report.result.imageSize.width,
+      height: report.result.imageSize.height,
+    },
+    slices: report.sliceFiles,
+    errors: report.errors.length,
+    failures: report.networkFailures.length,
+  };
+}
+
 async function captureBundle(
   trigger: CaptureTrigger,
   targetTabId?: number,
-  options: { scroll?: boolean } = {},
+  options: {
+    scroll?: boolean;
+    /**
+     * For an agent's capture: whether it may have this page. Checked on the
+     * tab as the capture starts and on the page the report describes, so a
+     * redirect or a navigation in between cannot hand an agent a site you did
+     * not allow (Codex review on #28).
+     */
+    allowUrl?: (url: string | undefined) => boolean;
+  } = {},
 ): Promise<CaptureResponse> {
   const announce = trigger !== 'popup';
   try {
     const tab = await targetTab(targetTabId);
-    const blocked = protectedPageReason(tab.url);
+    const blocked =
+      protectedPageReason(tab.url) ??
+      (options.allowUrl && !options.allowUrl(tab.url) ? AGENT_SITE_REFUSAL : null);
     if (blocked) {
       await recordError(blocked, announce);
       return { ok: false, reason: blocked };
@@ -940,6 +981,12 @@ async function captureBundle(
 
     await beginIndicator();
     const report = await captureReport(tab, settings, trigger, '', undefined, options.scroll === true);
+    if (options.allowUrl && !options.allowUrl(report.url)) {
+      // The page moved during the capture. The files are yours, in your own
+      // folder; the agent gets nothing.
+      await endIndicator(false, announce);
+      return { ok: false, reason: AGENT_SITE_REFUSAL };
+    }
     const {
       capturedAt, imageFilename, markdown, clipboardMarkdown,
       imageMime, imageDownloadId, result,
@@ -965,29 +1012,7 @@ async function captureBundle(
     }
 
     // Hand the report to an agent on this computer, when the bridge is on.
-    if (bridgeConnected()) {
-      pushCapture({
-        // The written name without its extension: the same id a bridge
-        // capture request is answered with, suffix and all.
-        id: imageFilename.replace(/\.[^.]+$/, ''),
-        capturedAt: capturedAt.getTime(),
-        url: report.url,
-        title: report.title,
-        trigger,
-        markdown,
-        markdownFilename: report.markdownFilename,
-        image: {
-          filename: imageFilename,
-          mime: imageMime,
-          base64: result.imageBase64,
-          width: result.imageSize.width,
-          height: result.imageSize.height,
-        },
-        slices: report.sliceFiles,
-        errors: report.errors.length,
-        failures: report.networkFailures.length,
-      });
-    }
+    if (bridgeConnected()) pushCapture(bridgeRecord(report, trigger));
 
     const lastBundle: LastBundle = {
       markdown: clipboardMarkdown,
@@ -1225,7 +1250,39 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
       sourceMaps: { frames: page.frames, mapped: page.mappedFrames },
       includeLogs: settings.includeConsoleLogs,
     });
-    await writeBundleFile(`${basename}_sweep.md`, 'text/markdown', textToBase64(sweepMarkdown));
+    const sweepWrite = await writeBundleFile(`${basename}_sweep.md`, 'text/markdown', textToBase64(sweepMarkdown));
+
+    // The sweep reaches an agent as one capture: its report, the first width
+    // as the image and the other widths beside it.
+    if (bridgeConnected()) {
+      const [firstCapture, ...otherCaptures] = outcome.captures;
+      pushCapture({
+        id: sweepWrite.filename.replace(/\.[^.]+$/, ''),
+        capturedAt: capturedAt.getTime(),
+        url: page.meta.url,
+        title: page.meta.title,
+        trigger: 'sweep',
+        kind: 'sweep',
+        markdown: sweepMarkdown,
+        markdownFilename: sweepWrite.filename,
+        image: {
+          filename: writtenNames[0],
+          mime: 'image/jpeg',
+          base64: firstCapture.result.imageBase64,
+          width: firstCapture.result.imageSize.width,
+          height: firstCapture.result.imageSize.height,
+        },
+        slices: [],
+        extras: otherCaptures.map((capture, index) => ({
+          filename: writtenNames[index + 1],
+          mime: 'image/jpeg',
+          base64: capture.result.imageBase64,
+          label: `${capture.width} px wide`,
+        })),
+        errors: page.console.filter((entry) => entry.level === 'error').length,
+        failures: page.network.length,
+      });
+    }
 
     if (settings.openResult) {
       const first = outcome.captures[0].result;
@@ -1387,6 +1444,8 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
         const ordinal = String(pages.length + 1).padStart(2, '0');
         const report = await captureReport(fresh, settings, 'session', folder, ordinal);
         const mirrorImage = report.mirrorImageFilename as string;
+        // Each page of a session reaches an agent as its own capture.
+        if (bridgeConnected()) pushCapture(bridgeRecord(report, 'session'));
 
         // Mirror into the stable pointer folder immediately, while the bytes
         // are still in hand — numbered so overwrite is deterministic.
@@ -1634,7 +1693,26 @@ async function recordClip(
 
     const sheetWrite = await writeBundleFile(sheetFilename, 'image/jpeg', recorded.sheet);
     await writeBundleFile(videoFilename, recorded.videoMime, recorded.video);
-    await writeBundleFile(markdownFilename, 'text/markdown', textToBase64(markdown));
+    const clipMarkdownWrite = await writeBundleFile(markdownFilename, 'text/markdown', textToBase64(markdown));
+    // A clip reaches an agent as its report and its frame sheet - the
+    // overview an agent reads. The video and the full-size frames stay in
+    // your folder.
+    if (bridgeConnected()) {
+      pushCapture({
+        id: clipMarkdownWrite.filename.replace(/\.[^.]+$/, ''),
+        capturedAt: startedAt.getTime(),
+        url: page.meta.url,
+        title: page.meta.title,
+        trigger,
+        kind: 'clip',
+        markdown,
+        markdownFilename: clipMarkdownWrite.filename,
+        image: { filename: sheetWrite.filename, mime: 'image/jpeg', base64: recorded.sheet, width: 0, height: 0 },
+        slices: [],
+        errors: events.filter((e) => e.kind === 'console' && e.level === 'error').length,
+        failures: events.filter((e) => e.kind === 'network').length,
+      });
+    }
     // The kept frames at full size, one file each, in a folder named after the
     // clip - the sheet is the overview, these are for looking closely.
     for (let i = 0; i < recorded.frames.length; i++) {
@@ -2037,9 +2115,21 @@ async function bridgeTabs(): Promise<{ ok: boolean; tabs?: { title: string; url:
 async function bridgeCapture(params: { urlContains?: string; scroll?: boolean }): Promise<{ ok: boolean; id?: string; error?: string }> {
   const { tabs, refusal } = await bridgeAllowedTabs();
   if (refusal) return { ok: false, error: refusal };
-  let candidates = params.urlContains
-    ? tabs.filter((t) => (t.url ?? '').includes(params.urlContains as string))
-    : tabs.filter((t) => t.active);
+  let candidates: chrome.tabs.Tab[];
+  if (params.urlContains) {
+    candidates = tabs.filter((t) => (t.url ?? '').includes(params.urlContains as string));
+  } else {
+    // "The tab in front" means the front window's: every window has an active
+    // tab, and a background window's must not stand in for a front tab that
+    // is not allowed (Codex review on #28).
+    let frontWindow: number | undefined;
+    try {
+      frontWindow = (await chrome.windows.getLastFocused()).id;
+    } catch {
+      /* no window focus info */
+    }
+    candidates = tabs.filter((t) => t.active && t.windowId === frontWindow);
+  }
   if (candidates.length > 1) {
     // Prefer the tab in front of the window the person last used.
     try {
@@ -2055,7 +2145,7 @@ async function bridgeCapture(params: { urlContains?: string; scroll?: boolean })
       ok: false,
       error: params.urlContains
         ? `No open tab on an allowed site matches "${params.urlContains}".`
-        : 'No tab on an allowed site is in front. Pass part of the tab\'s address.',
+        : 'The tab in front is not on a site agents may capture. Pass part of the address of a tab that is.',
     };
   }
   if (candidates.length > 1) {
@@ -2073,7 +2163,16 @@ async function bridgeCapture(params: { urlContains?: string; scroll?: boolean })
       await chrome.windows.update(tab.windowId, { focused: true });
       await new Promise((r) => setTimeout(r, 250));
     }
-    const response = await captureBundle('bridge', tab.id as number, { scroll: params.scroll === true });
+    // Judged again on the tab as it is when the capture starts, and on the
+    // page it captured - not on the list above, which a redirect can outdate.
+    const bridge = await getBridgeSettings();
+    const { pageTriggerSites } = await getSettings();
+    const allowUrl = (url: string | undefined) =>
+      bridge.bridgeCaptureMode !== 'off' &&
+      typeof url === 'string' &&
+      /^https?:/.test(url) &&
+      decidePageTrigger(bridge.bridgeCaptureMode, pageTriggerSites, url).allowed;
+    const response = await captureBundle('bridge', tab.id as number, { scroll: params.scroll === true, allowUrl });
     return response.ok
       ? { ok: true, id: response.imageFilename.replace(/\.[^.]+$/, '') }
       : { ok: false, error: response.reason };

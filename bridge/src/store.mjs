@@ -82,6 +82,12 @@ export class CaptureStore {
       writeBase64(p, slice.base64);
       slicePaths.push({ path: p, top: slice.top, height: slice.height });
     }
+    const extras = [];
+    for (const extra of record.extras ?? []) {
+      const p = safeRelative(folder, extra.filename);
+      writeBase64(p, extra.base64);
+      extras.push({ path: p, label: String(extra.label ?? ''), mime: String(extra.mime ?? 'image/jpeg') });
+    }
     let changesPath = null;
     if (record.changes?.base64) {
       changesPath = safeRelative(folder, record.changes.filename);
@@ -95,6 +101,7 @@ export class CaptureStore {
       url: String(record.url ?? ''),
       title: String(record.title ?? ''),
       trigger: String(record.trigger ?? ''),
+      kind: String(record.kind ?? 'page'),
       errors: Number(record.errors) || 0,
       failures: Number(record.failures) || 0,
       folder,
@@ -105,6 +112,7 @@ export class CaptureStore {
       imageHeight: Number(record.image.height) || null,
       slices: slicePaths,
       changesPath,
+      extras,
     };
     writeFileSync(join(folder, 'meta.json'), JSON.stringify(meta, null, 2));
     this.prune();

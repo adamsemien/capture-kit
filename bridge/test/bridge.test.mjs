@@ -137,6 +137,30 @@ test('file names from the extension cannot escape the capture folder', async () 
   ext.ws.close();
 });
 
+test("a sweep's other widths are stored beside it, inside the folder, and listed", async () => {
+  const ext = await fakeExtension();
+  ext.ws.send(JSON.stringify({ type: 'capture', record: record('sweep-x', {
+    kind: 'sweep',
+    extras: [
+      { filename: 'sweep-x_w768.png', mime: 'image/png', base64: PNG_1PX, label: '768 px wide' },
+      { filename: '../../out.png', mime: 'image/png', base64: PNG_1PX, label: 'escape' },
+    ],
+  }) }));
+  await new Promise((r) => setTimeout(r, 200));
+  const { capture } = await client().latest();
+  const root = join(home, 'captures');
+  assert.equal(capture.kind, 'sweep');
+  assert.equal(capture.extras.length, 2);
+  for (const x of capture.extras) {
+    assert.ok(x.path.startsWith(root + '/'), x.path);
+    assert.ok(existsSync(x.path));
+  }
+  const { header, listLine } = await import('../src/format.mjs');
+  assert.match(header(capture), /Image \(768 px wide\): /);
+  assert.match(listLine(capture), /\(sweep\)/);
+  ext.ws.close();
+});
+
 test('wait returns the next capture, and times out cleanly', async () => {
   const ext = await fakeExtension();
   const waiting = client().wait(5);

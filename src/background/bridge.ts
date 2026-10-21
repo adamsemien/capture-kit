@@ -38,6 +38,10 @@ export interface BridgeRecord {
   image: { filename: string; mime: string; base64: string; width: number; height: number };
   slices: { path: string; base64: string; top: number; height: number }[];
   changes?: { filename: string; base64: string };
+  /** More pictures that belong to the report: a sweep's other widths. */
+  extras?: { filename: string; mime: string; base64: string; label: string }[];
+  /** What kind of capture this was, when not a single page: 'sweep', 'clip'. */
+  kind?: string;
   errors: number;
   failures: number;
 }

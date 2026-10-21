@@ -150,7 +150,10 @@ Other MCP clients take the same command (`capture-kit-mcp`, no arguments).
 | `capture_tab` | `ck capture <url part> [--scroll]` | Takes a capture itself, on a tab you allowed |
 | `list_tabs` | `ck tabs` | The open tabs an agent is allowed to capture |
 
-Add `--json` to any `ck` command for machine-readable output.
+Every kind of capture is handed over: a responsive sweep arrives as one
+capture with each width beside it, a clip with its frame sheet, and each page
+of a session as its own capture. Add `--json` to any `ck` command for
+machine-readable output.
 
 **What an agent can do is up to you.** With the bridge on, the helper receives
 the captures *you* take. Letting an agent *take* captures is a separate

@@ -48,6 +48,16 @@ function captureContent(meta, includeImage) {
   } else if ((meta.imageHeight ?? 0) > MAX_INLINE_HEIGHT || !attach(meta.imagePath, meta.imageMime || mimeOf(meta.imagePath))) {
     notes.push('The image is too large to attach here; read it from the path above.');
   }
+  let extrasShown = 0;
+  for (const extra of meta.extras ?? []) {
+    if (fileSize(extra.path) > Math.min(MAX_INLINE_BYTES, budget)) break;
+    content.push({ type: 'text', text: `Image: ${extra.label}` });
+    attach(extra.path, extra.mime || mimeOf(extra.path));
+    extrasShown += 1;
+  }
+  if (extrasShown < (meta.extras?.length ?? 0)) {
+    notes.push(`Showing ${extrasShown} of ${meta.extras.length} further images; the rest are at the paths above.`);
+  }
   if (meta.changesPath && fileSize(meta.changesPath) <= Math.min(MAX_INLINE_BYTES, budget)) {
     content.push({ type: 'text', text: 'What changed since the last capture of this page (changed areas outlined):' });
     content.push({ type: 'image', data: readBase64(meta.changesPath), mimeType: 'image/png' });
