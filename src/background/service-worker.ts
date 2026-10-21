@@ -33,6 +33,8 @@ import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
 import { ICON_MODE_KEY, getSettings } from '../lib/settings';
 import { decidePageTrigger } from '../lib/site-access';
+import { bridgeConnected, initBridge, pushCapture } from './bridge';
+import { getBridgeSettings } from '../lib/bridge-settings';
 import type { Settings } from '../lib/settings';
 import { outputDirHasFile, outputDirStatus, writeToOutputDir } from '../lib/output-dir';
 import { redactPage, redactText } from '../lib/redact';
@@ -655,6 +657,8 @@ interface ReportArtifacts {
   recorderActive: boolean;
   /** Values scrubbed from this page's report. */
   redacted: number;
+  /** The slices as written, with their pixels, for the agent bridge. */
+  sliceFiles: { path: string; base64: string; top: number; height: number }[];
   imageMime: string;
   /** Null when the image went to the chosen folder — no download record exists. */
   imageDownloadId: number | null;
@@ -787,6 +791,7 @@ async function captureReport(
   // can name each one as it actually landed.
   const slicesFolder = `${basename}_slices`;
   const sliceRefs: SliceRef[] = [];
+  const sliceFiles: ReportArtifacts['sliceFiles'] = [];
   await withQuietDownloads(slices.length > 0, async () => {
     for (const [i, slice] of slices.entries()) {
       const written = await writeBundleFile(
@@ -794,6 +799,12 @@ async function captureReport(
         imageMime,
         slice.imageBase64,
       );
+      sliceFiles.push({
+        path: `${slicesFolder}/${written.filename}`,
+        base64: slice.imageBase64,
+        top: slice.top,
+        height: slice.height,
+      });
       sliceRefs.push({
         path: `${slicesFolder}/${written.filename}`,
         top: slice.top,
@@ -851,6 +862,7 @@ async function captureReport(
     warningCount,
     recorderActive,
     redacted: page.redacted,
+    sliceFiles,
     imageMime,
     imageDownloadId: imageWrite.downloadId,
     result,
@@ -950,6 +962,31 @@ async function captureBundle(
         'text/markdown',
         textToBase64(withLatestNotice(markdown)),
       );
+    }
+
+    // Hand the report to an agent on this computer, when the bridge is on.
+    if (bridgeConnected()) {
+      pushCapture({
+        // The written name without its extension: the same id a bridge
+        // capture request is answered with, suffix and all.
+        id: imageFilename.replace(/\.[^.]+$/, ''),
+        capturedAt: capturedAt.getTime(),
+        url: report.url,
+        title: report.title,
+        trigger,
+        markdown,
+        markdownFilename: report.markdownFilename,
+        image: {
+          filename: imageFilename,
+          mime: imageMime,
+          base64: result.imageBase64,
+          width: result.imageSize.width,
+          height: result.imageSize.height,
+        },
+        slices: report.sliceFiles,
+        errors: report.errors.length,
+        failures: report.networkFailures.length,
+      });
     }
 
     const lastBundle: LastBundle = {
@@ -1962,3 +1999,88 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // Every worker wake. Covers the gap between onInstalled and onStartup — an
 // idle worker torn down and revived mid-session.
 void syncActionMode();
+
+// ------------------------------------------------------------ agent bridge --
+//
+// An agent on this computer (ck or the MCP server, through the local helper)
+// may list and capture tabs only when Settings -> Agent bridge allows it, and
+// only on the sites allowed there. See background/bridge.ts.
+
+/** Tabs an agent may capture right now, under the bridge's site setting. */
+async function bridgeAllowedTabs(): Promise<{ tabs: chrome.tabs.Tab[]; refusal?: string }> {
+  const bridge = await getBridgeSettings();
+  if (bridge.bridgeCaptureMode === 'off') {
+    return {
+      tabs: [],
+      refusal:
+        "Agent captures are turned off. In Capture Kit's settings, under Agent bridge, choose which sites an agent may capture.",
+    };
+  }
+  const settings = await getSettings();
+  const all = await chrome.tabs.query({});
+  const tabs = all.filter(
+    (t) =>
+      t.id !== undefined &&
+      typeof t.url === 'string' &&
+      /^https?:/.test(t.url) &&
+      decidePageTrigger(bridge.bridgeCaptureMode, settings.pageTriggerSites, t.url).allowed,
+  );
+  return { tabs };
+}
+
+async function bridgeTabs(): Promise<{ ok: boolean; tabs?: { title: string; url: string; active: boolean }[]; error?: string }> {
+  const { tabs, refusal } = await bridgeAllowedTabs();
+  if (refusal) return { ok: false, error: refusal };
+  return { ok: true, tabs: tabs.map((t) => ({ title: t.title ?? '', url: t.url ?? '', active: t.active === true })) };
+}
+
+async function bridgeCapture(params: { urlContains?: string; scroll?: boolean }): Promise<{ ok: boolean; id?: string; error?: string }> {
+  const { tabs, refusal } = await bridgeAllowedTabs();
+  if (refusal) return { ok: false, error: refusal };
+  let candidates = params.urlContains
+    ? tabs.filter((t) => (t.url ?? '').includes(params.urlContains as string))
+    : tabs.filter((t) => t.active);
+  if (candidates.length > 1) {
+    // Prefer the tab in front of the window the person last used.
+    try {
+      const win = await chrome.windows.getLastFocused();
+      const front = candidates.filter((t) => t.active && t.windowId === win.id);
+      if (front.length === 1) candidates = front;
+    } catch {
+      /* no window focus info; fall through to the ambiguity message */
+    }
+  }
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      error: params.urlContains
+        ? `No open tab on an allowed site matches "${params.urlContains}".`
+        : 'No tab on an allowed site is in front. Pass part of the tab\'s address.',
+    };
+  }
+  if (candidates.length > 1) {
+    const list = candidates.slice(0, 5).map((t) => t.url).join(', ');
+    return { ok: false, error: `More than one allowed tab matches; be more specific. Matches: ${list}` };
+  }
+  if (agentCaptureRunning) return { ok: false, error: 'Capture Kit is busy with another capture.' };
+  agentCaptureRunning = true;
+  try {
+    const tab = candidates[0];
+    // Chrome does not paint a background tab, so the tab comes to the front,
+    // exactly as a page-fired capture does.
+    if (!tab.active) {
+      await chrome.tabs.update(tab.id as number, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    const response = await captureBundle('bridge', tab.id as number, { scroll: params.scroll === true });
+    return response.ok
+      ? { ok: true, id: response.imageFilename.replace(/\.[^.]+$/, '') }
+      : { ok: false, error: response.reason };
+  } finally {
+    agentCaptureRunning = false;
+  }
+}
+
+initBridge({ capture: bridgeCapture, tabs: bridgeTabs });
+

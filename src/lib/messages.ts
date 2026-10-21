@@ -92,7 +92,8 @@ export type CaptureTrigger =
   | 'sweep'
   | 'clip'
   | 'clip-shortcut'
-  | 'agent-clip';
+  | 'agent-clip'
+  | 'bridge';
 
 export const CAPTURE_TRIGGER_LABEL: Record<CaptureTrigger, string> = {
   popup: 'popup Capture + Report button',
@@ -105,6 +106,7 @@ export const CAPTURE_TRIGGER_LABEL: Record<CaptureTrigger, string> = {
   clip: 'Record clip (popup button or icon menu)',
   'clip-shortcut': 'keyboard shortcut (Ctrl/Cmd+Shift+8)',
   'agent-clip': 'in-page agent trigger (capture-kit:record)',
+  bridge: 'an AI agent on this computer, through the Capture Kit bridge (ck or MCP)',
 };
 
 /** Popup / result page / content script → service worker. */
