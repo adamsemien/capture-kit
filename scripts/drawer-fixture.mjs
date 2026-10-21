@@ -183,6 +183,10 @@ export const DRAWER_VARIANTS = {
   // A normal scrolling page holding a 300px panel that scrolls on its own.
   // Scroll capture with the pointer over the panel must stitch the panel.
   'X pointer-panel': null,
+  // The same panel 1500px down the page, captured with the page scrolled to it
+  // and the pointer gone (the popup button): the panel must still be the
+  // target, and the page and the panel must be left where they were.
+  'Q low-panel': null,
   // A long page with a sticky header. Stitched, the header must appear once.
   'Y sticky-header-page': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
@@ -229,6 +233,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('V ')) return virtualizedFixture(variant, { reportsResult, manual });
   if (variant.startsWith('W ')) return canvasAppFixture(variant, { reportsResult, manual });
   if (variant.startsWith('X ')) return pointerPanelFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('Q ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 1500 });
   if (variant.startsWith('Y ')) return stickyHeaderFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
   const rows = Array.from(
@@ -456,7 +461,7 @@ function canvasAppFixture(variant, { reportsResult = false, manual = false } = {
 </body></html>`;
 }
 
-function pointerPanelFixture(variant, { reportsResult = false, manual = false } = {}) {
+function pointerPanelFixture(variant, { reportsResult = false, manual = false, spacer = 0 } = {}) {
   const reporter = reporterScript(reportsResult, manual);
   const blocks = [X_RGB.d, X_RGB.e, X_RGB.f]
     .map((c) => `<div style="height:800px;background:${hex(c)}"></div>`)
@@ -471,6 +476,7 @@ function pointerPanelFixture(variant, { reportsResult = false, manual = false } 
 </style></head>
 <body>
   <header>repro: ${variant}</header>
+  ${spacer ? `<div id="spacer" style="height:${spacer}px"></div>` : ''}
   <div id="panel">${blocks}</div>
   <div id="below"></div>
   ${reporter}

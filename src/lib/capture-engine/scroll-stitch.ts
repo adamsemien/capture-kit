@@ -113,8 +113,16 @@ function targetScript(prefer: ScrollTargetPreference): string {
   let target = null;
   let how = 'page';
   if (${JSON.stringify(prefer)} === 'pointer') {
+    // What is under the pointer: the :hover chain, or - when the pointer has
+    // left the page for the popup, which clears :hover - the element at the
+    // last position the recorder saw it (Codex review on #27).
     const hovered = document.querySelectorAll(':hover');
-    for (let node = hovered.length ? hovered[hovered.length - 1] : null;
+    const last = window[Symbol.for('capture-kit.pointer')];
+    const deepest = hovered.length ? hovered[hovered.length - 1] : null;
+    const start = deepest && deepest !== document.body && deepest !== document.documentElement
+      ? deepest
+      : Array.isArray(last) ? document.elementFromPoint(last[0], last[1]) : null;
+    for (let node = start;
          node && node !== document.body && node !== document.documentElement;
          node = node.parentElement) {
       if (scrollsY(node)) { target = node; how = 'pointer'; break; }
@@ -318,6 +326,7 @@ async function captureByScrolling(
   );
   let frozen = false;
   let unstuck = false;
+  let panelScroll: { top: number; left: number } | null = null;
   try {
     // The target is picked before anything moves, so :hover still names the
     // element under the pointer.
@@ -325,6 +334,15 @@ async function captureByScrolling(
       target,
       targetScript(prefer),
     );
+    // Where the panel was scrolled to, so it goes back there afterwards -
+    // UNSTICK only restores scrollers it moved, and one already at the top is
+    // not one of them (Codex review on #27).
+    if (picked.kind === 'panel') {
+      panelScroll = await evaluateInPage<{ top: number; left: number } | null>(
+        target,
+        `(() => { const el = document.querySelector('[${TARGET_ATTR}]'); return el ? { top: el.scrollTop, left: el.scrollLeft } : null; })()`,
+      );
+    }
     await evaluateInPage<void>(target, FREEZE_SCRIPT);
     frozen = true;
     if (picked.kind === 'page') {
@@ -339,6 +357,16 @@ async function captureByScrolling(
     await evaluateInPage<void>(target, 'window.__captureKitUnstickFixedOnly = true');
     unstuck = true;
     await evaluateInPage<number>(target, UNSTICK_SCRIPT);
+    // UNSTICK returns every scroller to the top, the document included. A
+    // panel is captured where it sits on screen, so the document goes back to
+    // where you had it - otherwise a panel further down the page would be
+    // moved off screen before it is measured (Codex review on #27).
+    if (picked.kind === 'panel') {
+      await evaluateInPage<void>(
+        target,
+        `window.scrollTo({ left: ${originalScroll.x}, top: ${originalScroll.y}, behavior: 'instant' })`,
+      );
+    }
 
     let info: TargetInfo;
     if (picked.kind === 'page') {
@@ -482,6 +510,16 @@ async function captureByScrolling(
         await evaluateInPage<void>(target, UNFREEZE_SCRIPT);
       } catch {
         /* best-effort */
+      }
+    }
+    if (panelScroll) {
+      try {
+        await evaluateInPage<void>(
+          target,
+          `(() => { const el = document.querySelector('[${TARGET_ATTR}]'); if (el) { el.scrollTop = ${panelScroll.top}; el.scrollLeft = ${panelScroll.left}; } })()`,
+        );
+      } catch {
+        /* best-effort restore */
       }
     }
     try {

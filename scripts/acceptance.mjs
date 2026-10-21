@@ -1147,9 +1147,10 @@ function a15Verdict(r) {
 //    last block present.
 const W_VARIANT = 'W canvas-app';
 const X_VARIANT = 'X pointer-panel';
+const Q_VARIANT = 'Q low-panel';
 const Y_VARIANT = 'Y sticky-header-page';
 const named18 = (obj) => Object.entries(obj).map(([name, c]) => ({ name, r: c.r, g: c.g, b: c.b }));
-async function scrollCaptureVariant(variant, colours, hover) {
+async function scrollCaptureVariant(variant, colours, hover, { scrollTo = 0, leave = false } = {}) {
   const url = `http://127.0.0.1:${HTTP_PORT}/drawer?v=${encodeURIComponent(variant)}&manual=1&n=${Date.now()}`;
   const t = await openExact(url);
   if (!t) return { error: 'fixture tab never appeared' };
@@ -1158,21 +1159,35 @@ async function scrollCaptureVariant(variant, colours, hover) {
     `chrome.tabs.query({}).then((ts) => ts.find((x) => x.url === ${JSON.stringify(url)})?.id ?? null)`,
   );
   await options.eval(`chrome.tabs.update(${tabId}, { active: true }).then(() => true)`);
-  if (hover) {
-    const live = new Session(t.webSocketDebuggerUrl);
-    await live.open();
-    await live.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hover[0], y: hover[1] });
-    live.close();
+  const live = new Session(t.webSocketDebuggerUrl);
+  await live.open();
+  await live.send('Runtime.enable');
+  if (scrollTo) {
+    await live.send('Runtime.evaluate', { expression: `window.scrollTo(0, ${scrollTo})` });
+    await sleep(300);
   }
+  if (hover) {
+    await live.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hover[0], y: hover[1] });
+  }
+  // The pointer leaves the page, as it does on its way to the popup.
+  if (leave) await live.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: -20, y: -20 });
   await sleep(300);
+  const hoverLeft = leave
+    ? (await live.send('Runtime.evaluate', { expression: `[...document.querySelectorAll(':hover')].map((e) => e.tagName).join('>')`, returnByValue: true })).result.value
+    : null;
   const response = await options.eval(`chrome.runtime.sendMessage({ type: 'CAPTURE_BUNDLE', tabId: ${tabId}, scroll: true })`);
   await sleep(1500);
+  const after = (await live.send('Runtime.evaluate', {
+    expression: `({ page: window.scrollY, panel: document.getElementById('panel')?.scrollTop ?? null })`,
+    returnByValue: true,
+  })).result.value;
+  live.close();
   const image = newestFile('.jpg');
   const report = newestFile('.md');
   const modeLine = report ? readCapture(report).split('\n').filter((l) => /Full page:|Capture mode:/.test(l)) : [];
   const px = await inspectColours(image, colours);
   await cdp(`/json/close/${t.id}`);
-  return { response, modeLine, px };
+  return { response, modeLine, px, after, hoverLeft };
 }
 async function stitchCheck() {
   await setSetting(options, { openResult: false, autoCopyImage: false, stampUrlOnImage: false, pageTriggerMode: 'any' });
@@ -1180,7 +1195,8 @@ async function stitchCheck() {
   const w = await captureVariant(W_VARIANT, named18(W_RGB));
   const x = await scrollCaptureVariant(X_VARIANT, named18(X_RGB), [200, 200]);
   const y = await scrollCaptureVariant(Y_VARIANT, named18(Y_RGB), [300, 300]);
-  return { w, x, y };
+  const q = await scrollCaptureVariant(Q_VARIANT, named18(X_RGB), [200, 250], { scrollTo: 1400, leave: true });
+  return { w, x, y, q };
 }
 function colourMap(px) {
   return Object.fromEntries((px?.colours ?? []).map((c) => [c.name, c.pixels]));
@@ -1193,11 +1209,15 @@ function a18Verdict(r) {
   const x = colourMap(r.x.px);
   if (!['d', 'e', 'f'].every((k) => (x[k] ?? 0) > 200)) problems.push(`pointer panel missing blocks: ${JSON.stringify(x)}`);
   if (!/panel under your pointer/.test((r.x.modeLine ?? []).join(' '))) problems.push('pointer panel was not the target');
+  const q = colourMap(r.q.px);
+  if (!['d', 'e', 'f'].every((k) => (q[k] ?? 0) > 200)) problems.push(`low panel (page scrolled, pointer gone) missing blocks: ${JSON.stringify(q)}`);
+  if (!/panel under your pointer/.test((r.q.modeLine ?? []).join(' '))) problems.push('low panel was not the target once the pointer left');
+  if (r.q.after?.page !== 1400 || r.q.after?.panel !== 0) problems.push(`low panel capture left the page at ${r.q.after?.page} and the panel at ${r.q.after?.panel} (want 1400 and 0)`);
   const y = colourMap(r.y.px);
   if ((y.end ?? 0) < 100) problems.push(`sticky page lost its last block (${y.end ?? 0} px)`);
   return problems.length
     ? `FAIL — ${problems.join('; ')}`
-    : `PASS — canvas app stitched automatically with all 3 bands; pointer panel stitched whole; sticky page complete (a/b/c ${w.a}/${w.b}/${w.c}, d/e/f ${x.d}/${x.e}/${x.f}, end ${y.end})`;
+    : `PASS — canvas app stitched automatically with all 3 bands; pointer panel stitched whole; low panel stitched with the pointer gone and page/panel left at ${r.q.after?.page}/${r.q.after?.panel} (hover after leaving: ${r.q.hoverLeft || "none"}); sticky page complete (a/b/c ${w.a}/${w.b}/${w.c}, d/e/f ${x.d}/${x.e}/${x.f}, end ${y.end})`;
 }
 
 if (process.argv.includes('--only-stitch')) {
