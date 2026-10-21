@@ -136,6 +136,13 @@ export const M_RGB = {
   slideOne: { r: 0x01, g: 0x57, b: 0x9b }, // #01579b - carousel first half, MUST NOT appear
   slideTwo: { r: 0xff, g: 0x8f, b: 0x00 }, // #ff8f00 - carousel second half, MUST appear
 };
+// Variant P: a page that snaps to full-screen sections under a sticky header.
+export const P_RGB = {
+  s1: { r: 0x6a, g: 0x1b, b: 0x9a }, // #6a1b9a
+  s2: { r: 0x00, g: 0x83, b: 0x8f }, // #00838f
+  s3: { r: 0xef, g: 0x6c, b: 0x00 }, // #ef6c00
+  gap: { r: 0x00, g: 0x00, b: 0x00 }, // unpainted rows encode black - MUST NOT appear
+};
 // Variant O adds the page's sticky header, which must not appear in a panel stitch.
 export const O_RGB = { ...R_RGB, header: { r: 0x3e, g: 0x27, b: 0x23 } }; // #3e2723
 export const Y_RGB = {
@@ -218,6 +225,7 @@ export const DRAWER_VARIANTS = {
   'O sticky-page-panel': null,
   'T wide-panel': null,
   'M footer-and-carousel': null,
+  'P snap-page': null,
   // A long page with a sticky header. Stitched, the header must appear once.
   'Y sticky-header-page': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
@@ -268,6 +276,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('Q ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 1500 });
   if (variant.startsWith('N ')) return nestedPanelFixture(variant, { reportsResult, manual });
   if (variant.startsWith('O ')) return nestedPanelFixture(variant, { reportsResult, manual, header: true });
+  if (variant.startsWith('P ')) return snapPageFixture(variant, { reportsResult, manual });
   if (variant.startsWith('M ')) return footerCarouselFixture(variant, { reportsResult, manual });
   if (variant.startsWith('T ')) return pointerPanelFixture(variant, { reportsResult, manual, wide: true });
   if (variant.startsWith('R ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 'calc(100vh - 120px)', tail: true });
@@ -497,6 +506,17 @@ function canvasAppFixture(variant, { reportsResult = false, manual = false, besi
   </script>
   ${reporter}
 </body></html>`;
+}
+
+function snapPageFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  const sections = [P_RGB.s1, P_RGB.s2, P_RGB.s3, P_RGB.s1, P_RGB.s2, P_RGB.s3]
+    .map((c) => `<section style="height:100vh;scroll-snap-align:start;background:${hex(c)}"></section>`)
+    .join('');
+  return `<!doctype html>
+<html style="scroll-snap-type:y mandatory"><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>html,body{margin:0;background:#fff;font:16px sans-serif}header{position:sticky;top:0;height:50px;background:#fff;z-index:2}</style>
+</head><body><header>repro: ${variant}</header>${sections}${reporter}</body></html>`;
 }
 
 function footerCarouselFixture(variant, { reportsResult = false, manual = false } = {}) {

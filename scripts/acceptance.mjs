@@ -45,6 +45,7 @@ import {
   O_RGB,
   T_RGB,
   M_RGB,
+  P_RGB,
   Y_RGB,
   fixture as drawerFixture,
   viewportFor,
@@ -1157,6 +1158,7 @@ const N_VARIANT = 'N nested-panel';
 const U_VARIANT = 'U canvas-beside-list';
 const T_VARIANT = 'T wide-panel';
 const M_VARIANT = 'M footer-and-carousel';
+const P_VARIANT = 'P snap-page';
 const O_VARIANT = 'O sticky-page-panel';
 const Y_VARIANT = 'Y sticky-header-page';
 const named18 = (obj) => Object.entries(obj).map(([name, c]) => ({ name, r: c.r, g: c.g, b: c.b }));
@@ -1252,7 +1254,11 @@ async function stitchCheck() {
     setup: `(() => { const c = document.getElementById('carousel'); c.scrollLeft = c.scrollWidth; })()`,
     probe: `({ carousel: document.getElementById('carousel').scrollLeft, page: window.scrollY })`,
   });
-  return { w, x, y, q, r: rr, n, o, qz, u, t: tt, m };
+  // P: a snapping page under a sticky header, stitched whole.
+  const p = await scrollCaptureVariant(P_VARIANT, named18(P_RGB), [300, 300], {
+    probe: `({ snap: getComputedStyle(document.documentElement).scrollSnapType })`,
+  });
+  return { w, x, y, q, r: rr, n, o, qz, u, t: tt, m, p };
 }
 function colourMap(px) {
   return Object.fromEntries((px?.colours ?? []).map((c) => [c.name, c.pixels]));
@@ -1271,10 +1277,13 @@ function a18Verdict(r) {
   if (r.q.after?.page !== 1400 || r.q.after?.panel !== 0) problems.push(`low panel capture left the page at ${r.q.after?.page} and the panel at ${r.q.after?.panel} (want 1400 and 0)`);
   const rc = colourMap(r.r.px);
   if (!['d', 'e', 'f', 'tail'].every((k) => (rc[k] ?? 0) > 200)) problems.push(`clipped panel lost rows: ${JSON.stringify(rc)}`);
-  for (const k of ['x', 'y', 'q', 'r', 'n', 'o', 'qz', 't', 'm']) {
+  for (const k of ['x', 'y', 'q', 'r', 'n', 'o', 'qz', 't', 'm', 'p']) {
     if (r[k]?.response?.ok !== true) problems.push(`${k}: the capture itself failed (${r[k]?.response?.reason ?? r[k]?.response?.error ?? JSON.stringify(r[k]?.response)})`);
   }
   if ((r.n.modeLine ?? []).join(' ') === (r.r.modeLine ?? []).join(' ')) problems.push('nested panel report is the clipped panel report again - no new capture');
+  const pc = colourMap(r.p.px);
+  if ((pc.gap ?? 0) > 100 || !['s1', 's2', 's3'].every((k) => (pc[k] ?? 0) > 1000)) problems.push(`snapping page left gaps or lost sections (gap ${pc.gap ?? 0}, s1/s2/s3 ${pc.s1 ?? 0}/${pc.s2 ?? 0}/${pc.s3 ?? 0})`);
+  if (!/mandatory/.test(r.p.after?.snap ?? '')) problems.push(`the page's scroll snapping was not restored (${r.p.after?.snap})`);
   const mc = colourMap(r.m.px);
   if ((mc.slideTwo ?? 0) < 500 || (mc.slideOne ?? 0) > 200) problems.push(`a carousel scrolled sideways was captured from its start (second half ${mc.slideTwo ?? 0}, first half ${mc.slideOne ?? 0})`);
   if ((mc.foot ?? 0) < 500 || (mc.foot ?? 0) > 4000) problems.push(`the sticky footer appears ${mc.foot ?? 0} px (want once, roughly 500-4000)`);
@@ -1311,7 +1320,7 @@ function a18Verdict(r) {
 if (process.argv.includes('--only-stitch')) {
   heading('CHECK A18 — scroll and stitch');
   const r = await stitchCheck();
-  for (const k of ['w', 'x', 'y', 'q', 'r', 'n', 'o', 'qz', 'u', 't', 'm']) console.log(`${k}: ` + JSON.stringify({ mode: r[k].modeLine, px: r[k].px?.colours?.map((c) => [c.name, c.pixels]) }));
+  for (const k of ['w', 'x', 'y', 'q', 'r', 'n', 'o', 'qz', 'u', 't', 'm', 'p']) console.log(`${k}: ` + JSON.stringify({ mode: r[k].modeLine, px: r[k].px?.colours?.map((c) => [c.name, c.pixels]) }));
   console.log('VERDICT A18 scroll and stitch: ' + a18Verdict(r));
   if (process.env.CK_COMPARE_DIST) {
     heading('CHECK A18 (falsifiability) — the canvas app on the comparison build');

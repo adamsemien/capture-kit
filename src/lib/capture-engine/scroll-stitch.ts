@@ -319,6 +319,20 @@ function scrollScript(kind: 'page' | 'panel', y: number, settleMs: number): stri
 const STICKY_ATTR = 'data-capture-kit-sticky';
 const STICKY_BOTTOM_ATTR = 'data-capture-kit-sticky-bottom';
 const STICKY_BOTTOM_STYLE = 'capture-kit-sticky-bottom-style';
+const NO_SNAP_STYLE = 'capture-kit-no-snap-style';
+/**
+ * Scroll snapping off for the capture: a snapping page or panel lands past
+ * the offset each step asks for, which leaves unpainted rows between frames
+ * (Codex review on #27). Smooth scrolling off too, so every step lands at
+ * once.
+ */
+const NO_SNAP_SCRIPT = `(() => {
+  if (document.getElementById('${NO_SNAP_STYLE}')) return;
+  const style = document.createElement('style');
+  style.id = '${NO_SNAP_STYLE}';
+  style.textContent = '*,html,body{scroll-snap-type:none !important;scroll-behavior:auto !important}';
+  document.documentElement.appendChild(style);
+})()`;
 
 /**
  * Marks the top-sticky elements inside the target (or the whole page), once,
@@ -416,6 +430,7 @@ const CLEAR_TARGET_SCRIPT = `(() => {
   for (const el of document.querySelectorAll('[data-capture-kit-canvas-panel]')) el.removeAttribute('data-capture-kit-canvas-panel');
   for (const el of document.querySelectorAll('[${STICKY_BOTTOM_ATTR}]')) el.removeAttribute('${STICKY_BOTTOM_ATTR}');
   document.getElementById('${STICKY_BOTTOM_STYLE}')?.remove();
+  document.getElementById('${NO_SNAP_STYLE}')?.remove();
 })()`;
 
 interface ScreenshotResult {
@@ -474,6 +489,7 @@ async function captureByScrolling(
     }
     await evaluateInPage<void>(target, FREEZE_SCRIPT);
     frozen = true;
+    await evaluateInPage<void>(target, NO_SNAP_SCRIPT);
     if (picked.kind === 'page') {
       await evaluateInPage<number>(target, scrollScript('page', 0, 120));
     }
