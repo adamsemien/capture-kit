@@ -180,6 +180,20 @@ export function captureModeLabel(
 }
 
 /**
+ * The sweep result tab's one Mode chip. Widths can take different paths - a
+ * list virtualized only at desktop widths is photographed under a
+ * full-height viewport there and single-shot on a phone - so the chip states
+ * a path only when every width took it, and otherwise sends the reader to
+ * each image's own label (Codex review on #26).
+ */
+export function sweepModeChip(widthLabels: string[]): string {
+  if (widthLabels.length === 0) return '';
+  return widthLabels.every((l) => l === widthLabels[0])
+    ? widthLabels[0]
+    : 'differs by width - each image says how it was taken';
+}
+
+/**
  * One machine-parseable line stating what this file actually contains — the
  * seed of the Phase 3 multi-page manifest.
  *

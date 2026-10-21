@@ -26,7 +26,7 @@ export { readEncodedImageSize } from '${ROOT}/src/lib/capture-engine/image-size.
 export { contextBlock, buildBundleMarkdown, captureModeLabel, withLatestNotice, LATEST_NOTICE, OUTPUT_README } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { planScrollOffsets } from '${ROOT}/src/lib/capture-engine/segments.ts';
 export { planSlices, wholeImageScale, scaledSize, baseSliceHeight, sliceFilename, SLICE_OVERLAP, MAX_SLICES, MAX_CAPTURE_HEIGHT } from '${ROOT}/src/lib/capture-engine/slices.ts';
-export { tallPageSections, scaleLabel, buildContentsLine, buildSweepMarkdown } from '${ROOT}/src/lib/bundle/markdown.ts';
+export { tallPageSections, scaleLabel, buildContentsLine, buildSweepMarkdown, sweepModeChip } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { contentColumns, planTrim, TRIM_PADDING } from '${ROOT}/src/lib/capture-engine/slices.ts';
 export { decidePageTrigger, parseSitePattern, normalizeSiteList, normalizeTriggerMode, DEFAULT_TRIGGER_SITES } from '${ROOT}/src/lib/site-access.ts';
 export { storedTriggerMode } from '${ROOT}/src/lib/settings.ts';
@@ -1480,6 +1480,15 @@ test('a sweep width captured under a full-height viewport is labelled that way',
     viewport: { width: 1440, height: 900 },
   });
   assert.match(md, /full-height viewport, 1 segment \+ page redraws as it scrolls/);
+});
+
+test('the sweep Mode chip states a path only when every width took it', () => {
+  assert.equal(mod.sweepModeChip(['standard, single-shot', 'standard, single-shot']), 'standard, single-shot');
+  assert.match(
+    mod.sweepModeChip(['standard, single-shot', 'standard, full-height viewport, 1 segment + page redraws as it scrolls']),
+    /differs by width/,
+  );
+  assert.equal(mod.sweepModeChip([]), '');
 });
 
 rmSync(dir, { recursive: true, force: true });

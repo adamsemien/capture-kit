@@ -102,6 +102,11 @@ export const K_RGB = {
   // Inside class="hidden md-show": the token is there but the element shows (Tailwind's hidden md:block).
   // Brown, not blue: a blue block against white rings into the icon's teal in JPEG.
   respLazy: { r: 0x79, g: 0x55, b: 0x48 }, // #795548 - opacity:0 child that MUST still be revealed
+  // The same shape on one element: class="hidden md-show" AND opacity:0 for a lazy reveal.
+  respSame: { r: 0xc2, g: 0x18, b: 0x5b }, // #c2185b - MUST still be revealed
+  // A back-to-top button: fixed, opacity:0 at the top, shown by a scroll handler. The page is
+  // taller than one segment, so the segment loop's scrolling would show it in every later segment.
+  backToTop: { r: 0x1b, g: 0x5e, b: 0x20 }, // #1b5e20 - MUST NOT paint
 };
 
 // Variant V, Vercel's environment-variables list (2026-10-19): rows drawn only
@@ -443,7 +448,11 @@ function virtualizedFixture(variant, { reportsResult = false, manual = false } =
  *   - a fixed visibility:hidden badge sitting half past the right edge;
  *   - an in-flow icon hidden with class="hidden" (visibility:hidden);
  *   - the positive control, an opacity:0 section below the fold that must
- *     still be revealed, so a fix that simply reveals less fails here.
+ *     still be revealed, so a fix that simply reveals less fails here;
+ *   - two more controls under Tailwind-style "hidden md-show", one opacity:0
+ *     inside it and one opacity:0 on the same element;
+ *   - a back-to-top button the page shows only once scrolled, on a page
+ *     taller than one segment.
  */
 function parkedLayersFixture(variant, { reportsResult = false, manual = false } = {}) {
   const reporter = reporterScript(reportsResult, manual);
@@ -464,7 +473,11 @@ function parkedLayersFixture(variant, { reportsResult = false, manual = false } 
   <section id="lazy" style="position:static;opacity:0;height:400px;background:${hex(K_RGB.lazy)}">lazy - SHOULD be revealed</section>
   <div style="height:200px;background:#fff"></div>
   <div class="hidden md-show"><section id="resp-lazy" style="opacity:0;height:300px;background:${hex(K_RGB.respLazy)}">inside a showing .hidden - SHOULD be revealed</section></div>
-  <div style="height:600px;background:#fff"></div>
+  <div style="height:200px;background:#fff"></div>
+  <section id="resp-same" class="hidden md-show" style="opacity:0;height:300px;background:${hex(K_RGB.respSame)}">a showing .hidden that is also lazy - SHOULD be revealed</section>
+  <div style="height:17000px;background:#fff"></div>
+  <a id="back-to-top" href="#" style="position:fixed;bottom:20px;right:20px;width:56px;height:56px;opacity:0;background:${hex(K_RGB.backToTop)}"></a>
+  <script>addEventListener('scroll', () => { document.getElementById('back-to-top').style.opacity = scrollY > 300 ? '1' : '0'; });</script>
   <div class="badge" style="position:fixed;bottom:14px;right:-186px;width:256px;height:60px;visibility:hidden;background:${hex(K_RGB.badge)}"></div>
   <div style="visibility:hidden;position:absolute;width:100%;top:-10000px;left:0;right:0;opacity:0">
     <div style="width:100%;height:100%;position:fixed;top:0;left:0;background:${hex(K_RGB.overlay)};opacity:0.9"></div>
