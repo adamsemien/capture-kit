@@ -1194,6 +1194,24 @@ async function beforeAfterCheck() {
     .find((d) => existsSync(`${d}/01.md`));
   const mirrorText = mirrorDir ? readFileSync(`${mirrorDir}/01.md`, 'utf8') : '';
   await cdp(`/json/close/${t.id}`);
+  // Turned off the way a synced Chrome turns it off - straight in storage,
+  // not through the settings page - the kept copies must go.
+  const countKept = `new Promise((resolve) => {
+    const req = indexedDB.open('capture-kit-compare');
+    req.onsuccess = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('pages')) { db.close(); return resolve(0); }
+      const c = db.transaction('pages', 'readonly').objectStore('pages').count();
+      c.onsuccess = () => { db.close(); resolve(c.result); };
+      c.onerror = () => { db.close(); resolve(-1); };
+    };
+    req.onerror = () => resolve(-1);
+  })`;
+  const keptBefore = await options.eval(countKept);
+  await options.eval(`chrome.storage.sync.set({ compareWithPrevious: false }).then(() => true)`);
+  await sleep(800);
+  const keptAfter = await options.eval(countKept);
+  await options.eval(`chrome.storage.sync.set({ compareWithPrevious: true }).then(() => true)`);
   return {
     firstOk: first.r?.ok === true,
     secondOk: second.r?.ok === true,
@@ -1202,6 +1220,8 @@ async function beforeAfterCheck() {
     changesFile,
     changesFileExists: changesFile ? existsSync(`${captureDir()}/${changesFile}`) : false,
     sessionOk: session?.ok !== false,
+    keptBefore,
+    keptAfter,
     mirrorFound: Boolean(mirrorDir),
     mirrorHasSection: mirrorText.includes('## Changes since the last capture'),
     mirrorOutlined: /outlined in 01_changes\.png/.test(mirrorText) && Boolean(mirrorDir && existsSync(`${mirrorDir}/01_changes.png`)),
@@ -1218,10 +1238,11 @@ function a19Verdict(r) {
   if (!r.changesFileExists) problems.push('no outlined changes image written');
   if (!/Console errors:\*\* 1 new, 1 gone/.test(s) || !/E2 new problem/.test(s) || !/E1 boot failed/.test(s)) problems.push('console errors not compared right');
   if (!/Failed requests:\*\* 1 new, 1 gone/.test(s) || !/missing-v2/.test(s) || !/missing-v1/.test(s)) problems.push('failed requests not compared right');
+  if (!(r.keptBefore > 0) || r.keptAfter !== 0) problems.push(`turning it off in synced storage did not clear the kept copies (${r.keptBefore} then ${r.keptAfter})`);
   if (!r.mirrorFound) problems.push('the session mirror latest-session/01.md was not found');
   else if (!r.mirrorHasSection) problems.push('the session mirror has no comparison section');
   else if (!r.mirrorOutlined) problems.push('the session mirror does not point at its own 01_changes.png');
-  return problems.length ? `FAIL — ${problems.join('; ')}` : `PASS — second report: area outlined in ${r.changesFile}, E2 new / E1 gone, /missing-v2 new / /missing-v1 gone; first report had no comparison; session mirror carries it with 01_changes.png`;
+  return problems.length ? `FAIL — ${problems.join('; ')}` : `PASS — second report: area outlined in ${r.changesFile}, E2 new / E1 gone, /missing-v2 new / /missing-v1 gone; first report had no comparison; session mirror carries it with 01_changes.png; switched off in synced storage, ${r.keptBefore} kept copies became ${r.keptAfter}`;
 }
 
 if (process.argv.includes('--only-before-after')) {

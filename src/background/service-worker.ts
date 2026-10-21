@@ -34,6 +34,7 @@ import { textToBase64 } from '../lib/base64';
 import { ICON_MODE_KEY, getSettings } from '../lib/settings';
 import { decidePageTrigger } from '../lib/site-access';
 import { compareCapture, type Comparison } from '../lib/compare';
+import { clearPages } from '../lib/compare/store';
 import type { Settings } from '../lib/settings';
 import { outputDirHasFile, outputDirStatus, writeToOutputDir } from '../lib/output-dir';
 import { redactPage, redactText } from '../lib/redact';
@@ -2009,6 +2010,16 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 chrome.runtime.onStartup.addListener(() => {
   void syncActionMode();
+});
+
+// Turning "Compare with my last capture" off - here or on another synced
+// Chrome - removes what was kept, as PRIVACY.md says. Handled here rather
+// than only on the settings page, which a synced change never touches
+// (Codex review on #29).
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'sync' && changes.compareWithPrevious?.newValue === false) {
+    void clearPages().catch((error) => console.warn('[capture-kit] could not clear saved comparisons:', error));
+  }
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {

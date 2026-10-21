@@ -233,7 +233,11 @@ export function changesSection(changes: ChangeSummary, capturedAt: Date): string
     if (p.boxes.length > 8) lines.push(`  - …and ${p.boxes.length - 8} more`);
   }
   if (p.compared && p.comparedTo) {
-    lines.push(`- **Not compared:** below ${p.comparedTo} px - the page is too tall to compare whole.`);
+    lines.push(
+      p.heightAfter > p.heightBefore && p.comparedTo >= p.heightBefore - 24
+        ? `- **Not compared:** below ${p.comparedTo} px - the page is longer than at the last capture, and that part is new.`
+        : `- **Not compared:** below ${p.comparedTo} px - the page is too tall to compare whole.`,
+    );
   }
   if (p.compared && Math.abs(p.heightAfter - p.heightBefore) > 2) {
     lines.push(`- **Page height:** ${p.heightAfter} px (was ${p.heightBefore} px) - areas below a height change may be content that moved, not changed.`);

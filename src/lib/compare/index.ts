@@ -168,8 +168,10 @@ async function comparePictures(
     boxes,
     heightBefore: prev.pageHeight,
     heightAfter: input.pageHeight,
-    // Short of the shorter page by more than a cell: only the top was compared.
-    ...(comparedTo < Math.min(prev.pageHeight, input.pageHeight) - CELL * k ? { comparedTo } : {}),
+    // Short of the page as it is now by more than a cell: only the top was
+    // compared - the small copy stopped, or the page grew past the last
+    // capture's bottom (Codex review on #29).
+    ...(comparedTo < input.pageHeight - CELL * k ? { comparedTo } : {}),
   };
   if (thumbBoxes.length === 0) return { picture, diff: null };
 
