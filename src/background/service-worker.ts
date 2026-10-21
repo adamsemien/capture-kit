@@ -1064,13 +1064,14 @@ async function capturePage(asPng: boolean, targetTabId?: number): Promise<Captur
       stamp: stampRequest(settings, redactText(tab.url ?? '').text, capturedAt),
       onProgress: (done, total) => void reportProgress(done, total),
     });
-    // Only the popup reaches this path ("Image only"), and that is a person.
-    flashCapturedTab(tab.id as number, 'popup', settings);
     const mime = format === 'png' ? 'image/png' : 'image/jpeg';
     const imageFilename = `${captureBasename(tab.title || '', tab.url, capturedAt)}.${
       format === 'png' ? 'png' : 'jpg'
     }`;
     const written = await writeBundleFile(imageFilename, mime, result.imageBase64);
+    // After the write, so a failed save can never be confirmed by a flash.
+    // Only the popup reaches this path ("Image only"), and that is a person.
+    flashCapturedTab(tab.id as number, 'popup', settings);
     if (settings.openResult) {
       await openResultTab(
         {
