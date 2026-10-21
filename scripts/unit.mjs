@@ -26,7 +26,7 @@ export { readEncodedImageSize } from '${ROOT}/src/lib/capture-engine/image-size.
 export { contextBlock, buildBundleMarkdown, captureModeLabel, withLatestNotice, LATEST_NOTICE, OUTPUT_README } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { planScrollOffsets } from '${ROOT}/src/lib/capture-engine/segments.ts';
 export { planSlices, wholeImageScale, scaledSize, baseSliceHeight, sliceFilename, SLICE_OVERLAP, MAX_SLICES, MAX_CAPTURE_HEIGHT } from '${ROOT}/src/lib/capture-engine/slices.ts';
-export { tallPageSections, scaleLabel, buildContentsLine } from '${ROOT}/src/lib/bundle/markdown.ts';
+export { tallPageSections, scaleLabel, buildContentsLine, buildSweepMarkdown, sweepModeChip } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { contentColumns, planTrim, TRIM_PADDING } from '${ROOT}/src/lib/capture-engine/slices.ts';
 export { decidePageTrigger, parseSitePattern, normalizeSiteList, normalizeTriggerMode, DEFAULT_TRIGGER_SITES } from '${ROOT}/src/lib/site-access.ts';
 export { storedTriggerMode } from '${ROOT}/src/lib/settings.ts';
@@ -1463,6 +1463,32 @@ test('a page that redraws on scroll says it was captured at full height, not sin
     mod.captureModeLabel('standard', 2, 3, 0, 0, 0, 0, false, true),
     'standard, segmented, 3 segments + reveal-forced (2 elements) + page redraws as it scrolls',
   );
+});
+
+heading('responsive sweep - redraw-on-scroll widths say so');
+test('a sweep width captured under a full-height viewport is labelled that way', () => {
+  const md = mod.buildSweepMarkdown({
+    meta: { url: 'https://example.com/list', title: 'List', viewport: { width: 1440, height: 900 }, userAgent: 'ua' },
+    capturedAt: new Date('2026-10-21T15:00:00Z'),
+    widths: [{
+      width: 1440, filename: 'list_w1440.jpg',
+      fullSize: { width: 1440, height: 6000 }, contentSize: { width: 1440, height: 6000 },
+      imageSize: { width: 1440, height: 6000 }, truncated: false, captureMode: 'standard',
+      revealForced: 0, segments: 1, drawnOnScroll: true,
+    }],
+    failures: [], consoleEntries: [], networkFailures: [], recorderActive: true, includeLogs: false,
+    viewport: { width: 1440, height: 900 },
+  });
+  assert.match(md, /full-height viewport, 1 segment \+ page redraws as it scrolls/);
+});
+
+test('the sweep Mode chip states a path only when every width took it', () => {
+  assert.equal(mod.sweepModeChip(['standard, single-shot', 'standard, single-shot']), 'standard, single-shot');
+  assert.match(
+    mod.sweepModeChip(['standard, single-shot', 'standard, full-height viewport, 1 segment + page redraws as it scrolls']),
+    /differs by width/,
+  );
+  assert.equal(mod.sweepModeChip([]), '');
 });
 
 rmSync(dir, { recursive: true, force: true });

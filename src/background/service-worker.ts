@@ -22,6 +22,7 @@ import {
   buildContentsLine,
   buildSweepMarkdown,
   captureModeLabel,
+  sweepModeChip,
   OUTPUT_README,
   withLatestNotice,
   type SliceRef,
@@ -1168,6 +1169,7 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
         captureMode: capture.result.mode,
         revealForced: capture.result.revealForced,
         heightHeld: capture.result.heightHeld,
+        drawnOnScroll: capture.result.drawnOnScroll,
         segments: capture.result.segments,
       })),
       failures: outcome.failures,
@@ -1181,16 +1183,29 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
     await writeBundleFile(`${basename}_sweep.md`, 'text/markdown', textToBase64(sweepMarkdown));
 
     if (settings.openResult) {
-      const first = outcome.captures[0].result;
+      const widthLabels = outcome.captures.map((capture) =>
+        captureModeLabel(
+          capture.result.mode,
+          capture.result.revealForced,
+          capture.result.segments,
+          capture.result.heightHeld,
+          0,
+          0,
+          0,
+          false,
+          capture.result.drawnOnScroll,
+        ),
+      );
+      const oneMode = new Set(widthLabels).size === 1;
       await openResultTab(
         {
           kind: 'sweep',
-          captureModeLabel: captureModeLabel(first.mode, first.revealForced, first.segments, first.heightHeld),
+          captureModeLabel: sweepModeChip(widthLabels),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
           images: outcome.captures.map((capture, index) => ({
             filename: writtenNames[index],
-            label: `${capture.width} px`,
+            label: oneMode ? `${capture.width} px` : `${capture.width} px - ${widthLabels[index]}`,
             width: capture.result.imageSize.width,
             height: capture.result.imageSize.height,
             bytes: base64Bytes(capture.result.imageBase64),

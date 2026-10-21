@@ -180,6 +180,20 @@ export function captureModeLabel(
 }
 
 /**
+ * The sweep result tab's one Mode chip. Widths can take different paths - a
+ * list virtualized only at desktop widths is photographed under a
+ * full-height viewport there and single-shot on a phone - so the chip states
+ * a path only when every width took it, and otherwise sends the reader to
+ * each image's own label (Codex review on #26).
+ */
+export function sweepModeChip(widthLabels: string[]): string {
+  if (widthLabels.length === 0) return '';
+  return widthLabels.every((l) => l === widthLabels[0])
+    ? widthLabels[0]
+    : 'differs by width - each image says how it was taken';
+}
+
+/**
  * One machine-parseable line stating what this file actually contains — the
  * seed of the Phase 3 multi-page manifest.
  *
@@ -610,6 +624,8 @@ export interface SweepWidthInput {
   captureMode: CaptureMode;
   revealForced: number;
   heightHeld?: number;
+  /** This width was captured under a full-height viewport because the page redraws as it scrolls. */
+  drawnOnScroll?: boolean;
   segments: number;
 }
 
@@ -689,7 +705,7 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
         }),
         `- **Size:** ${width.fullSize.width}×${width.fullSize.height}`,
         `- **Image file:** ${width.imageSize.width}×${width.imageSize.height}`,
-        `- **Capture mode:** ${captureModeLabel(width.captureMode, width.revealForced, width.segments, width.heightHeld)}`,
+        `- **Capture mode:** ${captureModeLabel(width.captureMode, width.revealForced, width.segments, width.heightHeld, 0, 0, 0, false, width.drawnOnScroll)}`,
       ].join('\n'),
     );
   }
