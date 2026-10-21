@@ -169,6 +169,9 @@ export const DRAWER_VARIANTS = {
   // short enough (120 rows x 52px) for the single-shot path, which captured
   // the rows drawn at load and a blank spacer below them.
   'V virtualized-short': null,
+  // The capture flash probe: a plain page that records every flash overlay
+  // Capture Kit adds, so a check can ask "did it flash, how, and is it gone".
+  'L flash-probe': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
   // /studio: position:fixed, off-canvas right, clipped by overflow:clip on
   // body and html, and NO dominant inner scroller — shouldExpand is false, so
@@ -211,6 +214,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('J ')) return pinnedPanelFixture(variant, { reportsResult, manual });
   if (variant.startsWith('K ')) return parkedLayersFixture(variant, { reportsResult, manual });
   if (variant.startsWith('V ')) return virtualizedFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('L ')) return flashProbeFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
   const rows = Array.from(
     { length: ROW_COUNT },
@@ -396,6 +400,30 @@ function lazySectionsFixture(variant, { reportsResult = false, manual = false } 
   <div id="hero"><h1>repro: ${variant}</h1><p>hero content, always visible</p></div>
   ${sections}
   ${reporter}
+</body></html>`;
+}
+
+/**
+ * Variant L. Records each capture-flash overlay as it is added, in the main
+ * world, so the harness can read window.__ckFlashes after a capture.
+ */
+function flashProbeFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>html,body{margin:0;background:#2a3f5f;color:#fff;font:20px sans-serif}main{height:1200px;padding:16px}</style>
+</head><body><main>repro: ${variant}</main>
+<script>
+  window.__ckFlashes = [];
+  new MutationObserver((records) => {
+    for (const r of records) for (const n of r.addedNodes) {
+      if (n.nodeType === 1 && n.hasAttribute('data-capture-kit-flash')) {
+        window.__ckFlashes.push({ kind: n.getAttribute('data-capture-kit-flash'), at: Date.now() });
+      }
+    }
+  }).observe(document.documentElement, { childList: true });
+</script>
+${reporter}
 </body></html>`;
 }
 

@@ -34,6 +34,7 @@ import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
 import { ICON_MODE_KEY, getSettings } from '../lib/settings';
 import { decidePageTrigger } from '../lib/site-access';
+import { flashesFor, showCaptureFlash } from '../lib/flash';
 import type { Settings } from '../lib/settings';
 import { outputDirHasFile, outputDirStatus, writeToOutputDir } from '../lib/output-dir';
 import { redactPage, redactText } from '../lib/redact';
@@ -625,6 +626,21 @@ function describeError(error: unknown): string {
 }
 
 /**
+ * The "photo taken" flash on the captured tab (see lib/flash.ts). Called only
+ * once the capture has returned - the debugger is detached and every change
+ * to the page undone - so the overlay can never be in the image.
+ * Fire-and-forget: a page that refuses script injection simply gets no flash.
+ */
+function flashCapturedTab(tabId: number, trigger: CaptureTrigger, settings: Settings): void {
+  if (!flashesFor(trigger, settings.captureFlash)) return;
+  void chrome.scripting
+    .executeScript({ target: { tabId }, func: showCaptureFlash })
+    .catch(() => {
+      /* restricted page or a tab that went away */
+    });
+}
+
+/**
  * One page report: capture, build markdown, write both files. Shared by the
  * single-page button and the session runner, which is why the tab and the
  * output folder are parameters rather than "whatever is active".
@@ -1016,6 +1032,9 @@ async function captureBundle(trigger: CaptureTrigger, targetTabId?: number): Pro
       );
     }
 
+    // Last, once every write has succeeded, so a capture that fails part way
+    // (a latest.* pointer, the result tab) is never confirmed by a flash.
+    flashCapturedTab(tabId, trigger, settings);
     await endIndicator(true, announce);
     return { ok: true, imageFilename, markdown: clipboardMarkdown, copied };
   } catch (error) {
@@ -1085,6 +1104,10 @@ async function capturePage(asPng: boolean, targetTabId?: number): Promise<Captur
         [{ mime, base64: result.imageBase64 }],
       );
     }
+    // Last, once the file and the result tab are done, so a failed save can
+    // never be confirmed by a flash. Only the popup reaches this path ("Image
+    // only"), and that is a person.
+    flashCapturedTab(tab.id as number, 'popup', settings);
     await endIndicator(true, false);
     return { ok: true, imageFilename: written.filename };
   } catch (error) {
