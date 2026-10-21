@@ -20,6 +20,8 @@ export interface ScrollStitchInfo {
   frames: number;
   /** The content got longer while it was scrolled; the capture stops at the starting length. */
   grew: boolean;
+  /** A panel taller than the window: this many rows at its bottom never came into view. */
+  cutRows?: number;
 }
 
 /** CDP quality is 0–100; canvas encoding divides by 100. */

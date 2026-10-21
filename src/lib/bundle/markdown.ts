@@ -204,7 +204,10 @@ export function scrollStitchLabel(info: ScrollStitchInfo, revealForced = 0): str
     ? ' - the content grew while it was scrolled, so the capture stops at its starting length'
     : '';
   const reveal = revealForced > 0 ? ` + reveal-forced (${revealForced} elements)` : '';
-  return `scrolled and stitched: ${what}${why}${grew}, ${info.frames} ${info.frames === 1 ? 'screen' : 'screens'}${reveal}`;
+  const cut = info.cutRows
+    ? ` - the panel is taller than the window, so its last ${info.cutRows} px are not in the image`
+    : '';
+  return `scrolled and stitched: ${what}${why}${grew}${cut}, ${info.frames} ${info.frames === 1 ? 'screen' : 'screens'}${reveal}`;
 }
 
 /**

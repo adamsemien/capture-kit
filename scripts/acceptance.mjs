@@ -41,6 +41,7 @@ import {
   V_RGB,
   W_RGB,
   X_RGB,
+  R_RGB,
   Y_RGB,
   fixture as drawerFixture,
   viewportFor,
@@ -1148,6 +1149,7 @@ function a15Verdict(r) {
 const W_VARIANT = 'W canvas-app';
 const X_VARIANT = 'X pointer-panel';
 const Q_VARIANT = 'Q low-panel';
+const R_VARIANT = 'R clipped-panel';
 const Y_VARIANT = 'Y sticky-header-page';
 const named18 = (obj) => Object.entries(obj).map(([name, c]) => ({ name, r: c.r, g: c.g, b: c.b }));
 async function scrollCaptureVariant(variant, colours, hover, { scrollTo = 0, leave = false } = {}) {
@@ -1167,7 +1169,11 @@ async function scrollCaptureVariant(variant, colours, hover, { scrollTo = 0, lea
     await sleep(300);
   }
   if (hover) {
-    await live.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hover[0], y: hover[1] });
+    // A negative y counts up from the bottom of the window.
+    const vh = hover[1] < 0
+      ? (await live.send('Runtime.evaluate', { expression: 'window.innerHeight', returnByValue: true })).result.value
+      : 0;
+    await live.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hover[0], y: hover[1] < 0 ? vh + hover[1] : hover[1] });
   }
   // The pointer leaves the page, as it does on its way to the popup.
   if (leave) await live.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: -20, y: -20 });
@@ -1196,7 +1202,8 @@ async function stitchCheck() {
   const x = await scrollCaptureVariant(X_VARIANT, named18(X_RGB), [200, 200]);
   const y = await scrollCaptureVariant(Y_VARIANT, named18(Y_RGB), [300, 300]);
   const q = await scrollCaptureVariant(Q_VARIANT, named18(X_RGB), [200, 250], { scrollTo: 1400, leave: true });
-  return { w, x, y, q };
+  const rr = await scrollCaptureVariant(R_VARIANT, named18(R_RGB), [200, -25]);
+  return { w, x, y, q, r: rr };
 }
 function colourMap(px) {
   return Object.fromEntries((px?.colours ?? []).map((c) => [c.name, c.pixels]));
@@ -1213,17 +1220,19 @@ function a18Verdict(r) {
   if (!['d', 'e', 'f'].every((k) => (q[k] ?? 0) > 200)) problems.push(`low panel (page scrolled, pointer gone) missing blocks: ${JSON.stringify(q)}`);
   if (!/panel under your pointer/.test((r.q.modeLine ?? []).join(' '))) problems.push('low panel was not the target once the pointer left');
   if (r.q.after?.page !== 1400 || r.q.after?.panel !== 0) problems.push(`low panel capture left the page at ${r.q.after?.page} and the panel at ${r.q.after?.panel} (want 1400 and 0)`);
+  const rc = colourMap(r.r.px);
+  if (!['d', 'e', 'f', 'tail'].every((k) => (rc[k] ?? 0) > 200)) problems.push(`clipped panel lost rows: ${JSON.stringify(rc)}`);
   const y = colourMap(r.y.px);
   if ((y.end ?? 0) < 100) problems.push(`sticky page lost its last block (${y.end ?? 0} px)`);
   return problems.length
     ? `FAIL — ${problems.join('; ')}`
-    : `PASS — canvas app stitched automatically with all 3 bands; pointer panel stitched whole; low panel stitched with the pointer gone and page/panel left at ${r.q.after?.page}/${r.q.after?.panel} (hover after leaving: ${r.q.hoverLeft || "none"}); sticky page complete (a/b/c ${w.a}/${w.b}/${w.c}, d/e/f ${x.d}/${x.e}/${x.f}, end ${y.end})`;
+    : `PASS — canvas app stitched automatically with all 3 bands; pointer panel stitched whole; clipped panel complete to its last rows (tail ${colourMap(r.r.px).tail ?? 0}); low panel stitched with the pointer gone and page/panel left at ${r.q.after?.page}/${r.q.after?.panel} (hover after leaving: ${r.q.hoverLeft || "none"}); sticky page complete (a/b/c ${w.a}/${w.b}/${w.c}, d/e/f ${x.d}/${x.e}/${x.f}, end ${y.end})`;
 }
 
 if (process.argv.includes('--only-stitch')) {
   heading('CHECK A18 — scroll and stitch');
   const r = await stitchCheck();
-  for (const k of ['w', 'x', 'y']) console.log(`${k}: ` + JSON.stringify({ mode: r[k].modeLine, px: r[k].px?.colours?.map((c) => [c.name, c.pixels]) }));
+  for (const k of ['w', 'x', 'y', 'q', 'r']) console.log(`${k}: ` + JSON.stringify({ mode: r[k].modeLine, px: r[k].px?.colours?.map((c) => [c.name, c.pixels]) }));
   console.log('VERDICT A18 scroll and stitch: ' + a18Verdict(r));
   if (process.env.CK_COMPARE_DIST) {
     heading('CHECK A18 (falsifiability) — the canvas app on the comparison build');

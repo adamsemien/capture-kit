@@ -84,6 +84,8 @@ interface TargetInfo {
   frame: { x: number; y: number; width: number; height: number };
   scrollTop: number;
   maxScroll: number;
+  /** Height of the target's own viewport; more than the frame when it is taller than the window. */
+  viewHeight: number;
 }
 
 /**
@@ -162,6 +164,26 @@ function targetScript(prefer: ScrollTargetPreference): string {
 }
 
 /**
+ * A panel partly off screen is brought fully on screen first: the frame is
+ * what is visible, and stitching maps frame rows to panel rows from the
+ * panel's own top, so a cut-off top would shift every frame and a cut-off
+ * bottom would never be photographed (Codex review on #27). The page is
+ * scrolled back afterwards with everything else. Returns how far the panel's
+ * top still sits above the window (0 unless the page cannot scroll there).
+ */
+const ALIGN_PANEL_SCRIPT = `(() => {
+  const el = document.querySelector('[${TARGET_ATTR}]');
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  const top = r.top + el.clientTop;
+  if (top < 0 || top + el.clientHeight > window.innerHeight) {
+    window.scrollBy({ left: 0, top: top, behavior: 'instant' });
+  }
+  const after = el.getBoundingClientRect().top + el.clientTop;
+  return Math.max(0, -after);
+})()`;
+
+/**
  * The marked panel's visible box and scroll range, measured after UNSTICK so
  * neutralized chrome cannot shift it afterwards. The frame is the panel's
  * padding box (no border, no scrollbar) clipped to the viewport.
@@ -179,6 +201,7 @@ const MEASURE_PANEL_SCRIPT = `(() => {
     frame: { x: x0, y: y0, width: Math.max(0, x1 - x0), height: Math.max(0, y1 - y0) },
     scrollTop: el.scrollTop,
     maxScroll: Math.max(0, el.scrollHeight - el.clientHeight),
+    viewHeight: el.clientHeight,
   };
 })()`;
 
@@ -192,6 +215,7 @@ const MEASURE_PAGE_SCRIPT = `(() => {
     frame: { x: 0, y: 0, width: root.clientWidth || window.innerWidth, height },
     scrollTop: window.scrollY,
     maxScroll: Math.max(0, doc.scrollHeight - height),
+    viewHeight: height,
   };
 })()`;
 
@@ -366,6 +390,9 @@ async function captureByScrolling(
         target,
         `window.scrollTo({ left: ${originalScroll.x}, top: ${originalScroll.y}, behavior: 'instant' })`,
       );
+      const hiddenAbove = await evaluateInPage<number | null>(target, ALIGN_PANEL_SCRIPT);
+      if (hiddenAbove === null) throw new Error('The panel to scroll disappeared before the capture started.');
+      if (hiddenAbove > 1) throw new Error('The panel to scroll could not be brought on screen.');
     }
 
     let info: TargetInfo;
@@ -474,6 +501,9 @@ async function captureByScrolling(
       reason,
       frames: done,
       grew,
+      // A panel taller than the window: its last rows never come into view
+      // however far it scrolls, and the report says how many.
+      ...(info.viewHeight - frameH > 2 ? { cutRows: Math.round(info.viewHeight - frameH) } : {}),
     };
     const fullSize = { width: frameW, height: Math.min(reachedBottom, maxScroll + frameH) };
     return {
@@ -483,7 +513,7 @@ async function captureByScrolling(
       fullSize,
       contentSize: { width: frameW, height: info.scrollHeight },
       imageSize: readEncodedImageSize(imageBase64, request.format) ?? canvas.wholeSize,
-      truncated: framesCut || maxScroll < info.maxScroll,
+      truncated: framesCut || maxScroll < info.maxScroll || info.viewHeight - frameH > 2,
       segments: done,
       revealForced: 0,
       browserZoom,

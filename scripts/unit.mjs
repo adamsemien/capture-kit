@@ -1483,6 +1483,12 @@ test('a runaway feed is cut at the frame cap and says so', () => {
   assert.equal(stops.length, mod.MAX_SCROLL_FRAMES);
   assert.equal(truncated, true);
 });
+test('a panel taller than the window says how much of its bottom is missing', () => {
+  assert.match(
+    mod.scrollStitchLabel({ target: 'panel', how: 'pointer', label: 'div#p', reason: 'asked', frames: 4, grew: false, cutRows: 220 }),
+    /taller than the window, so its last 220 px are not in the image, 4 screens/,
+  );
+});
 test('the report names what was scrolled and why it was picked', () => {
   assert.equal(
     mod.scrollStitchLabel({ target: 'panel', how: 'pointer', label: 'div#panel', reason: 'asked', frames: 9, grew: false }),

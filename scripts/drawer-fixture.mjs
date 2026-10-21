@@ -122,6 +122,9 @@ export const X_RGB = {
   e: { r: 0x5e, g: 0x35, b: 0xb1 }, // #5e35b1 - panel content middle
   f: { r: 0x00, g: 0x89, b: 0x7b }, // #00897b - panel content bottom
 };
+// Variant R: the X panel mostly below the window, its content ending in a
+// strip that only a capture reaching the panel's last rows can contain.
+export const R_RGB = { ...X_RGB, tail: { r: 0xfd, g: 0xd8, b: 0x35 } }; // #fdd835
 export const Y_RGB = {
   header: { r: 0x37, g: 0x47, b: 0x4f }, // #37474f - sticky header, must appear once
   end: { r: 0xfd, g: 0xd8, b: 0x35 }, // #fdd835 - last block on the page
@@ -187,6 +190,9 @@ export const DRAWER_VARIANTS = {
   // and the pointer gone (the popup button): the panel must still be the
   // target, and the page and the panel must be left where they were.
   'Q low-panel': null,
+  // The panel starts 120px above the bottom of the window, so most of it is
+  // off screen when the pointer is put on it.
+  'R clipped-panel': null,
   // A long page with a sticky header. Stitched, the header must appear once.
   'Y sticky-header-page': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
@@ -234,6 +240,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('W ')) return canvasAppFixture(variant, { reportsResult, manual });
   if (variant.startsWith('X ')) return pointerPanelFixture(variant, { reportsResult, manual });
   if (variant.startsWith('Q ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 1500 });
+  if (variant.startsWith('R ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 'calc(100vh - 120px)', tail: true });
   if (variant.startsWith('Y ')) return stickyHeaderFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
   const rows = Array.from(
@@ -461,11 +468,11 @@ function canvasAppFixture(variant, { reportsResult = false, manual = false } = {
 </body></html>`;
 }
 
-function pointerPanelFixture(variant, { reportsResult = false, manual = false, spacer = 0 } = {}) {
+function pointerPanelFixture(variant, { reportsResult = false, manual = false, spacer = 0, tail = false } = {}) {
   const reporter = reporterScript(reportsResult, manual);
   const blocks = [X_RGB.d, X_RGB.e, X_RGB.f]
     .map((c) => `<div style="height:800px;background:${hex(c)}"></div>`)
-    .join('');
+    .join('') + (tail ? `<div style="height:60px;background:${hex(R_RGB.tail)}"></div>` : '');
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
 <style>
@@ -476,7 +483,7 @@ function pointerPanelFixture(variant, { reportsResult = false, manual = false, s
 </style></head>
 <body>
   <header>repro: ${variant}</header>
-  ${spacer ? `<div id="spacer" style="height:${spacer}px"></div>` : ''}
+  ${spacer ? `<div id="spacer" style="height:${typeof spacer === 'number' ? `${spacer}px` : spacer}"></div>` : ''}
   <div id="panel">${blocks}</div>
   <div id="below"></div>
   ${reporter}
