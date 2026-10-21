@@ -1483,6 +1483,12 @@ test('a runaway feed is cut at the frame cap and says so', () => {
   assert.equal(stops.length, mod.MAX_SCROLL_FRAMES);
   assert.equal(truncated, true);
 });
+test('a capture that stopped because the content shrank says so', () => {
+  assert.match(
+    mod.scrollStitchLabel({ target: 'page', how: 'page', label: 'the page', reason: 'asked', frames: 3, grew: false, shrank: true }),
+    /got shorter while it was scrolled, so the capture ends where scrolling stopped, 3 screens/,
+  );
+});
 test('a panel taller than the window says how much of its bottom is missing', () => {
   assert.match(
     mod.scrollStitchLabel({ target: 'panel', how: 'pointer', label: 'div#p', reason: 'asked', frames: 4, grew: false, cutRows: 220 }),

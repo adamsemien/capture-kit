@@ -20,6 +20,8 @@ export interface ScrollStitchInfo {
   frames: number;
   /** The content got longer while it was scrolled; the capture stops at the starting length. */
   grew: boolean;
+  /** Scrolling stopped short of the measured bottom: the content got shorter while it was scrolled. */
+  shrank?: boolean;
   /** A panel taller than the window: this many rows at its bottom never came into view. */
   cutRows?: number;
 }

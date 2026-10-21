@@ -130,6 +130,10 @@ function targetScript(prefer: ScrollTargetPreference): string {
       if (scrollsY(node)) { target = node; how = 'pointer'; break; }
     }
   }
+  if (!target && ${JSON.stringify(prefer)} === 'largest') {
+    const detected = document.querySelector('[data-capture-kit-canvas-panel]');
+    if (detected && scrollsY(detected)) { target = detected; how = 'largest'; }
+  }
   if (!target && (${JSON.stringify(prefer)} === 'largest' || !docScrolls)) {
     let best = null, bestArea = 0;
     for (const el of document.querySelectorAll('*')) {
@@ -394,6 +398,7 @@ function stepScript(
 const CLEAR_TARGET_SCRIPT = `(() => {
   for (const el of document.querySelectorAll('[${TARGET_ATTR}]')) el.removeAttribute('${TARGET_ATTR}');
   for (const el of document.querySelectorAll('[${STICKY_ATTR}]')) el.removeAttribute('${STICKY_ATTR}');
+  for (const el of document.querySelectorAll('[data-capture-kit-canvas-panel]')) el.removeAttribute('data-capture-kit-canvas-panel');
 })()`;
 
 interface ScreenshotResult {
@@ -406,26 +411,15 @@ async function captureByScrolling(
   prefer: ScrollTargetPreference,
   reason: ScrollStitchReason,
 ): Promise<CaptureResult> {
-  // Same zoom normalization as the standard path: frames are measured in CSS
-  // pixels, and a zoomed tab would make every offset wrong.
-  let restoreZoom: number | null = null;
-  let browserZoom = 1;
-  try {
-    const zoom = await chrome.tabs.getZoom(request.tabId);
-    if (Number.isFinite(zoom) && zoom > 0) browserZoom = zoom;
-    if (Math.abs(browserZoom - 1) > 0.001) {
-      restoreZoom = browserZoom;
-      await chrome.tabs.setZoom(request.tabId, 1);
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
-  } catch {
-    /* zoom unavailable; capture at whatever zoom is set */
-  }
-
+  // Read before the zoom is touched: changing it reflows the page and moves
+  // the CSS scroll offset, and this is where you are put back (Codex review
+  // on #27).
   const originalScroll = await evaluateInPage<{ x: number; y: number }>(
     target,
     '({ x: window.scrollX, y: window.scrollY })',
   );
+  let restoreZoom: number | null = null;
+  let browserZoom = 1;
   let frozen = false;
   let unstuck = false;
   let panelScroll: { top: number; left: number } | null = null;
@@ -445,6 +439,21 @@ async function captureByScrolling(
         `(() => { const el = document.querySelector('[${TARGET_ATTR}]'); return el ? { top: el.scrollTop, left: el.scrollLeft } : null; })()`,
       );
       await evaluateInPage<number>(target, SAVE_ANCESTORS_SCRIPT);
+    }
+    // Same zoom normalization as the standard path: frames are measured in
+    // CSS pixels, and a zoomed tab would make every offset wrong. After the
+    // target is chosen and marked - at the zoom you were looking at, where
+    // the pointer position means what it meant (Codex review on #27).
+    try {
+      const zoom = await chrome.tabs.getZoom(request.tabId);
+      if (Number.isFinite(zoom) && zoom > 0) browserZoom = zoom;
+      if (Math.abs(browserZoom - 1) > 0.001) {
+        restoreZoom = browserZoom;
+        await chrome.tabs.setZoom(request.tabId, 1);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    } catch {
+      /* zoom unavailable; capture at whatever zoom is set */
     }
     await evaluateInPage<void>(target, FREEZE_SCRIPT);
     frozen = true;
@@ -503,6 +512,8 @@ async function captureByScrolling(
     let done = 0;
     let framesCut = false;
     let lastY = -1;
+    /** Stopped because scrolling went no further: the content got shorter. */
+    let shrank = false;
     for (;;) {
       if (done >= MAX_SCROLL_FRAMES) {
         framesCut = true;
@@ -529,7 +540,10 @@ async function captureByScrolling(
       // The page would not scroll any further: it is shorter now than when
       // the capture started (content collapsed or unloaded as it scrolled).
       // Stop instead of photographing the same screen until the frame cap.
-      if (done > 0 && y <= lastY) break;
+      if (done > 0 && y <= lastY) {
+        shrank = true;
+        break;
+      }
       lastY = y;
       const band = done > 0 ? Math.min(step.band, frameH - 1) : 0;
       const shot = await sendCommand<ScreenshotResult>(target, 'Page.captureScreenshot', {
@@ -591,6 +605,7 @@ async function captureByScrolling(
       reason,
       frames: done,
       grew,
+      ...(shrank && reachedBottom < maxScroll + frameH - 2 ? { shrank: true } : {}),
       // A panel taller than the window: its last rows never come into view
       // however far it scrolls, and the report says how many.
       ...(info.viewHeight - frameH > 2 ? { cutRows: Math.round(info.viewHeight - frameH) } : {}),
@@ -603,7 +618,7 @@ async function captureByScrolling(
       fullSize,
       contentSize: { width: frameW, height: info.scrollHeight },
       imageSize: readEncodedImageSize(imageBase64, request.format) ?? canvas.wholeSize,
-      truncated: framesCut || maxScroll < info.maxScroll || info.viewHeight - frameH > 2,
+      truncated: framesCut || maxScroll < info.maxScroll || info.viewHeight - frameH > 2 || (shrank && reachedBottom < maxScroll + frameH - 2),
       segments: done,
       revealForced: 0,
       browserZoom,
@@ -720,6 +735,9 @@ export async function detectCanvasScroller(tabId: number): Promise<boolean> {
             bestArea = a;
           }
         }
+        for (const el of Array.from(document.querySelectorAll('[data-capture-kit-canvas-panel]'))) {
+          el.removeAttribute('data-capture-kit-canvas-panel');
+        }
         if (!best || bestArea < 0.3 * vw * vh) return false;
         const b = visible(best.getBoundingClientRect());
         let canvasArea = 0;
@@ -729,7 +747,11 @@ export async function detectCanvasScroller(tabId: number): Promise<boolean> {
           const h = Math.min(v.y1, b.y1) - Math.max(v.y0, b.y0);
           if (w > 0 && h > 0) canvasArea += w * h;
         }
-        return canvasArea >= 0.4 * bestArea;
+        if (canvasArea < 0.4 * bestArea) return false;
+        // The capture stitches this panel, not whichever one a looser rule
+        // would call largest (Codex review on #27).
+        best.setAttribute('data-capture-kit-canvas-panel', '');
+        return true;
       },
     });
     return result?.result === true;

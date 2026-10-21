@@ -185,6 +185,10 @@ export const DRAWER_VARIANTS = {
   // inside it repaints only the rows on screen. Rendering tall leaves blank
   // canvas below the first screen; only scrolling gets bands b and c drawn.
   'W canvas-app': null,
+  // The canvas app beside a slightly larger list that overflows a little:
+  // automatic detection approves the canvas panel, and the capture must
+  // stitch that one, not the larger list.
+  'U canvas-beside-list': null,
   // A normal scrolling page holding a 300px panel that scrolls on its own.
   // Scroll capture with the pointer over the panel must stitch the panel.
   'X pointer-panel': null,
@@ -246,6 +250,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('K ')) return parkedLayersFixture(variant, { reportsResult, manual });
   if (variant.startsWith('V ')) return virtualizedFixture(variant, { reportsResult, manual });
   if (variant.startsWith('W ')) return canvasAppFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('U ')) return canvasAppFixture(variant, { reportsResult, manual, beside: true });
   if (variant.startsWith('X ')) return pointerPanelFixture(variant, { reportsResult, manual });
   if (variant.startsWith('Q ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 1500 });
   if (variant.startsWith('N ')) return nestedPanelFixture(variant, { reportsResult, manual });
@@ -440,19 +445,20 @@ function lazySectionsFixture(variant, { reportsResult = false, manual = false } 
 </body></html>`;
 }
 
-function canvasAppFixture(variant, { reportsResult = false, manual = false } = {}) {
+function canvasAppFixture(variant, { reportsResult = false, manual = false, beside = false } = {}) {
   const reporter = reporterScript(reportsResult, manual);
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
 <style>
   html,body{margin:0;height:100%;overflow:hidden;font:14px sans-serif}
   #shell{display:flex;height:100vh}
-  nav{width:160px;background:#eceff1;padding:12px;box-sizing:border-box}
+  nav{width:${beside ? 0 : 160}px;background:#eceff1;padding:${beside ? 0 : 12}px;box-sizing:border-box;overflow:hidden}
+  #list{width:52%;overflow:auto;background:#fafafa}
   #scroller{flex:1;overflow:auto;position:relative}
   #c{position:sticky;top:0;display:block;width:100%;height:100vh}
 </style></head>
 <body>
-  <div id="shell"><nav>repro: ${variant}</nav><div id="scroller"><canvas id="c"></canvas><div id="spacer"></div></div></div>
+  <div id="shell"><nav>repro: ${variant}</nav>${beside ? '<div id="list"><div style="height:120vh">list</div></div>' : ''}<div id="scroller"><canvas id="c"></canvas><div id="spacer"></div></div></div>
   <script>
     const TOTAL = 3000;
     const BANDS = [['${hex(W_RGB.a)}', 0, 1000], ['${hex(W_RGB.b)}', 1000, 2000], ['${hex(W_RGB.c)}', 2000, 3000]];
