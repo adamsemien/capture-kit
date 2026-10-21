@@ -936,7 +936,6 @@ async function captureBundle(trigger: CaptureTrigger, targetTabId?: number): Pro
 
     await beginIndicator();
     const report = await captureReport(tab, settings, trigger);
-    flashCapturedTab(tabId, trigger, settings);
     const {
       capturedAt, imageFilename, markdown, clipboardMarkdown,
       imageMime, imageDownloadId, result,
@@ -1032,6 +1031,9 @@ async function captureBundle(trigger: CaptureTrigger, targetTabId?: number): Pro
       );
     }
 
+    // Last, once every write has succeeded, so a capture that fails part way
+    // (a latest.* pointer, the result tab) is never confirmed by a flash.
+    flashCapturedTab(tabId, trigger, settings);
     await endIndicator(true, announce);
     return { ok: true, imageFilename, markdown: clipboardMarkdown, copied };
   } catch (error) {
@@ -1069,9 +1071,6 @@ async function capturePage(asPng: boolean, targetTabId?: number): Promise<Captur
       format === 'png' ? 'png' : 'jpg'
     }`;
     const written = await writeBundleFile(imageFilename, mime, result.imageBase64);
-    // After the write, so a failed save can never be confirmed by a flash.
-    // Only the popup reaches this path ("Image only"), and that is a person.
-    flashCapturedTab(tab.id as number, 'popup', settings);
     if (settings.openResult) {
       await openResultTab(
         {
@@ -1104,6 +1103,10 @@ async function capturePage(asPng: boolean, targetTabId?: number): Promise<Captur
         [{ mime, base64: result.imageBase64 }],
       );
     }
+    // Last, once the file and the result tab are done, so a failed save can
+    // never be confirmed by a flash. Only the popup reaches this path ("Image
+    // only"), and that is a person.
+    flashCapturedTab(tab.id as number, 'popup', settings);
     await endIndicator(true, false);
     return { ok: true, imageFilename: written.filename };
   } catch (error) {
