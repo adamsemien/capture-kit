@@ -1163,17 +1163,30 @@ async function beforeAfterCheck() {
     await sleep(1500);
     return { r, report: newestFile('.md') };
   };
+  // The fixture picks its version from the hash at load: change the hash, let
+  // that land, reload, and wait for the load to finish - a reload sent on the
+  // heels of the hash change could reload the old version.
+  const goto = async (hash) => {
+    await options.eval(`chrome.tabs.update(${tabId}, { url: ${JSON.stringify(base)} + ${JSON.stringify(hash)} }).then(() => true)`);
+    await sleep(600);
+    await options.eval(`chrome.tabs.reload(${tabId}).then(() => true)`);
+    await sleep(400);
+    for (let i = 0; i < 40; i++) {
+      const tab = await options.eval(`chrome.tabs.get(${tabId}).then((x) => ({ status: x.status, url: x.url }))`);
+      if (tab.status === 'complete' && tab.url.endsWith(hash)) break;
+      await sleep(250);
+    }
+    await sleep(1200);
+  };
   const first = await capture();
   const firstText = first.report ? readCapture(first.report) : '';
-  await options.eval(`chrome.tabs.update(${tabId}, { url: ${JSON.stringify(`${base}#v2`)} }).then(() => chrome.tabs.reload(${tabId})).then(() => true)`);
-  await sleep(2500);
+  await goto('#v2');
   const second = await capture();
   const text = second.report ? readCapture(second.report) : '';
   const changesFile = /outlined in (\S+_changes\.png)/.exec(text)?.[1] ?? null;
   // A session of the same page, back at #v1: its mirror copy (latest-session/
   // 01.md) must carry the comparison and its own 01_changes.png.
-  await options.eval(`chrome.tabs.update(${tabId}, { url: ${JSON.stringify(`${base}#v1`)} }).then(() => chrome.tabs.reload(${tabId})).then(() => true)`);
-  await sleep(2500);
+  await goto('#v1');
   const session = await options.eval(`chrome.runtime.sendMessage({ type: 'SESSION_START', tabIds: [${tabId}], reload: false })`);
   await sleep(2500);
   const mirrorDir = [OUTPUT_DIR, `${DOWNLOADS}/capture-kit`, DOWNLOADS]
