@@ -1119,10 +1119,12 @@ async function hiddenLayersCheck() {
   // the suite's window is narrower than 1440.
   const vwLine = /Viewport:\*\*\s*(\d+)/.exec((run.modeLine ?? []).join(' '));
   const vw = vwLine ? Number(vwLine[1]) : viewportFor(K_VARIANT).width;
-  const leaks = ['overlay', 'badge', 'icon'].filter((k) => (by[k] ?? 0) > 50);
+  const leaks = ['overlay', 'badge', 'icon', 'backToTop', 'closedMenu'].filter((k) => (by[k] ?? 0) > 50);
   const widened = (run.px?.width ?? 0) > vw;
   const lazyShown = (by.lazy ?? 0) > 200;
-  return { run, by, vw, leaks, widened, lazyShown };
+  const respLazyShown = (by.respLazy ?? 0) > 200;
+  const respSameShown = (by.respSame ?? 0) > 200;
+  return { run, by, vw, leaks, widened, lazyShown, respLazyShown, respSameShown };
 }
 function a15Verdict(r) {
   if (r.run.error || r.run.px?.error) return `INCONCLUSIVE — ${r.run.error ?? r.run.px.error}`;
@@ -1130,9 +1132,11 @@ function a15Verdict(r) {
   if (r.leaks.length) problems.push(`hidden layers painted: ${r.leaks.map((k) => `${k} ${r.by[k]} px`).join(', ')}`);
   if (r.widened) problems.push(`image widened to ${r.run.px.width}px past the ${r.vw}px viewport`);
   if (!r.lazyShown) problems.push(`the lazy section was NOT revealed (${r.by.lazy ?? 0} px) - over-corrected`);
+  if (!r.respLazyShown) problems.push(`the lazy section inside a showing class="hidden" was NOT revealed (${r.by.respLazy ?? 0} px)`);
+  if (!r.respSameShown) problems.push(`the lazy section that is itself a showing class="hidden" was NOT revealed (${r.by.respSame ?? 0} px)`);
   return problems.length
     ? `FAIL — ${problems.join('; ')}`
-    : `PASS — no hidden layer painted, width ${r.run.px.width}px, lazy section revealed (${r.by.lazy} px)`;
+    : `PASS — no hidden layer painted (back-to-top ${r.by.backToTop ?? 0} px), width ${r.run.px.width}px, ${r.run.modeLine?.find((l) => /segment/.test(l))?.trim() ?? ''}, lazy sections revealed (${r.by.lazy} px, ${r.by.respLazy} px inside a showing .hidden, ${r.by.respSame} px on one)`;
 }
 
 // --- CHECK A17: the capture flash ------------------------------------------
@@ -1269,9 +1273,9 @@ if (process.argv.includes('--only-hidden-layers')) {
     console.log('pixels: ' + JSON.stringify(old.run.px));
     console.log(
       'VERDICT A15 is falsifiable: ' +
-        (old.leaks.length || old.widened
-          ? `PASS — the comparison build leaks (${a15Verdict(old)})`
-          : `FAIL — the comparison build did not leak either: ${a15Verdict(old)}`),
+        (a15Verdict(old).startsWith('FAIL')
+          ? `PASS — the comparison build fails it (${a15Verdict(old)})`
+          : `FAIL — the comparison build passes too: ${a15Verdict(old)}`),
     );
   }
   options.close();
