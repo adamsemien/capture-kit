@@ -71,6 +71,12 @@ export interface Settings {
    * OFF, so anyone who relied on the report riding along keeps it.
    */
   clipboardImageOnly: boolean;
+  /**
+   * One soft flash over the page when a capture you fired finishes (shortcut,
+   * icon or popup). Default ON: it is the only on-page sign a capture landed
+   * when no result tab opens. Page and agent captures never flash.
+   */
+  captureFlash: boolean;
   /** How long "Record clip" records, in seconds. Capped in clip/frames.ts. */
   clipSeconds: number;
   /** Seconds between the trigger and the recording starting. */
@@ -90,6 +96,7 @@ export const DEFAULT_SETTINGS: Settings = {
   stampUrlOnImage: false,
   autoCopyImage: false,
   clipboardImageOnly: false,
+  captureFlash: true,
   clipSeconds: CLIP_SECONDS_DEFAULT,
   clipDelaySeconds: CLIP_DELAY_DEFAULT,
 };
@@ -141,6 +148,7 @@ export async function getSettings(): Promise<Settings> {
     stampUrlOnImage: stored.stampUrlOnImage === true,
     autoCopyImage: stored.autoCopyImage === true,
     clipboardImageOnly: stored.clipboardImageOnly === true,
+    captureFlash: stored.captureFlash !== false,
     clipSeconds: clampClipSeconds(Number(stored.clipSeconds)),
     clipDelaySeconds: clampClipDelay(Number(stored.clipDelaySeconds)),
   };
@@ -160,6 +168,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     stampUrlOnImage: settings.stampUrlOnImage === true,
     autoCopyImage: settings.autoCopyImage === true,
     clipboardImageOnly: settings.clipboardImageOnly === true,
+    captureFlash: settings.captureFlash !== false,
     clipSeconds: clampClipSeconds(settings.clipSeconds),
     clipDelaySeconds: clampClipDelay(settings.clipDelaySeconds),
   });

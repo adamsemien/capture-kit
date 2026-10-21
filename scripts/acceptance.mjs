@@ -1127,10 +1127,12 @@ async function hiddenLayersCheck() {
   // the suite's window is narrower than 1440.
   const vwLine = /Viewport:\*\*\s*(\d+)/.exec((run.modeLine ?? []).join(' '));
   const vw = vwLine ? Number(vwLine[1]) : viewportFor(K_VARIANT).width;
-  const leaks = ['overlay', 'badge', 'icon'].filter((k) => (by[k] ?? 0) > 50);
+  const leaks = ['overlay', 'badge', 'icon', 'backToTop', 'closedMenu'].filter((k) => (by[k] ?? 0) > 50);
   const widened = (run.px?.width ?? 0) > vw;
   const lazyShown = (by.lazy ?? 0) > 200;
-  return { run, by, vw, leaks, widened, lazyShown };
+  const respLazyShown = (by.respLazy ?? 0) > 200;
+  const respSameShown = (by.respSame ?? 0) > 200;
+  return { run, by, vw, leaks, widened, lazyShown, respLazyShown, respSameShown };
 }
 function a15Verdict(r) {
   if (r.run.error || r.run.px?.error) return `INCONCLUSIVE — ${r.run.error ?? r.run.px.error}`;
@@ -1138,9 +1140,81 @@ function a15Verdict(r) {
   if (r.leaks.length) problems.push(`hidden layers painted: ${r.leaks.map((k) => `${k} ${r.by[k]} px`).join(', ')}`);
   if (r.widened) problems.push(`image widened to ${r.run.px.width}px past the ${r.vw}px viewport`);
   if (!r.lazyShown) problems.push(`the lazy section was NOT revealed (${r.by.lazy ?? 0} px) - over-corrected`);
+  if (!r.respLazyShown) problems.push(`the lazy section inside a showing class="hidden" was NOT revealed (${r.by.respLazy ?? 0} px)`);
+  if (!r.respSameShown) problems.push(`the lazy section that is itself a showing class="hidden" was NOT revealed (${r.by.respSame ?? 0} px)`);
   return problems.length
     ? `FAIL — ${problems.join('; ')}`
-    : `PASS — no hidden layer painted, width ${r.run.px.width}px, lazy section revealed (${r.by.lazy} px)`;
+    : `PASS — no hidden layer painted (back-to-top ${r.by.backToTop ?? 0} px), width ${r.run.px.width}px, ${r.run.modeLine?.find((l) => /segment/.test(l))?.trim() ?? ''}, lazy sections revealed (${r.by.lazy} px, ${r.by.respLazy} px inside a showing .hidden, ${r.by.respSame} px on one)`;
+}
+
+// --- CHECK A17: the capture flash ------------------------------------------
+// A capture a person fires (here the popup's message, trigger 'popup') flashes
+// the captured page once, after the capture; with the setting off it does not;
+// a page-fired capture never does; and no overlay is left behind.
+const L_VARIANT = 'L flash-probe';
+async function flashRun({ enabled, via }) {
+  await setSetting(options, { captureFlash: enabled, openResult: false, autoCopyImage: false, pageTriggerMode: 'any' });
+  const url = `http://127.0.0.1:${HTTP_PORT}/drawer?v=${encodeURIComponent(L_VARIANT)}&manual=1&n=${Date.now()}`;
+  const t = await openExact(url);
+  if (!t) return { error: 'fixture tab never appeared' };
+  await sleep(800);
+  const tabId = await options.eval(
+    `chrome.tabs.query({}).then((ts) => ts.find((x) => x.url === ${JSON.stringify(url)})?.id ?? null)`,
+  );
+  await options.eval(`chrome.tabs.update(${tabId}, { active: true }).then(() => true)`);
+  await sleep(300);
+  const started = Date.now();
+  let response = null;
+  if (via === 'popup') {
+    response = await options.eval(`chrome.runtime.sendMessage({ type: 'CAPTURE_BUNDLE', tabId: ${tabId} })`);
+  } else {
+    const live = new Session(t.webSocketDebuggerUrl);
+    await live.open();
+    await live.send('Runtime.enable');
+    await live.eval('window.__ckFire()');
+    live.close();
+    response = await waitForResult(t.id, 90000);
+  }
+  await sleep(2000);
+  const live = new Session(t.webSocketDebuggerUrl);
+  await live.open();
+  await live.send('Runtime.enable');
+  const flashes = await live.eval('window.__ckFlashes');
+  const left = await live.eval(`document.querySelectorAll('[data-capture-kit-flash]').length`);
+  live.close();
+  await cdp(`/json/close/${t.id}`);
+  return { ok: response?.ok === true, flashes, left, started };
+}
+async function flashCheck() {
+  const on = await flashRun({ enabled: true, via: 'popup' });
+  const off = await flashRun({ enabled: false, via: 'popup' });
+  const agent = await flashRun({ enabled: true, via: 'page' });
+  await setSetting(options, { captureFlash: true });
+  return { on, off, agent };
+}
+function a17Verdict(r) {
+  const problems = [];
+  if (r.on.error || !r.on.ok) problems.push(`popup capture with flash on did not succeed (${r.on.error ?? 'not ok'})`);
+  else if ((r.on.flashes?.length ?? 0) !== 1) problems.push(`popup capture flashed ${r.on.flashes?.length ?? 0} times, expected 1`);
+  if ((r.off.flashes?.length ?? 0) !== 0) problems.push(`setting off still flashed ${r.off.flashes.length} times`);
+  if ((r.agent.flashes?.length ?? 0) !== 0) problems.push(`page-fired capture flashed ${r.agent.flashes.length} times`);
+  for (const k of ['on', 'off', 'agent']) if (r[k].left) problems.push(`${k}: ${r[k].left} overlay(s) left on the page`);
+  return problems.length
+    ? `FAIL — ${problems.join('; ')}`
+    : `PASS — one flash (${r.on.flashes[0].kind}) for the popup capture, none with the setting off, none for a page-fired capture, nothing left behind`;
+}
+
+if (process.argv.includes('--only-flash')) {
+  heading('CHECK A17 — the capture flash');
+  const r = await flashCheck();
+  console.log('runs: ' + JSON.stringify(r));
+  console.log('VERDICT A17 capture flash: ' + a17Verdict(r));
+  options.close();
+  chrome.kill('SIGTERM');
+  killStrays();
+  await sleep(2000);
+  http.close();
+  process.exit(0);
 }
 
 // --- CHECK A18: scroll and stitch ----------------------------------------
@@ -1408,9 +1482,9 @@ if (process.argv.includes('--only-hidden-layers')) {
     console.log('pixels: ' + JSON.stringify(old.run.px));
     console.log(
       'VERDICT A15 is falsifiable: ' +
-        (old.leaks.length || old.widened
-          ? `PASS — the comparison build leaks (${a15Verdict(old)})`
-          : `FAIL — the comparison build did not leak either: ${a15Verdict(old)}`),
+        (a15Verdict(old).startsWith('FAIL')
+          ? `PASS — the comparison build fails it (${a15Verdict(old)})`
+          : `FAIL — the comparison build passes too: ${a15Verdict(old)}`),
     );
   }
   options.close();
@@ -2427,6 +2501,13 @@ heading('CHECK A18 — scroll and stitch');
 {
   const r = await stitchCheck();
   console.log('VERDICT A18 scroll and stitch: ' + a18Verdict(r));
+}
+
+heading('CHECK A17 — the capture flash');
+{
+  const r = await flashCheck();
+  console.log('runs: ' + JSON.stringify(r));
+  console.log('VERDICT A17 capture flash: ' + a17Verdict(r));
 }
 
 heading('CHECK A16 — a virtualized list captures whole');

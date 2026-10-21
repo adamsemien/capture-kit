@@ -99,6 +99,16 @@ export const K_RGB = {
   badge: { r: 0xff, g: 0x6f, b: 0x00 }, // #ff6f00 - fixed badge, half past the right edge, visibility:hidden
   icon: { r: 0x00, g: 0x69, b: 0x5c }, // #00695c - in-flow icon the page hides with class="hidden"
   lazy: { r: 0x45, g: 0x27, b: 0xa0 }, // #4527a0 - an opacity:0 section that MUST still be revealed
+  // Inside class="hidden md-show": the token is there but the element shows (Tailwind's hidden md:block).
+  // Brown, not blue: a blue block against white rings into the icon's teal in JPEG.
+  respLazy: { r: 0x79, g: 0x55, b: 0x48 }, // #795548 - opacity:0 child that MUST still be revealed
+  // The same shape on one element: class="hidden md-show" AND opacity:0 for a lazy reveal.
+  respSame: { r: 0xc2, g: 0x18, b: 0x5b }, // #c2185b - MUST still be revealed
+  // A back-to-top button: fixed, opacity:0 at the top, shown by a scroll handler. The page is
+  // taller than one segment, so the segment loop's scrolling would show it in every later segment.
+  backToTop: { r: 0x1b, g: 0x5e, b: 0x20 }, // #1b5e20 - MUST NOT paint
+  // A closed menu hidden two ways at once: class="invisible" AND opacity:0 (Tailwind's "invisible opacity-0").
+  closedMenu: { r: 0x9e, g: 0x9d, b: 0x24 }, // #9e9d24 - MUST NOT paint
 };
 
 // Variant V, Vercel's environment-variables list (2026-10-19): rows drawn only
@@ -228,6 +238,9 @@ export const DRAWER_VARIANTS = {
   'P snap-page': null,
   // A long page with a sticky header. Stitched, the header must appear once.
   'Y sticky-header-page': null,
+  // The capture flash probe: a plain page that records every flash overlay
+  // Capture Kit adds, so a check can ask "did it flash, how, and is it gone".
+  'L flash-probe': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
   // /studio: position:fixed, off-canvas right, clipped by overflow:clip on
   // body and html, and NO dominant inner scroller — shouldExpand is false, so
@@ -281,6 +294,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('T ')) return pointerPanelFixture(variant, { reportsResult, manual, wide: true });
   if (variant.startsWith('R ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 'calc(100vh - 120px)', tail: true });
   if (variant.startsWith('Y ')) return stickyHeaderFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('L ')) return flashProbeFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
   const rows = Array.from(
     { length: ROW_COUNT },
@@ -607,6 +621,30 @@ function stickyHeaderFixture(variant, { reportsResult = false, manual = false } 
 }
 
 /**
+ * Variant L. Records each capture-flash overlay as it is added, in the main
+ * world, so the harness can read window.__ckFlashes after a capture.
+ */
+function flashProbeFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>html,body{margin:0;background:#2a3f5f;color:#fff;font:20px sans-serif}main{height:1200px;padding:16px}</style>
+</head><body><main>repro: ${variant}</main>
+<script>
+  window.__ckFlashes = [];
+  new MutationObserver((records) => {
+    for (const r of records) for (const n of r.addedNodes) {
+      if (n.nodeType === 1 && n.hasAttribute('data-capture-kit-flash')) {
+        window.__ckFlashes.push({ kind: n.getAttribute('data-capture-kit-flash'), at: Date.now() });
+      }
+    }
+  }).observe(document.documentElement, { childList: true });
+</script>
+${reporter}
+</body></html>`;
+}
+
+/**
  * Variant V. A list that keeps a full-height spacer and renders only the rows
  * within a few rows of the viewport, re-rendering on scroll and resize - the
  * way react-window, TanStack Virtual and Vercel's dashboard behave.
@@ -657,7 +695,11 @@ function virtualizedFixture(variant, { reportsResult = false, manual = false } =
  *   - a fixed visibility:hidden badge sitting half past the right edge;
  *   - an in-flow icon hidden with class="hidden" (visibility:hidden);
  *   - the positive control, an opacity:0 section below the fold that must
- *     still be revealed, so a fix that simply reveals less fails here.
+ *     still be revealed, so a fix that simply reveals less fails here;
+ *   - two more controls under Tailwind-style "hidden md-show", one opacity:0
+ *     inside it and one opacity:0 on the same element;
+ *   - a back-to-top button the page shows only once scrolled, on a page
+ *     taller than one segment.
  */
 function parkedLayersFixture(variant, { reportsResult = false, manual = false } = {}) {
   const reporter = reporterScript(reportsResult, manual);
@@ -667,6 +709,9 @@ function parkedLayersFixture(variant, { reportsResult = false, manual = false } 
   html,body{margin:0}
   #hero{height:100vh;background:#f2f2f4;font:20px sans-serif;padding:16px;box-sizing:border-box}
   .hidden{visibility:hidden}
+  .invisible{visibility:hidden}
+  /* Tailwind's hidden md:block shape: the token stays, a later rule shows it. */
+  .hidden.md-show{visibility:visible;display:block}
   .row{font:18px sans-serif;padding:12px 16px;border-bottom:1px solid #ddd;background:#fff}
 </style></head>
 <body>
@@ -674,7 +719,15 @@ function parkedLayersFixture(variant, { reportsResult = false, manual = false } 
     <div class="row">Dashboard <i class="hidden" style="display:inline-block;width:60px;height:60px;background:${hex(K_RGB.icon)}"></i></div>
   </div>
   <section id="lazy" style="position:static;opacity:0;height:400px;background:${hex(K_RGB.lazy)}">lazy - SHOULD be revealed</section>
-  <div style="height:600px;background:#fff"></div>
+  <div style="height:200px;background:#fff"></div>
+  <div class="hidden md-show"><section id="resp-lazy" style="opacity:0;height:300px;background:${hex(K_RGB.respLazy)}">inside a showing .hidden - SHOULD be revealed</section></div>
+  <div style="height:200px;background:#fff"></div>
+  <section id="resp-same" class="hidden md-show" style="opacity:0;height:300px;background:${hex(K_RGB.respSame)}">a showing .hidden that is also lazy - SHOULD be revealed</section>
+  <div style="height:200px;background:#fff"></div>
+  <ul id="closed-menu" class="invisible" style="opacity:0;height:240px;margin:0;background:${hex(K_RGB.closedMenu)}"><li>closed menu - SHOULD stay hidden</li></ul>
+  <div style="height:17000px;background:#fff"></div>
+  <a id="back-to-top" href="#" style="position:fixed;bottom:20px;right:20px;width:56px;height:56px;opacity:0;background:${hex(K_RGB.backToTop)}"></a>
+  <script>addEventListener('scroll', () => { document.getElementById('back-to-top').style.opacity = scrollY > 300 ? '1' : '0'; });</script>
   <div class="badge" style="position:fixed;bottom:14px;right:-186px;width:256px;height:60px;visibility:hidden;background:${hex(K_RGB.badge)}"></div>
   <div style="visibility:hidden;position:absolute;width:100%;top:-10000px;left:0;right:0;opacity:0">
     <div style="width:100%;height:100%;position:fixed;top:0;left:0;background:${hex(K_RGB.overlay)};opacity:0.9"></div>

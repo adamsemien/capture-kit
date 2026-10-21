@@ -28,10 +28,11 @@ export { planScrollOffsets } from '${ROOT}/src/lib/capture-engine/segments.ts';
 export { planScrollStops, MAX_SCROLL_FRAMES, FRAME_OVERLAP } from '${ROOT}/src/lib/capture-engine/scroll-stitch.ts';
 export { scrollStitchLabel } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { planSlices, wholeImageScale, scaledSize, baseSliceHeight, sliceFilename, SLICE_OVERLAP, MAX_SLICES, MAX_CAPTURE_HEIGHT } from '${ROOT}/src/lib/capture-engine/slices.ts';
-export { tallPageSections, scaleLabel, buildContentsLine } from '${ROOT}/src/lib/bundle/markdown.ts';
+export { tallPageSections, scaleLabel, buildContentsLine, buildSweepMarkdown, sweepModeChip } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { contentColumns, planTrim, TRIM_PADDING } from '${ROOT}/src/lib/capture-engine/slices.ts';
 export { decidePageTrigger, parseSitePattern, normalizeSiteList, normalizeTriggerMode, DEFAULT_TRIGGER_SITES } from '${ROOT}/src/lib/site-access.ts';
 export { storedTriggerMode } from '${ROOT}/src/lib/settings.ts';
+export { flashesFor, FLASH_ATTR } from '${ROOT}/src/lib/flash.ts';
 export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
@@ -1508,6 +1509,45 @@ test('the report names what was scrolled and why it was picked', () => {
     mod.scrollStitchLabel({ target: 'page', how: 'page', label: 'the page', reason: 'asked', frames: 1, grew: true }),
     /the page - the content grew while it was scrolled, so the capture stops at its starting length, 1 screen$/,
   );
+});
+
+heading('capture flash - who gets it');
+test('a person firing a capture gets the flash when the setting is on', () => {
+  for (const t of ['shortcut', 'scroll-shortcut', 'icon', 'popup']) assert.equal(mod.flashesFor(t, true), true, t);
+});
+test('pages, agents, sessions, sweeps and clips never flash', () => {
+  for (const t of ['agent', 'session', 'sweep', 'clip', 'clip-shortcut', 'agent-clip']) {
+    assert.equal(mod.flashesFor(t, true), false, t);
+  }
+});
+test('the setting off means no flash for anyone', () => {
+  for (const t of ['shortcut', 'icon', 'popup']) assert.equal(mod.flashesFor(t, false), false, t);
+});
+
+heading('responsive sweep - redraw-on-scroll widths say so');
+test('a sweep width captured under a full-height viewport is labelled that way', () => {
+  const md = mod.buildSweepMarkdown({
+    meta: { url: 'https://example.com/list', title: 'List', viewport: { width: 1440, height: 900 }, userAgent: 'ua' },
+    capturedAt: new Date('2026-10-21T15:00:00Z'),
+    widths: [{
+      width: 1440, filename: 'list_w1440.jpg',
+      fullSize: { width: 1440, height: 6000 }, contentSize: { width: 1440, height: 6000 },
+      imageSize: { width: 1440, height: 6000 }, truncated: false, captureMode: 'standard',
+      revealForced: 0, segments: 1, drawnOnScroll: true,
+    }],
+    failures: [], consoleEntries: [], networkFailures: [], recorderActive: true, includeLogs: false,
+    viewport: { width: 1440, height: 900 },
+  });
+  assert.match(md, /full-height viewport, 1 segment \+ page redraws as it scrolls/);
+});
+
+test('the sweep Mode chip states a path only when every width took it', () => {
+  assert.equal(mod.sweepModeChip(['standard, single-shot', 'standard, single-shot']), 'standard, single-shot');
+  assert.match(
+    mod.sweepModeChip(['standard, single-shot', 'standard, full-height viewport, 1 segment + page redraws as it scrolls']),
+    /differs by width/,
+  );
+  assert.equal(mod.sweepModeChip([]), '');
 });
 
 rmSync(dir, { recursive: true, force: true });
