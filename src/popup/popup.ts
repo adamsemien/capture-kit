@@ -15,6 +15,7 @@ const statsEl = document.getElementById('stats') as HTMLParagraphElement;
 const statsTextEl = document.getElementById('stats-text') as HTMLSpanElement;
 const capturePageBtn = document.getElementById('capture-page') as HTMLButtonElement;
 const captureBundleBtn = document.getElementById('capture-bundle') as HTMLButtonElement;
+const scrollCaptureBtn = document.getElementById('scroll-capture') as HTMLButtonElement;
 const responsiveSweepBtn = document.getElementById('responsive-sweep') as HTMLButtonElement;
 const imageOnlyPngInput = document.getElementById('image-only-png') as HTMLInputElement;
 const captureSessionBtn = document.getElementById('capture-session') as HTMLButtonElement;
@@ -30,6 +31,7 @@ function setBusy(busy: boolean): void {
   for (const button of [
     capturePageBtn,
     captureBundleBtn,
+    scrollCaptureBtn,
     responsiveSweepBtn,
     copyLastBtn,
     captureSessionBtn,
@@ -126,12 +128,13 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
-captureBundleBtn.addEventListener('click', () => {
+function runBundle(scroll: boolean): void {
   void (async () => {
     setBusy(true);
-    setStatus('Capturing…');
+    setStatus(scroll ? 'Scrolling and capturing…' : 'Capturing…');
     const response = (await chrome.runtime.sendMessage({
       type: 'CAPTURE_BUNDLE',
+      ...(scroll ? { scroll: true } : {}),
       ...(await targetField()),
     })) as CaptureResponse;
     if (response.ok) {
@@ -154,7 +157,10 @@ captureBundleBtn.addEventListener('click', () => {
     setBusy(false);
     void refreshStats();
   })();
-});
+}
+
+captureBundleBtn.addEventListener('click', () => runBundle(false));
+scrollCaptureBtn.addEventListener('click', () => runBundle(true));
 
 capturePageBtn.addEventListener('click', () => {
   void (async () => {

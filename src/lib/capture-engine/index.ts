@@ -1,6 +1,7 @@
 import type { CaptureRequest, CaptureResult, CaptureStrategy } from './types';
 import { CdpFullPageStrategy } from './cdp-fullpage';
 import { InnerScrollExpansionStrategy, detectInnerScroll } from './inner-scroll';
+import { ScrollStitchStrategy, detectCanvasScroller } from './scroll-stitch';
 import { sliceEncodedImage } from './slices';
 import { stampCaptureResult } from './stamp';
 
@@ -13,6 +14,7 @@ export type {
   CaptureSlice,
   CaptureStrategy,
   PageDimensions,
+  ScrollStitchInfo,
   StampInfo,
   StampRequest,
 } from './types';
@@ -26,14 +28,27 @@ export { sliceFilename, SLICE_OVERLAP } from './slices';
  * the expansion strategy; everything else gets the plain CDP pipeline.
  */
 export async function getCaptureStrategy(tabId: number): Promise<CaptureStrategy> {
+  // A canvas app repaints only what is on screen, so it has to be scrolled.
+  if (await detectCanvasScroller(tabId)) return new ScrollStitchStrategy('largest', 'canvas');
   return (await detectInnerScroll(tabId))
     ? new InnerScrollExpansionStrategy()
     : new CdpFullPageStrategy();
 }
 
 export async function captureFullPage(request: CaptureRequest): Promise<CaptureResult> {
-  const strategy = await getCaptureStrategy(request.tabId);
+  const strategy = request.scrollStitch
+    ? new ScrollStitchStrategy('pointer', 'asked')
+    : await getCaptureStrategy(request.tabId);
   let result = await strategy.capture(request);
+  // Expansion gave up because unrolling would have hidden the page, which
+  // leaves a capture of one screen. Scrolling the panel gets all of it.
+  if (result.innerScrollAbandoned) {
+    try {
+      result = await new ScrollStitchStrategy('largest', 'abandoned').capture(request);
+    } catch {
+      /* keep the one-screen capture; its report already says why */
+    }
+  }
   // The segmented path slices as it goes. A single-shot capture is one image
   // already, so a tall one is cut afterwards - before the footer, so slices
   // are the page and nothing else.

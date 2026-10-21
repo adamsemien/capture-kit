@@ -82,7 +82,7 @@ const MAX_REVEAL_STEPS = 30;
 // scroll pass through the page so observers fire naturally, then force the
 // stragglers that are still computed-hidden — specific elements only, never
 // a blanket *{opacity:1}, which would reveal intentionally hidden UI.
-const FREEZE_SCRIPT = `(() => {
+export const FREEZE_SCRIPT = `(() => {
   if (document.getElementById('__capture_kit_freeze__')) return;
   const style = document.createElement('style');
   style.id = '__capture_kit_freeze__';
@@ -90,7 +90,7 @@ const FREEZE_SCRIPT = `(() => {
   document.documentElement.appendChild(style);
 })()`;
 
-const UNFREEZE_SCRIPT = `(() => {
+export const UNFREEZE_SCRIPT = `(() => {
   const style = document.getElementById('__capture_kit_freeze__');
   if (style) style.remove();
 })()`;
@@ -331,7 +331,7 @@ async function revealScrollPass(target: chrome.debugger.Debuggee): Promise<numbe
 // The pass-1 verdict is sticky: pass 2 skips anything already carrying either
 // marker, so a marker-less drawer vetoed geometrically at the real viewport is
 // not re-examined under the inflated one and re-anchored.
-const UNSTICK_SCRIPT = `(() => {
+export const UNSTICK_SCRIPT = `(() => {
   const STYLE_ID = '__capture_kit_unstick__';
   const ATTR = 'data-capture-kit-position';
   const OFFSCREEN_ATTR = 'data-capture-kit-offscreen';
@@ -339,6 +339,10 @@ const UNSTICK_SCRIPT = `(() => {
   const SCROLL_ATTR = 'data-capture-kit-scroll';
   // Set by captureSegmented for the second pass, where geometry is unusable.
   const markersOnly = window.__captureKitUnstickMarkersOnly === true;
+  // Set by the scroll-and-stitch path, which handles sticky elements itself
+  // (it trims a stuck header off each later screen) and needs a sticky
+  // canvas to keep painting as the page scrolls.
+  const fixedOnly = window.__captureKitUnstickFixedOnly === true;
 
   if (!document.getElementById(STYLE_ID)) {
     const style = document.createElement('style');
@@ -449,7 +453,7 @@ const UNSTICK_SCRIPT = `(() => {
     let cs;
     try { cs = getComputedStyle(el); } catch { continue; }
     if (cs.position === 'sticky') {
-      targets.push({ el: el, kind: 'sticky' });
+      if (!fixedOnly) targets.push({ el: el, kind: 'sticky' });
       continue;
     }
     if (cs.position !== 'fixed') continue;
@@ -513,7 +517,7 @@ const UNSTICK_SCRIPT = `(() => {
   return targets.length;
 })()`;
 
-const RESTICK_SCRIPT = `(() => {
+export const RESTICK_SCRIPT = `(() => {
   const style = document.getElementById('__capture_kit_unstick__');
   if (style) style.remove();
   // Inline style first: the recorded value is the whole original style
@@ -535,6 +539,7 @@ const RESTICK_SCRIPT = `(() => {
     el.removeAttribute('data-capture-kit-offscreen');
   }
   delete window.__captureKitUnstickMarkersOnly;
+  delete window.__captureKitUnstickFixedOnly;
   // Scroll offsets last, once the layout they belong to is back.
   for (const el of document.querySelectorAll('[data-capture-kit-scroll]')) {
     const parts = (el.getAttribute('data-capture-kit-scroll') || '0,0').split(',');

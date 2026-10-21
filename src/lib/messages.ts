@@ -85,6 +85,7 @@ export interface AgentCaptureDetail {
 export type CaptureTrigger =
   | 'popup'
   | 'shortcut'
+  | 'scroll-shortcut'
   | 'icon'
   | 'agent'
   | 'session'
@@ -96,6 +97,7 @@ export type CaptureTrigger =
 export const CAPTURE_TRIGGER_LABEL: Record<CaptureTrigger, string> = {
   popup: 'popup Capture + Report button',
   shortcut: 'keyboard shortcut (Ctrl/Cmd+Shift+9)',
+  'scroll-shortcut': 'keyboard shortcut (Ctrl/Cmd+Shift+7, scroll capture)',
   icon: 'toolbar icon (one-click capture mode)',
   agent: 'in-page agent trigger (capture-kit:capture)',
   session: 'session capture (multiple tabs)',
@@ -110,7 +112,7 @@ export type RuntimeMessage =
   // `tabId` is the tab the popup is pointed at (NOBC-167). Without it the
   // service worker would have to guess, and its guess is the panel window
   // itself when the popup runs as a separate panel.
-  | { type: 'CAPTURE_BUNDLE'; tabId?: number }
+  | { type: 'CAPTURE_BUNDLE'; tabId?: number; scroll?: boolean }
   | { type: 'AGENT_CAPTURE' }
   | { type: 'AGENT_RECORD' }
   | { type: 'RECORD_CLIP'; tabId?: number }

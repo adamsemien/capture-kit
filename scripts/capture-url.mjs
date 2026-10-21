@@ -31,6 +31,11 @@ const URLS = args.filter((a) => !a.startsWith('--'));
 const OUT = args.find((a) => a.startsWith('--out='))?.slice(6) ?? '/tmp/ck-url-out';
 const [W, H] = (args.find((a) => a.startsWith('--size='))?.slice(7) ?? '1440x900').split('x').map(Number);
 const SETTLE_MS = Number(args.find((a) => a.startsWith('--settle='))?.slice(9) ?? 4000);
+// --scroll uses the scroll-capture path (as the popup button does); --hover=x,y
+// moves the mouse there first, so "the panel under the pointer" is testable.
+const SCROLL = args.includes('--scroll');
+const HOVER = args.find((a) => a.startsWith('--hover='))?.slice(8).split(',').map(Number);
+const DPR = args.find((a) => a.startsWith('--dpr='))?.slice(6);
 
 if (!CHROME || !existsSync(CHROME)) {
   console.error('Set CHROME_BIN to a Chrome for Testing binary.');
@@ -62,6 +67,7 @@ const chrome = spawn(
     `--remote-debugging-port=${PORT}`,
     `--user-data-dir=${PROFILE}`,
     `--window-size=${W},${H}`,
+    ...(DPR ? [`--force-device-scale-factor=${DPR}`] : []),
     '--no-first-run',
     '--no-default-browser-check',
     'about:blank',
@@ -182,7 +188,6 @@ await opt.send('Runtime.enable');
 await opt.eval(`chrome.storage.sync.set({
   pageTriggerMode: 'any', openResult: false, maintainLatest: false,
   stampUrlOnImage: true, bundleFormat: 'png' })`);
-opt.close();
 
 const results = [];
 for (const [i, url] of URLS.entries()) {
@@ -200,7 +205,24 @@ for (const [i, url] of URLS.entries()) {
   }
   await sleep(SETTLE_MS);
   let detail;
-  try {
+  if (HOVER) {
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: HOVER[0], y: HOVER[1] });
+    await sleep(300);
+  }
+  if (SCROLL) {
+    // The address as the browser holds it (a bare host gains a trailing slash).
+    const href = await s.eval('location.href');
+    const tabId = await opt.eval(
+      `chrome.tabs.query({}).then((ts) => ts.find((x) => x.url === ${JSON.stringify(href)})?.id ?? null)`,
+    );
+    await opt.eval(`chrome.tabs.update(${tabId}, { active: true }).then(() => true)`);
+    await sleep(300);
+    try {
+      detail = await opt.eval(`chrome.runtime.sendMessage({ type: 'CAPTURE_BUNDLE', tabId: ${tabId}, scroll: true })`);
+    } catch (e) {
+      detail = { ok: false, error: String(e) };
+    }
+  } else try {
     detail = await s.eval(`new Promise((resolve) => {
       const t = setTimeout(() => resolve({ ok: false, error: 'timeout' }), 120000);
       document.addEventListener('capture-kit:capture-complete', (e) => { clearTimeout(t); resolve(e.detail); }, { once: true });
@@ -216,7 +238,7 @@ for (const [i, url] of URLS.entries()) {
   const tag = String(i + 1).padStart(2, '0') + '-' + new URL(url).host.replace(/[^a-z0-9.-]/gi, '_');
   if (img) copyFileSync(img.p, `${OUT}/${tag}${img.n.slice(img.n.lastIndexOf('.'))}`);
   if (md) copyFileSync(md.p, `${OUT}/${tag}.md`);
-  const line = { url, ok: detail?.ok ?? null, error: detail?.error, image: img ? `${OUT}/${tag}` : null };
+  const line = { url, ok: detail?.ok ?? null, error: detail?.error ?? detail?.reason, image: img ? `${OUT}/${tag}` : null };
   results.push(line);
   console.log(JSON.stringify(line));
   s.close();

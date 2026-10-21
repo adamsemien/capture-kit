@@ -39,6 +39,9 @@ import {
   NAV_WIDTH,
   SENTINEL_RGB,
   V_RGB,
+  W_RGB,
+  X_RGB,
+  Y_RGB,
   fixture as drawerFixture,
   viewportFor,
 } from './drawer-fixture.mjs';
@@ -1135,6 +1138,95 @@ function a15Verdict(r) {
     : `PASS — no hidden layer painted, width ${r.run.px.width}px, lazy section revealed (${r.by.lazy} px)`;
 }
 
+// --- CHECK A18: scroll and stitch ----------------------------------------
+// W: a canvas app (page does not scroll, a panel does, a sticky canvas paints
+//    only the rows on screen) - an ordinary capture must pick stitching on
+//    its own and get all three bands.
+// X: scroll capture with the pointer over a 300px panel stitches that panel.
+// Y: scroll capture of a long page with a sticky header: header once, the
+//    last block present.
+const W_VARIANT = 'W canvas-app';
+const X_VARIANT = 'X pointer-panel';
+const Y_VARIANT = 'Y sticky-header-page';
+const named18 = (obj) => Object.entries(obj).map(([name, c]) => ({ name, r: c.r, g: c.g, b: c.b }));
+async function scrollCaptureVariant(variant, colours, hover) {
+  const url = `http://127.0.0.1:${HTTP_PORT}/drawer?v=${encodeURIComponent(variant)}&manual=1&n=${Date.now()}`;
+  const t = await openExact(url);
+  if (!t) return { error: 'fixture tab never appeared' };
+  await sleep(800);
+  const tabId = await options.eval(
+    `chrome.tabs.query({}).then((ts) => ts.find((x) => x.url === ${JSON.stringify(url)})?.id ?? null)`,
+  );
+  await options.eval(`chrome.tabs.update(${tabId}, { active: true }).then(() => true)`);
+  if (hover) {
+    const live = new Session(t.webSocketDebuggerUrl);
+    await live.open();
+    await live.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hover[0], y: hover[1] });
+    live.close();
+  }
+  await sleep(300);
+  const response = await options.eval(`chrome.runtime.sendMessage({ type: 'CAPTURE_BUNDLE', tabId: ${tabId}, scroll: true })`);
+  await sleep(1500);
+  const image = newestFile('.jpg');
+  const report = newestFile('.md');
+  const modeLine = report ? readCapture(report).split('\n').filter((l) => /Full page:|Capture mode:/.test(l)) : [];
+  const px = await inspectColours(image, colours);
+  await cdp(`/json/close/${t.id}`);
+  return { response, modeLine, px };
+}
+async function stitchCheck() {
+  await setSetting(options, { openResult: false, autoCopyImage: false, stampUrlOnImage: false, pageTriggerMode: 'any' });
+  // W through the ordinary page-fired capture: the canvas case must be picked automatically.
+  const w = await captureVariant(W_VARIANT, named18(W_RGB));
+  const x = await scrollCaptureVariant(X_VARIANT, named18(X_RGB), [200, 200]);
+  const y = await scrollCaptureVariant(Y_VARIANT, named18(Y_RGB), [300, 300]);
+  return { w, x, y };
+}
+function colourMap(px) {
+  return Object.fromEntries((px?.colours ?? []).map((c) => [c.name, c.pixels]));
+}
+function a18Verdict(r) {
+  const problems = [];
+  const w = colourMap(r.w.px);
+  if (!['a', 'b', 'c'].every((k) => (w[k] ?? 0) > 200)) problems.push(`canvas app missing bands: ${JSON.stringify(w)}`);
+  if (!/scrolled and stitched/.test((r.w.modeLine ?? []).join(' '))) problems.push('canvas app was not stitched automatically');
+  const x = colourMap(r.x.px);
+  if (!['d', 'e', 'f'].every((k) => (x[k] ?? 0) > 200)) problems.push(`pointer panel missing blocks: ${JSON.stringify(x)}`);
+  if (!/panel under your pointer/.test((r.x.modeLine ?? []).join(' '))) problems.push('pointer panel was not the target');
+  const y = colourMap(r.y.px);
+  if ((y.end ?? 0) < 100) problems.push(`sticky page lost its last block (${y.end ?? 0} px)`);
+  return problems.length
+    ? `FAIL — ${problems.join('; ')}`
+    : `PASS — canvas app stitched automatically with all 3 bands; pointer panel stitched whole; sticky page complete (a/b/c ${w.a}/${w.b}/${w.c}, d/e/f ${x.d}/${x.e}/${x.f}, end ${y.end})`;
+}
+
+if (process.argv.includes('--only-stitch')) {
+  heading('CHECK A18 — scroll and stitch');
+  const r = await stitchCheck();
+  for (const k of ['w', 'x', 'y']) console.log(`${k}: ` + JSON.stringify({ mode: r[k].modeLine, px: r[k].px?.colours?.map((c) => [c.name, c.pixels]) }));
+  console.log('VERDICT A18 scroll and stitch: ' + a18Verdict(r));
+  if (process.env.CK_COMPARE_DIST) {
+    heading('CHECK A18 (falsifiability) — the canvas app on the comparison build');
+    console.log(`extension id (comparison build): ${await relaunchWith(process.env.CK_COMPARE_DIST)}`);
+    await setSetting(options, { openResult: false, autoCopyImage: false, stampUrlOnImage: false, pageTriggerMode: 'any' });
+    const w = await captureVariant(W_VARIANT, named18(W_RGB));
+    const m = colourMap(w.px);
+    console.log('w: ' + JSON.stringify({ mode: w.modeLine, px: m }));
+    console.log(
+      'VERDICT A18 is falsifiable: ' +
+        ((m.b ?? 0) < 100 || (m.c ?? 0) < 100
+          ? `PASS — the comparison build loses canvas bands (b ${m.b ?? 0}, c ${m.c ?? 0})`
+          : `FAIL — the comparison build drew every band too`),
+    );
+  }
+  options.close();
+  chrome.kill('SIGTERM');
+  killStrays();
+  await sleep(2000);
+  http.close();
+  process.exit(0);
+}
+
 // --- CHECK A16: a virtualized list captures whole (Vercel) ---------------
 // Variant V: 120 rows drawn only near the viewport, short enough for the
 // single-shot path. Rows 1-20 carry one colour, rows 21-120 another. Before
@@ -2212,6 +2304,12 @@ heading('CHECK A15 — hidden layers stay hidden, lazy content still revealed');
   const own = await hiddenLayersCheck();
   console.log('pixels: ' + JSON.stringify(own.run.px));
   console.log('VERDICT A15 hidden layers: ' + a15Verdict(own));
+}
+
+heading('CHECK A18 — scroll and stitch');
+{
+  const r = await stitchCheck();
+  console.log('VERDICT A18 scroll and stitch: ' + a18Verdict(r));
 }
 
 heading('CHECK A16 — a virtualized list captures whole');

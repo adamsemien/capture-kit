@@ -25,6 +25,8 @@ export { bandHeight, stampLabel } from '${ROOT}/src/lib/capture-engine/stamp.ts'
 export { readEncodedImageSize } from '${ROOT}/src/lib/capture-engine/image-size.ts';
 export { contextBlock, buildBundleMarkdown, captureModeLabel, withLatestNotice, LATEST_NOTICE, OUTPUT_README } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { planScrollOffsets } from '${ROOT}/src/lib/capture-engine/segments.ts';
+export { planScrollStops, MAX_SCROLL_FRAMES, FRAME_OVERLAP } from '${ROOT}/src/lib/capture-engine/scroll-stitch.ts';
+export { scrollStitchLabel } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { planSlices, wholeImageScale, scaledSize, baseSliceHeight, sliceFilename, SLICE_OVERLAP, MAX_SLICES, MAX_CAPTURE_HEIGHT } from '${ROOT}/src/lib/capture-engine/slices.ts';
 export { tallPageSections, scaleLabel, buildContentsLine } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { contentColumns, planTrim, TRIM_PADDING } from '${ROOT}/src/lib/capture-engine/slices.ts';
@@ -1462,6 +1464,37 @@ test('a page that redraws on scroll says it was captured at full height, not sin
   assert.equal(
     mod.captureModeLabel('standard', 2, 3, 0, 0, 0, 0, false, true),
     'standard, segmented, 3 segments + reveal-forced (2 elements) + page redraws as it scrolls',
+  );
+});
+
+heading('scroll and stitch - planning and report line');
+test('stops start at 0, end exactly at the bottom, and overlap by FRAME_OVERLAP', () => {
+  const { stops, truncated } = mod.planScrollStops(2000, 800);
+  assert.equal(truncated, false);
+  assert.equal(stops[0], 0);
+  assert.equal(stops[stops.length - 1], 2000);
+  for (let i = 1; i < stops.length - 1; i++) assert.equal(stops[i] - stops[i - 1], 800 - mod.FRAME_OVERLAP);
+});
+test('content that fits one screen is one stop', () => {
+  assert.deepEqual(mod.planScrollStops(0, 800), { stops: [0], truncated: false });
+});
+test('a runaway feed is cut at the frame cap and says so', () => {
+  const { stops, truncated } = mod.planScrollStops(1e7, 800);
+  assert.equal(stops.length, mod.MAX_SCROLL_FRAMES);
+  assert.equal(truncated, true);
+});
+test('the report names what was scrolled and why it was picked', () => {
+  assert.equal(
+    mod.scrollStitchLabel({ target: 'panel', how: 'pointer', label: 'div#panel', reason: 'asked', frames: 9, grew: false }),
+    'scrolled and stitched: the panel under your pointer (div#panel), 9 screens',
+  );
+  assert.match(
+    mod.scrollStitchLabel({ target: 'panel', how: 'largest', label: 'div#scroller', reason: 'canvas', frames: 5, grew: false }),
+    /largest scrolling panel \(div#scroller\) - chosen automatically: the panel is drawn on a canvas/,
+  );
+  assert.match(
+    mod.scrollStitchLabel({ target: 'page', how: 'page', label: 'the page', reason: 'asked', frames: 1, grew: true }),
+    /the page - the content grew while it was scrolled, so the capture stops at its starting length, 1 screen$/,
   );
 });
 

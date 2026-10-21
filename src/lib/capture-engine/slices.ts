@@ -281,9 +281,25 @@ export class PageCanvas {
     }
   }
 
-  async finish(): Promise<{ imageBase64: string; slices: CaptureSlice[] }> {
+  /**
+   * `paintedHeight` (canvas rows, before any scale) crops the whole image to
+   * the rows that were actually drawn. The scroll-and-stitch path allocates
+   * for the length the page had when it started; a page that gets shorter
+   * while it scrolls would otherwise end in unpainted rows, which encode as
+   * black in JPEG. Only honoured without slices - that path slices the
+   * cropped image afterwards instead.
+   */
+  async finish(paintedHeight?: number): Promise<{ imageBase64: string; slices: CaptureSlice[] }> {
     await this.closeAbove(Number.POSITIVE_INFINITY);
-    const imageBase64 = await encode(this.whole, this.format);
+    let canvas = this.whole;
+    if (paintedHeight !== undefined && !this.plan) {
+      const rows = Math.max(1, Math.min(this.wholeSize.height, Math.round(paintedHeight * this.scale)));
+      if (rows < this.wholeSize.height) {
+        canvas = new OffscreenCanvas(this.wholeSize.width, rows);
+        context(canvas).drawImage(this.whole, 0, 0);
+      }
+    }
+    const imageBase64 = await encode(canvas, this.format);
     return { imageBase64, slices: this.encoded };
   }
 
