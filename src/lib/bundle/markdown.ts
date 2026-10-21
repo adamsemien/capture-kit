@@ -238,6 +238,10 @@ export function changesSection(changes: ChangeSummary, capturedAt: Date): string
   if (p.compared && Math.abs(p.heightAfter - p.heightBefore) > 2) {
     lines.push(`- **Page height:** ${p.heightAfter} px (was ${p.heightBefore} px) - areas below a height change may be content that moved, not changed.`);
   }
+  if (changes.logsNotCompared) {
+    lines.push(`- **Console errors and failed requests:** not compared - ${changes.logsNotCompared}.`);
+    return ['## Changes since the last capture of this page', lines.join('\n')];
+  }
   const e = changes.errors;
   lines.push(`- **Console errors:** ${e.added.length} new, ${e.removed.length} gone, ${e.kept} still there`);
   lines.push(...listed('New', e.added), ...listed('Gone', e.removed));

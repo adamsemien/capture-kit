@@ -32,6 +32,8 @@ export interface PageRecord {
   thumbHeight: number;
   errors: Signed[];
   failures: Signed[];
+  /** False when the recorder was not running: errors and failures are unknown, not none. Absent on older records = running. */
+  recorderActive?: boolean;
 }
 
 function open(): Promise<IDBDatabase> {

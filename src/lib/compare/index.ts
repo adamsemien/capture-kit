@@ -51,6 +51,12 @@ export interface ChangeSummary {
   picture: PictureComparison;
   errors: SetDiff;
   failures: SetDiff;
+  /**
+   * Set when either capture had no recorder data, so its errors and failed
+   * requests are unknown rather than none - comparing them would call every
+   * earlier error "gone" (Codex review on #29). errors/failures are empty then.
+   */
+  logsNotCompared?: string;
 }
 
 export interface CompareInput {
@@ -63,6 +69,8 @@ export interface CompareInput {
   pageHeight: number;
   viewportWidth: number;
   consoleEntries: ConsoleEntry[];
+  /** Whether console and network were recorded for this capture. */
+  recorderActive: boolean;
   networkFailures: NetworkFailure[];
 }
 
@@ -200,11 +208,18 @@ export async function compareCapture(input: CompareInput): Promise<Comparison> {
   if (prev) {
     const { picture, diff } = await comparePictures(prev, cur, input);
     diffImageBase64 = diff;
+    const logsNotCompared = !input.recorderActive
+      ? 'the recorder was not running on this page this time, so its console and network are unknown'
+      : prev.recorderActive === false
+        ? 'the recorder was not running on the last capture of this page'
+        : undefined;
+    const none: SetDiff = { added: [], removed: [], kept: 0 };
     summary = {
       previous: { capturedAt: prev.capturedAt, imageFilename: prev.imageFilename },
       picture,
-      errors: diffSigned(prev.errors, errors),
-      failures: diffSigned(prev.failures, failures),
+      errors: logsNotCompared ? none : diffSigned(prev.errors, errors),
+      failures: logsNotCompared ? none : diffSigned(prev.failures, failures),
+      ...(logsNotCompared ? { logsNotCompared } : {}),
     };
   }
 
@@ -226,6 +241,7 @@ export async function compareCapture(input: CompareInput): Promise<Comparison> {
         thumbHeight: cur.height,
         errors,
         failures,
+        recorderActive: input.recorderActive,
       });
     },
   };

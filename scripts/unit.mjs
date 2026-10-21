@@ -1569,6 +1569,9 @@ test('no change, a skipped comparison and a height change each read plainly', ()
   const none = mod.changesSection(sum({ picture: { compared: true, share: 0, boxes: [], heightBefore: 2400, heightAfter: 2520 } }), new Date('2026-10-21T15:00:30Z'))[1];
   assert.match(none, /no visible change/);
   assert.match(none, /Page height:\*\* 2520 px \(was 2400 px\)/);
+  const unknown = mod.changesSection(sum({ logsNotCompared: 'the recorder was not running on this page this time, so its console and network are unknown' }), new Date())[1];
+  assert.match(unknown, /Console errors and failed requests:\*\* not compared - the recorder was not running/);
+  assert.doesNotMatch(unknown, /gone/);
   const partial = mod.changesSection(sum({ picture: { compared: true, share: 0, boxes: [], heightBefore: 30000, heightAfter: 30000, comparedTo: 24000 } }), new Date())[1];
   assert.match(partial, /no visible change in the top 24000 px/);
   assert.match(partial, /Not compared:\*\* below 24000 px/);

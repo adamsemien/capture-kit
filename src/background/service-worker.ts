@@ -723,6 +723,7 @@ async function captureReport(
         viewportWidth: page.meta.viewport.width,
         consoleEntries: page.console,
         networkFailures: page.network,
+        recorderActive,
       });
     } catch (error) {
       console.warn('[capture-kit] comparison with the last capture skipped:', error);
