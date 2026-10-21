@@ -869,10 +869,17 @@ async function captureReport(
       changes: { ...comparison.summary, picture: pic.compared ? { ...pic, diffImageFilename: outlined } : pic },
     });
   }
-  // This capture becomes the one the next capture of the page is compared with.
+  // This capture becomes the one the next capture of the page is compared
+  // with - unless the setting was switched off while it ran. Checked again
+  // after saving too: a switch-off that lands mid-save clears before this
+  // save finishes, so the save would otherwise outlive it (Codex review on
+  // #29).
   if (comparison) {
     try {
-      await comparison.save(imageWrite.filename);
+      if ((await getSettings()).compareWithPrevious) {
+        await comparison.save(imageWrite.filename);
+        if (!(await getSettings()).compareWithPrevious) await clearPages();
+      }
     } catch (error) {
       console.warn('[capture-kit] could not save this capture for the next comparison:', error);
     }
