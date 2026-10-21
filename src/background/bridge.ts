@@ -51,10 +51,12 @@ export interface BridgeRecord {
   kind?: string;
   errors: number;
   failures: number;
+  /** Set when an agent asked for this capture: the helper's id for that request. */
+  requestId?: string;
 }
 
 export interface BridgeHandlers {
-  capture(params: { urlContains?: string; scroll?: boolean }): Promise<{ ok: boolean; id?: string; error?: string }>;
+  capture(params: { urlContains?: string; scroll?: boolean; requestId?: string }): Promise<{ ok: boolean; id?: string; error?: string }>;
   tabs(): Promise<{ ok: boolean; tabs?: { title: string; url: string; active: boolean }[]; error?: string }>;
 }
 
@@ -136,6 +138,7 @@ async function answer(id: string, action: string, params: Record<string, unknown
       result = await handlers.capture({
         urlContains: typeof params.urlContains === 'string' ? params.urlContains : undefined,
         scroll: params.scroll === true,
+        requestId: id,
       });
     } else if (action === 'tabs') result = await handlers.tabs();
     else result = { ok: false, error: `unknown request: ${action}` };

@@ -196,6 +196,9 @@
               <button id="bridge-token-save" type="button">Save</button>
             </span>
             <small id="bridge-status" class="note"></small>
+            <label class="field-title" for="bridge-port">Port</label>
+            <small>Leave at 47823 unless something else uses it; then pick another here and start the helper with the same <code>CAPTURE_KIT_PORT</code>.</small>
+            <input id="bridge-port" type="number" min="1024" max="65535" step="1" inputmode="numeric" />
           </span>
         </div>
 

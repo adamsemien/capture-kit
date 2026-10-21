@@ -13,6 +13,7 @@
 //   E7 a wrong pairing code is refused and the status says so
 //   E11 something else on the port gets nothing: no code, no proof, no capture
 //   E12 switching the bridge off straight after on leaves it off
+//   E13 the settings page's port field saves the port Capture Kit dials
 //   E9 a responsive sweep reaches the agent with every width
 //   E10 a tab that moves to a site agents may not capture, as it comes to
 //       the front, is refused - the agent gets nothing
@@ -309,6 +310,13 @@ try {
   const leaked = heard.some((m) => m.includes(token) || /"type":"(auth|capture|result)"/.test(m));
   verdict('E11 something else on the port gets nothing', impostorState === 'mismatch' && heard.length >= 1 && !leaked,
     `settings page says ${impostorState}; the impostor heard ${heard.length} message(s): ${heard.map((m) => JSON.parse(m).type).join(', ')}; code or capture leaked: ${leaked}`);
+
+  // E13: the settings page's port field saves the port the extension dials.
+  const portWanted = BRIDGE_PORT + 7;
+  await options.eval(`(() => { const i = document.getElementById('bridge-port'); i.value = '${portWanted}'; i.dispatchEvent(new Event('change')); return true; })()`);
+  await sleep(500);
+  const savedPort = await options.eval(`chrome.storage.local.get('bridgePort').then((s) => s.bridgePort)`);
+  verdict('E13 the port field saves the port Capture Kit dials', savedPort === portWanted, `saved ${savedPort}, wanted ${portWanted}`);
   options.close();
 } catch (error) {
   console.error('e2e failed to run:', error);

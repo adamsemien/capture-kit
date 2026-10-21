@@ -40,6 +40,8 @@ export function startDaemon({ port, token, store = new CaptureStore(), log = () 
   let waiters = [];
   /** The extension's name for a capture → the folder it was stored as (a repeat name gets a suffix). */
   const storedAs = new Map();
+  /** A capture request's id → the folder its capture was stored as. */
+  const storedByRequest = new Map();
 
   /** HTTP challenges handed out and not yet used: nonce -> expiry. One use each. */
   const challenges = new Map();
@@ -82,9 +84,8 @@ export function startDaemon({ port, token, store = new CaptureStore(), log = () 
     return { ...meta, markdown };
   }
 
-  function askExtension(action, params) {
+  function askExtension(action, params, id = randomUUID()) {
     if (!ext) return Promise.reject(new Error('Capture Kit is not connected. Open Chrome, and check Settings → Agent bridge in Capture Kit is on and paired.'));
-    const id = randomUUID();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
@@ -148,12 +149,18 @@ export function startDaemon({ port, token, store = new CaptureStore(), log = () 
       }
       if (req.method === 'POST' && url.pathname === '/capture') {
         const body = await readBody(req);
+        const requestId = randomUUID();
         const result = await askExtension('capture', {
           urlContains: typeof body.urlContains === 'string' ? body.urlContains : undefined,
           scroll: body.scroll === true,
-        });
+        }, requestId);
         if (!result.ok) return send(res, 409, result);
-        const meta = withMarkdown(store.get(storedAs.get(result.id) ?? result.id));
+        // The capture this request made, by the request's own id - not by
+        // name, which a capture you take in the same minute can share (Codex
+        // review on #28).
+        const storedId = storedByRequest.get(requestId) ?? storedAs.get(result.id) ?? result.id;
+        storedByRequest.delete(requestId);
+        const meta = withMarkdown(store.get(storedId));
         return meta ? send(res, 200, { ok: true, capture: meta }) : send(res, 500, { ok: false, error: 'the capture was taken but not received' });
       }
       if (req.method === 'GET' && url.pathname === '/wait') {
@@ -233,6 +240,7 @@ export function startDaemon({ port, token, store = new CaptureStore(), log = () 
           try {
             const meta = store.save(msg.record);
             storedAs.set(String(msg.record.id), meta.id);
+            if (typeof msg.record.requestId === 'string') storedByRequest.set(msg.record.requestId, meta.id);
             log(`capture stored: ${meta.id}`);
             const ready = waiters;
             waiters = [];

@@ -257,6 +257,23 @@ test('stopping the helper answers a wait that is still open', async () => {
   assert.ok(Date.now() - started < 5000, 'the helper closed promptly');
 });
 
+test('capture returns the capture its request made, not one with the same name', async () => {
+  const ext = await fakeExtension({
+    onRequest: async (msg, ws) => {
+      if (msg.action !== 'capture') return { ok: false, error: 'unexpected' };
+      // The agent's capture, then one you took the same minute, same name.
+      ws.send(JSON.stringify({ type: 'capture', record: record('same-minute', { requestId: msg.id, title: 'agent' }) }));
+      ws.send(JSON.stringify({ type: 'capture', record: record('same-minute', { title: 'yours' }) }));
+      await new Promise((r) => setTimeout(r, 200));
+      return { ok: true, id: 'same-minute' };
+    },
+  });
+  const res = await client().capture({ urlContains: 'localhost' });
+  assert.equal(res.ok, true);
+  assert.equal(res.capture.title, 'agent');
+  ext.ws.close();
+});
+
 test('wait returns the next capture, and times out cleanly', async () => {
   const ext = await fakeExtension();
   const waiting = client().wait(5);

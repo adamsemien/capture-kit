@@ -8,6 +8,7 @@ import {
 } from '../lib/output-dir';
 import {
   BRIDGE_STATUS_KEY,
+  clampPort,
   getBridgeSettings,
   saveBridgeSettings,
   type BridgeStatus,
@@ -225,6 +226,7 @@ const bridgeEnabledInput = document.getElementById('bridge-enabled') as HTMLInpu
 const bridgeTokenInput = document.getElementById('bridge-token') as HTMLInputElement;
 const bridgeTokenSave = document.getElementById('bridge-token-save') as HTMLButtonElement;
 const bridgeStatusEl = document.getElementById('bridge-status') as HTMLElement;
+const bridgePortInput = document.getElementById('bridge-port') as HTMLInputElement;
 const bridgePairField = document.getElementById('bridge-pair-field') as HTMLElement;
 const bridgeCaptureField = document.getElementById('bridge-capture-field') as HTMLElement;
 const bridgeModeInputs = Array.from(
@@ -254,6 +256,7 @@ async function loadBridge(): Promise<void> {
   bridgeTokenInput.value = '';
   bridgeTokenInput.placeholder = bridge.bridgeToken ? 'Paired - paste a new code to replace it' : 'Paste the pairing code';
   for (const input of bridgeModeInputs) input.checked = input.value === bridge.bridgeCaptureMode;
+  bridgePortInput.value = String(bridge.bridgePort);
   bridgePairField.classList.toggle('is-disabled', !bridge.bridgeEnabled);
   bridgeCaptureField.classList.toggle('is-disabled', !bridge.bridgeEnabled);
   try {
@@ -264,6 +267,11 @@ async function loadBridge(): Promise<void> {
   }
 }
 
+// The helper's port, when 47823 is taken: the same number goes in
+// CAPTURE_KIT_PORT for ck and the MCP server (Codex review on #28).
+bridgePortInput.addEventListener('change', () => {
+  void saveBridgeSettings({ bridgePort: clampPort(bridgePortInput.value) }).then(loadBridge).then(() => flashStatus('Saved'));
+});
 bridgeEnabledInput.addEventListener('change', () => {
   void saveBridgeSettings({ bridgeEnabled: bridgeEnabledInput.checked }).then(loadBridge).then(() => flashStatus('Saved'));
 });

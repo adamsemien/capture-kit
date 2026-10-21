@@ -926,8 +926,9 @@ const AGENT_SITE_REFUSAL =
  * name without its extension - the same id a bridge capture request is
  * answered with, suffix and all.
  */
-function bridgeRecord(report: ReportArtifacts, trigger: CaptureTrigger): BridgeRecord {
+function bridgeRecord(report: ReportArtifacts, trigger: CaptureTrigger, requestId?: string): BridgeRecord {
   return {
+    ...(requestId ? { requestId } : {}),
     id: report.imageFilename.replace(/\.[^.]+$/, ''),
     capturedAt: report.capturedAt.getTime(),
     url: report.url,
@@ -960,6 +961,8 @@ async function captureBundle(
      * not allow (Codex review on #28).
      */
     allowUrl?: (url: string | undefined) => boolean;
+    /** The helper's id for the agent request this capture answers. */
+    bridgeRequestId?: string;
   } = {},
 ): Promise<CaptureResponse> {
   const announce = trigger !== 'popup';
@@ -1028,7 +1031,7 @@ async function captureBundle(
     }
 
     // Hand the report to an agent on this computer, when the bridge is on.
-    if (bridgeConnected()) pushCapture(bridgeRecord(report, trigger));
+    if (bridgeConnected()) pushCapture(bridgeRecord(report, trigger, options.bridgeRequestId));
 
     const lastBundle: LastBundle = {
       markdown: clipboardMarkdown,
@@ -2128,7 +2131,7 @@ async function bridgeTabs(): Promise<{ ok: boolean; tabs?: { title: string; url:
   return { ok: true, tabs: tabs.map((t) => ({ title: t.title ?? '', url: t.url ?? '', active: t.active === true })) };
 }
 
-async function bridgeCapture(params: { urlContains?: string; scroll?: boolean }): Promise<{ ok: boolean; id?: string; error?: string }> {
+async function bridgeCapture(params: { urlContains?: string; scroll?: boolean; requestId?: string }): Promise<{ ok: boolean; id?: string; error?: string }> {
   const { tabs, refusal } = await bridgeAllowedTabs();
   if (refusal) return { ok: false, error: refusal };
   let candidates: chrome.tabs.Tab[];
@@ -2196,7 +2199,11 @@ async function bridgeCapture(params: { urlContains?: string; scroll?: boolean })
       typeof url === 'string' &&
       /^https?:/.test(url) &&
       decidePageTrigger(bridge.bridgeCaptureMode, pageTriggerSites, url).allowed;
-    const response = await captureBundle('bridge', tab.id as number, { scroll: params.scroll === true, allowUrl });
+    const response = await captureBundle('bridge', tab.id as number, {
+      scroll: params.scroll === true,
+      allowUrl,
+      bridgeRequestId: params.requestId,
+    });
     return response.ok
       ? { ok: true, id: response.imageFilename.replace(/\.[^.]+$/, '') }
       : { ok: false, error: response.reason };
