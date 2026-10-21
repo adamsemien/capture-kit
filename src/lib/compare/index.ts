@@ -34,6 +34,13 @@ export type PictureComparison =
       boxes: Box[];
       heightBefore: number;
       heightAfter: number;
+      /**
+       * How far down the page was compared, CSS px, when that is not all of
+       * it: the small copy stops at THUMB_MAX_HEIGHT rows, so the bottom of a
+       * very tall page is not compared and the report says so (Codex review
+       * on #29).
+       */
+      comparedTo?: number;
       /** Set once the outlined copy has been written. */
       diffImageFilename?: string;
     }
@@ -146,12 +153,15 @@ async function comparePictures(
     width: Math.round(Math.min(box.width, cur.width - box.x) * k),
     height: Math.round(Math.min(box.height, rows - box.y) * k),
   }));
+  const comparedTo = Math.round(rows * k);
   const picture: PictureComparison = {
     compared: true,
     share: changedShare(grid),
     boxes,
     heightBefore: prev.pageHeight,
     heightAfter: input.pageHeight,
+    // Short of the shorter page by more than a cell: only the top was compared.
+    ...(comparedTo < Math.min(prev.pageHeight, input.pageHeight) - CELL * k ? { comparedTo } : {}),
   };
   if (thumbBoxes.length === 0) return { picture, diff: null };
 

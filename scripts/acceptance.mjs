@@ -1170,6 +1170,16 @@ async function beforeAfterCheck() {
   const second = await capture();
   const text = second.report ? readCapture(second.report) : '';
   const changesFile = /outlined in (\S+_changes\.png)/.exec(text)?.[1] ?? null;
+  // A session of the same page, back at #v1: its mirror copy (latest-session/
+  // 01.md) must carry the comparison and its own 01_changes.png.
+  await options.eval(`chrome.tabs.update(${tabId}, { url: ${JSON.stringify(`${base}#v1`)} }).then(() => chrome.tabs.reload(${tabId})).then(() => true)`);
+  await sleep(2500);
+  const session = await options.eval(`chrome.runtime.sendMessage({ type: 'SESSION_START', tabIds: [${tabId}], reload: false })`);
+  await sleep(2500);
+  const mirrorDir = [OUTPUT_DIR, `${DOWNLOADS}/capture-kit`, DOWNLOADS]
+    .map((d) => `${d}/latest-session`)
+    .find((d) => existsSync(`${d}/01.md`));
+  const mirrorText = mirrorDir ? readFileSync(`${mirrorDir}/01.md`, 'utf8') : '';
   await cdp(`/json/close/${t.id}`);
   return {
     firstOk: first.r?.ok === true,
@@ -1178,6 +1188,10 @@ async function beforeAfterCheck() {
     section: text.split('## Changes since the last capture of this page')[1]?.split('\n## ')[0] ?? null,
     changesFile,
     changesFileExists: changesFile ? existsSync(`${captureDir()}/${changesFile}`) : false,
+    sessionOk: session?.ok !== false,
+    mirrorFound: Boolean(mirrorDir),
+    mirrorHasSection: mirrorText.includes('## Changes since the last capture'),
+    mirrorOutlined: /outlined in 01_changes\.png/.test(mirrorText) && Boolean(mirrorDir && existsSync(`${mirrorDir}/01_changes.png`)),
   };
 }
 function a19Verdict(r) {
@@ -1191,7 +1205,10 @@ function a19Verdict(r) {
   if (!r.changesFileExists) problems.push('no outlined changes image written');
   if (!/Console errors:\*\* 1 new, 1 gone/.test(s) || !/E2 new problem/.test(s) || !/E1 boot failed/.test(s)) problems.push('console errors not compared right');
   if (!/Failed requests:\*\* 1 new, 1 gone/.test(s) || !/missing-v2/.test(s) || !/missing-v1/.test(s)) problems.push('failed requests not compared right');
-  return problems.length ? `FAIL — ${problems.join('; ')}` : `PASS — second report: area outlined in ${r.changesFile}, E2 new / E1 gone, /missing-v2 new / /missing-v1 gone; first report had no comparison`;
+  if (!r.mirrorFound) problems.push('the session mirror latest-session/01.md was not found');
+  else if (!r.mirrorHasSection) problems.push('the session mirror has no comparison section');
+  else if (!r.mirrorOutlined) problems.push('the session mirror does not point at its own 01_changes.png');
+  return problems.length ? `FAIL — ${problems.join('; ')}` : `PASS — second report: area outlined in ${r.changesFile}, E2 new / E1 gone, /missing-v2 new / /missing-v1 gone; first report had no comparison; session mirror carries it with 01_changes.png`;
 }
 
 if (process.argv.includes('--only-before-after')) {

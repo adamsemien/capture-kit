@@ -215,21 +215,25 @@ export function changesSection(changes: ChangeSummary, capturedAt: Date): string
     '',
   ];
   const p = changes.picture;
+  const where = p.compared && p.comparedTo ? `the top ${p.comparedTo} px` : 'the page';
   if (!p.compared) {
     lines.push(`- **Picture:** not compared - ${p.reason}.`);
   } else if (p.boxes.length === 0) {
-    lines.push('- **Picture:** no visible change.');
+    lines.push(p.comparedTo ? `- **Picture:** no visible change in ${where}.` : '- **Picture:** no visible change.');
   } else {
     const pct = p.share * 100;
     const pctText = pct < 1 ? 'under 1%' : `about ${Math.round(pct)}%`;
     lines.push(
-      `- **Picture:** ${p.boxes.length} ${p.boxes.length === 1 ? 'area' : 'areas'} changed, ${pctText} of the page` +
+      `- **Picture:** ${p.boxes.length} ${p.boxes.length === 1 ? 'area' : 'areas'} changed, ${pctText} of ${where}` +
         (p.diffImageFilename ? ` - outlined in ${p.diffImageFilename}.` : '.'),
     );
     for (const box of p.boxes.slice(0, 8)) {
       lines.push(`  - x ${box.x}-${box.x + box.width}, y ${box.y}-${box.y + box.height} (CSS px)`);
     }
     if (p.boxes.length > 8) lines.push(`  - …and ${p.boxes.length - 8} more`);
+  }
+  if (p.compared && p.comparedTo) {
+    lines.push(`- **Not compared:** below ${p.comparedTo} px - the page is too tall to compare whole.`);
   }
   if (p.compared && Math.abs(p.heightAfter - p.heightBefore) > 2) {
     lines.push(`- **Page height:** ${p.heightAfter} px (was ${p.heightBefore} px) - areas below a height change may be content that moved, not changed.`);

@@ -205,7 +205,16 @@ iconCapturesInput.addEventListener('change', () => void save());
 stampUrlInput.addEventListener('change', () => void save());
 autoCopyInput.addEventListener('change', () => void save());
 imageOnlyInput.addEventListener('change', () => void save());
-comparePreviousInput.addEventListener('change', () => void save());
+comparePreviousInput.addEventListener('change', () => {
+  void (async () => {
+    await save();
+    // Off means nothing is kept, as PRIVACY.md says - not just nothing new.
+    if (!comparePreviousInput.checked) {
+      await clearPages();
+      await renderCompareCount();
+    }
+  })();
+});
 clipSecondsInput.addEventListener('change', () => void save());
 
 async function renderCompareCount(): Promise<void> {

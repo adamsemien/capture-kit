@@ -642,6 +642,8 @@ interface ReportArtifacts {
    * pointed at, and a reference out of it fails silently.
    */
   mirrorMarkdown: string | null;
+  /** The outlined "what changed" image for the mirror, as NN_changes.png. */
+  mirrorChangesBase64: string | null;
   /** Numbered image name the mirror markdown points at, e.g. "01.jpg". */
   mirrorImageFilename: string | null;
   clipboardMarkdown: string;
@@ -768,17 +770,19 @@ async function captureReport(
   // The session mirror writes its slices as NN_slices/slice-01.jpg, so its
   // copy of the report points there - every path in the mirror resolves
   // inside the mirror.
-  const mirrorMarkdown = mirrorImageFilename
+  const mirrorSliceRefs = slices.map((slice, i) => ({
+    path: `${mirrorBasename}_slices/${sliceFilename(i, result.format)}`,
+    top: slice.top,
+    height: slice.height,
+    width: slice.width,
+    left: slice.left,
+  }));
+  // Rebuilt below once the comparison is known, so the mirror carries it too.
+  let mirrorMarkdown = mirrorImageFilename
     ? buildBundleMarkdown({
         ...markdownInput,
         imageFilename: mirrorImageFilename,
-        slices: slices.map((slice, i) => ({
-          path: `${mirrorBasename}_slices/${sliceFilename(i, result.format)}`,
-          top: slice.top,
-          height: slice.height,
-          width: slice.width,
-          left: slice.left,
-        })),
+        slices: mirrorSliceRefs,
       })
     : null;
 
@@ -848,6 +852,21 @@ async function captureReport(
     'text/markdown',
     textToBase64(markdown),
   );
+  // The session mirror's copy, with the comparison and its own outlined image
+  // name (NN_changes.png), which runSession writes beside it (Codex review
+  // on #29).
+  let mirrorChangesBase64: string | null = null;
+  if (mirrorImageFilename && comparison?.summary) {
+    const pic = comparison.summary.picture;
+    const outlined = pic.compared && pic.diffImageFilename ? `${mirrorBasename}_changes.png` : undefined;
+    if (outlined) mirrorChangesBase64 = comparison.diffImageBase64;
+    mirrorMarkdown = buildBundleMarkdown({
+      ...markdownInput,
+      imageFilename: mirrorImageFilename,
+      slices: mirrorSliceRefs,
+      changes: { ...comparison.summary, picture: pic.compared ? { ...pic, diffImageFilename: outlined } : pic },
+    });
+  }
   // This capture becomes the one the next capture of the page is compared with.
   if (comparison) {
     try {
@@ -867,6 +886,7 @@ async function captureReport(
     markdownFilename: markdownWrite.filename,
     markdown,
     mirrorMarkdown,
+    mirrorChangesBase64,
     mirrorImageFilename,
     clipboardMarkdown: buildClipboardMarkdown(markdown, imageWrite.filename),
     contents: buildContentsLine({
@@ -1401,6 +1421,9 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
             );
           }
         });
+        if (report.mirrorChangesBase64) {
+          await downloadPointerFile(`${pointer}${ordinal}_changes.png`, 'image/png', report.mirrorChangesBase64);
+        }
         await downloadPointerFile(
           `${pointer}${ordinal}.md`,
           'text/markdown',
