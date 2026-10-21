@@ -1,6 +1,6 @@
 # Privacy policy
 
-_Capture Kit Chrome extension. Last updated 17 October 2026._
+_Capture Kit Chrome extension. Last updated 21 October 2026._
 
 **Capture Kit does not collect, transmit, sell or share any data.** It has no
 server, no account, no analytics and no telemetry.
@@ -21,6 +21,17 @@ To point console errors at your original source files, Capture Kit may fetch
 the source maps of the page you are capturing, from the same site that served
 the page's scripts. That request goes to the site you are already on and is
 not sent anywhere else.
+
+## Agent bridge (off unless you turn it on)
+
+If you turn on **Agent bridge** in Settings and run the bridge helper on your
+computer, Capture Kit also hands each report and its images to that helper,
+over a connection to `127.0.0.1` - your own computer, never the network. The
+helper keeps the newest 20 captures in `~/.capture-kit/captures/`, readable by
+you only, so your AI tools can read them. If you also allow **Agent captures**,
+the helper can ask Capture Kit to capture a tab on a site you allowed; it is
+told the titles and addresses of those tabs only. The pairing code that links
+the two is kept in this browser's local extension storage and is not synced.
 
 ## Stored on your computer
 

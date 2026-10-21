@@ -6,7 +6,9 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/unit.mjs"
+    "test": "node scripts/unit.mjs",
+    "test:bridge": "cd bridge && npm test",
+    "e2e:bridge": "node scripts/bridge-e2e.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.2.5",

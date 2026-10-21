@@ -6,6 +6,13 @@ import {
   requestOutputDirPermission,
   saveOutputDir,
 } from '../lib/output-dir';
+import {
+  BRIDGE_STATUS_KEY,
+  clampPort,
+  getBridgeSettings,
+  saveBridgeSettings,
+  type BridgeStatus,
+} from '../lib/bridge-settings';
 
 const segmentInput = document.getElementById('segment-size') as HTMLInputElement;
 const includeLogsInput = document.getElementById('include-logs') as HTMLInputElement;
@@ -218,5 +225,76 @@ dirClearBtn.addEventListener('click', () => {
   })();
 });
 
+// ---------------------------------------------------------- agent bridge --
+const bridgeEnabledInput = document.getElementById('bridge-enabled') as HTMLInputElement;
+const bridgeTokenInput = document.getElementById('bridge-token') as HTMLInputElement;
+const bridgeTokenSave = document.getElementById('bridge-token-save') as HTMLButtonElement;
+const bridgeStatusEl = document.getElementById('bridge-status') as HTMLElement;
+const bridgePortInput = document.getElementById('bridge-port') as HTMLInputElement;
+const bridgePairField = document.getElementById('bridge-pair-field') as HTMLElement;
+const bridgeCaptureField = document.getElementById('bridge-capture-field') as HTMLElement;
+const bridgeModeInputs = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="bridge-capture-mode"]'),
+);
+
+const BRIDGE_STATUS_TEXT: Record<BridgeStatus['state'], string> = {
+  off: '',
+  unpaired: 'Not paired yet - paste the code from "ck pair".',
+  connecting: 'Connecting to the helper…',
+  connected: 'Connected. Agents on this computer can read your captures.',
+  refused: 'The helper refused the pairing code.',
+  unreachable: 'The helper is not running.',
+  mismatch: 'The helper on that port did not prove it has this pairing code. Capture Kit sent it nothing.',
+};
+
+function renderBridgeStatus(status: BridgeStatus | undefined): void {
+  const state = status?.state ?? 'off';
+  const text = BRIDGE_STATUS_TEXT[state];
+  bridgeStatusEl.textContent = status?.detail && state !== 'connected' ? `${text} ${status.detail}` : text;
+  bridgeStatusEl.hidden = !text;
+}
+
+async function loadBridge(): Promise<void> {
+  const bridge = await getBridgeSettings();
+  bridgeEnabledInput.checked = bridge.bridgeEnabled;
+  bridgeTokenInput.value = '';
+  bridgeTokenInput.placeholder = bridge.bridgeToken ? 'Paired - paste a new code to replace it' : 'Paste the pairing code';
+  for (const input of bridgeModeInputs) input.checked = input.value === bridge.bridgeCaptureMode;
+  bridgePortInput.value = String(bridge.bridgePort);
+  bridgePairField.classList.toggle('is-disabled', !bridge.bridgeEnabled);
+  bridgeCaptureField.classList.toggle('is-disabled', !bridge.bridgeEnabled);
+  try {
+    const stored = await chrome.storage.session.get(BRIDGE_STATUS_KEY);
+    renderBridgeStatus(stored[BRIDGE_STATUS_KEY] as BridgeStatus | undefined);
+  } catch {
+    renderBridgeStatus(undefined);
+  }
+}
+
+// The helper's port, when 47823 is taken: the same number goes in
+// CAPTURE_KIT_PORT for ck and the MCP server (Codex review on #28).
+bridgePortInput.addEventListener('change', () => {
+  void saveBridgeSettings({ bridgePort: clampPort(bridgePortInput.value) }).then(loadBridge).then(() => flashStatus('Saved'));
+});
+bridgeEnabledInput.addEventListener('change', () => {
+  void saveBridgeSettings({ bridgeEnabled: bridgeEnabledInput.checked }).then(loadBridge).then(() => flashStatus('Saved'));
+});
+bridgeTokenSave.addEventListener('click', () => {
+  const code = bridgeTokenInput.value;
+  if (!code.trim()) return;
+  void saveBridgeSettings({ bridgeToken: code }).then(loadBridge).then(() => flashStatus('Paired'));
+});
+for (const input of bridgeModeInputs) {
+  input.addEventListener('change', () => {
+    void saveBridgeSettings({ bridgeCaptureMode: normalizeTriggerMode(input.value) }).then(() => flashStatus('Saved'));
+  });
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'session' && BRIDGE_STATUS_KEY in changes) {
+    renderBridgeStatus(changes[BRIDGE_STATUS_KEY].newValue as BridgeStatus | undefined);
+  }
+});
+
 void load();
 void renderOutputDir();
+void loadBridge();

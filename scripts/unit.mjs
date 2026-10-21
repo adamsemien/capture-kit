@@ -20,6 +20,7 @@ const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const dir = mkdtempSync(join(tmpdir(), 'ck-unit-'));
 
 const ENTRY = `
+export { syncBridge } from '${ROOT}/src/background/bridge.ts';
 export { classifyEnvironment } from '${ROOT}/src/lib/env-marker.ts';
 export { bandHeight, stampLabel } from '${ROOT}/src/lib/capture-engine/stamp.ts';
 export { readEncodedImageSize } from '${ROOT}/src/lib/capture-engine/image-size.ts';
@@ -1548,6 +1549,37 @@ test('the sweep Mode chip states a path only when every width took it', () => {
     /differs by width/,
   );
   assert.equal(mod.sweepModeChip([]), '');
+});
+
+heading('agent bridge - a stale settings read cannot reconnect');
+await atest('switched off while an earlier sync is still reading settings, the bridge stays off', async () => {
+  // Fake Chrome: every storage read waits until the test releases it.
+  const reads = [];
+  const sockets = [];
+  globalThis.chrome = {
+    storage: {
+      local: { get: () => new Promise((resolve) => reads.push(resolve)) },
+      session: { set: async () => {} },
+    },
+    alarms: { create: async () => {}, clear: async () => {} },
+    runtime: { getManifest: () => ({ version: 'test' }) },
+  };
+  globalThis.WebSocket = class {
+    static OPEN = 1;
+    static CONNECTING = 0;
+    constructor(url) { this.url = url; this.readyState = 0; sockets.push(this); }
+    send() {}
+    close() { this.readyState = 3; }
+  };
+  const on = { bridgeEnabled: true, bridgeToken: 'x'.repeat(43), bridgePort: 47823, bridgeCaptureMode: 'off' };
+  const off = { ...on, bridgeEnabled: false };
+  const older = mod.syncBridge();   // started while the bridge was on
+  const newer = mod.syncBridge();   // started by switching it off
+  reads[1](off);                    // the newer read finishes first...
+  await newer;
+  reads[0](on);                     // ...then the older one, with the old setting
+  await older;
+  assert.equal(sockets.length, 0, `a stale sync opened ${sockets.length} connection(s)`);
 });
 
 rmSync(dir, { recursive: true, force: true });

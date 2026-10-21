@@ -116,6 +116,62 @@ A refused page is always told why, so an agent can tell "refused" from "broken".
 A clip started this way still needs one shortcut press or icon click in that
 tab first - that's a Chrome rule for recording a tab.
 
+### Agent bridge: captures straight into Claude Code, Cursor or any MCP client
+
+The `bridge/` folder holds a small helper that runs on your computer. Capture
+Kit hands it each report as you capture, and your agent reads them through an
+MCP server or the `ck` command - no folder to point at, no copy and paste.
+
+**Set it up once** (Node 20 or later):
+
+```sh
+cd bridge && npm install && npm link   # puts ck and capture-kit-mcp on your PATH
+ck pair                                # copies the pairing code to your clipboard
+```
+
+Then in **Settings → Agent bridge**, turn the bridge on, paste the code and
+press **Save**. The status line should say **Connected**. Any `ck` command or
+the MCP server starts the helper; Capture Kit retries every minute, so the
+order doesn't matter.
+
+**Add it to your agent** - for Claude Code:
+
+```sh
+claude mcp add capture-kit -- capture-kit-mcp
+```
+
+Other MCP clients take the same command (`capture-kit-mcp`, no arguments).
+
+| MCP tool | `ck` command | What it does |
+|---|---|---|
+| `get_latest_capture` | `ck latest` | The newest report, with its image (and the "what changed" image when there is one) |
+| `wait_for_capture` | `ck wait` | Waits for your next capture - "take a screenshot when it looks wrong" |
+| `list_captures` / `get_capture` | `ck list` / `ck show <id>` | The last 20 captures |
+| `capture_tab` | `ck capture <url part> [--scroll]` | Takes a capture itself, on a tab you allowed |
+| `list_tabs` | `ck tabs` | The open tabs an agent is allowed to capture |
+
+Every kind of capture is handed over: a responsive sweep arrives as one
+capture with each width beside it, a clip with its frame sheet, and each page
+of a session as its own capture. Add `--json` to any `ck` command for
+machine-readable output.
+
+**What an agent can do is up to you.** With the bridge on, the helper receives
+the captures *you* take. Letting an agent *take* captures is a separate
+setting, **Agent captures**, off by default, with the same Off / Allowed sites
+/ Any page choices as the table above. An agent capture brings its tab to the
+front, like a page-fired one. A refused request says why.
+
+The helper listens on `127.0.0.1` only and refuses a browser page outright.
+The pairing code itself is never sent: Capture Kit, `ck` and the MCP server
+each make the helper prove it holds the code before they send anything, then
+prove it themselves. `ck` and the MCP server read it from
+`~/.capture-kit/bridge.json`, a file only you can read - so on a shared
+computer, another account that grabs the port while the helper is stopped
+learns nothing, and Capture Kit says something other than the helper
+answered. Captures are kept in `~/.capture-kit/captures/`, the newest 20.
+`ck stop` stops the helper. For a new pairing code, run `ck stop`, delete
+`~/.capture-kit/bridge.json`, then `ck pair` and paste the new code.
+
 ## Output folder
 
 Chrome's downloads API can only write inside Downloads, so captures land in

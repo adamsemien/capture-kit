@@ -1,0 +1,30 @@
+{
+  "name": "capture-kit-bridge",
+  "version": "0.1.0",
+  "description": "Hands Capture Kit captures to AI agents on this computer: a local helper, the ck command, and an MCP server.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "ck": "bin/ck.mjs",
+    "capture-kit-mcp": "bin/mcp.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/bridge.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "ws": "8.22.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.3.1"
+  }
+}
