@@ -129,6 +129,35 @@ const FORCE_REVEAL_SCRIPT = `(() => {
     for (const c of el.classList) if (HIDDEN_CLASS.test(c)) return true;
     return false;
   };
+  // Whether the hiding class is what hides it, tested rather than guessed:
+  // the class comes off for one style read and goes straight back. Tailwind's
+  // "hidden md:block" keeps the token on an element that is showing, and that
+  // element can be opacity:0 for an unrelated lazy reveal - the class is not
+  // the cause then, and the section must still be revealed (Codex review on
+  // #26). Transitions are held off for the read, or an opacity transition
+  // would report its start value and make the class look harmless.
+  const classIsHiding = (el) => {
+    const classAttr = el.getAttribute('class');
+    const styleAttr = el.getAttribute('style');
+    let hides = false;
+    try {
+      el.style.setProperty('transition', 'none', 'important');
+      const withIt = getComputedStyle(el);
+      const before = [withIt.display, withIt.visibility, withIt.opacity].join('|');
+      el.setAttribute('class', [...el.classList].filter((c) => !HIDDEN_CLASS.test(c)).join(' '));
+      const without = getComputedStyle(el);
+      // Hiding if taking it off changes anything that hides: class="invisible
+      // opacity-0" stays opacity:0 without "invisible", but its visibility
+      // changes, so it is still the class at work (Codex review on #26).
+      hides = [without.display, without.visibility, without.opacity].join('|') !== before;
+    } finally {
+      el.setAttribute('class', classAttr);
+      getComputedStyle(el).opacity; // settle with transitions still off
+      if (styleAttr === null) el.removeAttribute('style');
+      else el.setAttribute('style', styleAttr);
+    }
+    return hides;
+  };
 
   // Parked off the page. Third-party widgets keep hidden layers waiting
   // outside the document - Google's reCAPTCHA challenge sits in an absolute
@@ -175,8 +204,10 @@ const FORCE_REVEAL_SCRIPT = `(() => {
     if (cs.display === 'none') continue;
     if (declaredClosed(el)) continue;
     if (parkedOffPage(el, cs)) continue;
-    if (hiddenByClass(el)) continue;
-    const hidden =parseFloat(cs.opacity) === 0 || cs.visibility === 'hidden';
+    const hidden = parseFloat(cs.opacity) === 0 || cs.visibility === 'hidden';
+    // Only while the class is actually what hides it: responsive markup like
+    // class="hidden md:block" keeps the token on an element that is showing.
+    if (hidden && hiddenByClass(el) && classIsHiding(el)) continue;
     if (hidden) {
       el.setAttribute(ATTR, '');
       count += 1;
@@ -410,7 +441,10 @@ export const UNSTICK_SCRIPT = `(() => {
   // Inner scrollers (a docs sidebar with its own overflow) go back to the top
   // first, so their sticky children resolve where they belong and every rect
   // measured below is the unscrolled one. Originals recorded for restore.
-  for (const el of document.querySelectorAll('*')) {
+  // Not for scroll capture: it photographs the page as it sits and scrolls
+  // only its own target, so a code pane or carousel scrolled sideways inside
+  // the area must stay where you had it (Codex review on #27).
+  if (!fixedOnly) for (const el of document.querySelectorAll('*')) {
     if (el.hasAttribute(SCROLL_ATTR)) continue;
     const top = el.scrollTop;
     const left = el.scrollLeft;
@@ -464,7 +498,23 @@ export const UNSTICK_SCRIPT = `(() => {
     // declares. Legitimate chrome — a header, a toolbar, a bottom bar — is
     // on screen at the unscrolled viewport and carries no closed marker, so
     // neither arm touches it.
-    if (notPainted(el, cs) || (markersOnly ? declaredClosed(el) : !onScreen(rect))) {
+    // Painting nothing right now: left exactly as it is - neither moved nor
+    // marked. It adds nothing to the image while it stays fixed and invisible,
+    // and leaving it unmarked lets pass 2 judge it again: the segmented
+    // path's virtual viewport can cross a breakpoint that makes it visible,
+    // and a sticky veto from pass 1 would have kept it hidden in a layout
+    // where the page shows it (Codex review on #23).
+    // Pass 2 is the last word, though: still painting nothing in the final
+    // layout, it is vetoed, or the segment loop's scrolling can show it - a
+    // back-to-top button would be painted into every segment (Codex review on
+    // #26).
+    // Scroll capture's pass is a last word too: it scrolls the real page, so
+    // the same button would show up in every screen after the first.
+    if (notPainted(el, cs)) {
+      if (markersOnly || fixedOnly) vetoed.push(el);
+      continue;
+    }
+    if (markersOnly ? declaredClosed(el) : !onScreen(rect)) {
       vetoed.push(el);
       continue;
     }

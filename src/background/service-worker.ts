@@ -22,6 +22,7 @@ import {
   buildContentsLine,
   buildSweepMarkdown,
   captureModeLabel,
+  sweepModeChip,
   OUTPUT_README,
   withLatestNotice,
   type SliceRef,
@@ -33,6 +34,7 @@ import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
 import { ICON_MODE_KEY, getSettings } from '../lib/settings';
 import { decidePageTrigger } from '../lib/site-access';
+import { flashesFor, showCaptureFlash } from '../lib/flash';
 import { bridgeConnected, initBridge, pushCapture, type BridgeRecord } from './bridge';
 import { getBridgeSettings } from '../lib/bridge-settings';
 import type { Settings } from '../lib/settings';
@@ -626,6 +628,21 @@ function describeError(error: unknown): string {
 }
 
 /**
+ * The "photo taken" flash on the captured tab (see lib/flash.ts). Called only
+ * once the capture has returned - the debugger is detached and every change
+ * to the page undone - so the overlay can never be in the image.
+ * Fire-and-forget: a page that refuses script injection simply gets no flash.
+ */
+function flashCapturedTab(tabId: number, trigger: CaptureTrigger, settings: Settings): void {
+  if (!flashesFor(trigger, settings.captureFlash)) return;
+  void chrome.scripting
+    .executeScript({ target: { tabId }, func: showCaptureFlash })
+    .catch(() => {
+      /* restricted page or a tab that went away */
+    });
+}
+
+/**
  * One page report: capture, build markdown, write both files. Shared by the
  * single-page button and the session runner, which is why the tab and the
  * output folder are parameters rather than "whatever is active".
@@ -1105,6 +1122,9 @@ async function captureBundle(
       );
     }
 
+    // Last, once every write has succeeded, so a capture that fails part way
+    // (a latest.* pointer, the result tab) is never confirmed by a flash.
+    flashCapturedTab(tabId, trigger, settings);
     await endIndicator(true, announce);
     return { ok: true, imageFilename, markdown: clipboardMarkdown, copied };
   } catch (error) {
@@ -1175,6 +1195,10 @@ async function capturePage(asPng: boolean, targetTabId?: number): Promise<Captur
         [{ mime, base64: result.imageBase64 }],
       );
     }
+    // Last, once the file and the result tab are done, so a failed save can
+    // never be confirmed by a flash. Only the popup reaches this path ("Image
+    // only"), and that is a person.
+    flashCapturedTab(tab.id as number, 'popup', settings);
     await endIndicator(true, false);
     return { ok: true, imageFilename: written.filename };
   } catch (error) {
@@ -1259,6 +1283,7 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
         captureMode: capture.result.mode,
         revealForced: capture.result.revealForced,
         heightHeld: capture.result.heightHeld,
+        drawnOnScroll: capture.result.drawnOnScroll,
         segments: capture.result.segments,
       })),
       failures: outcome.failures,
@@ -1304,16 +1329,29 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
     }
 
     if (settings.openResult) {
-      const first = outcome.captures[0].result;
+      const widthLabels = outcome.captures.map((capture) =>
+        captureModeLabel(
+          capture.result.mode,
+          capture.result.revealForced,
+          capture.result.segments,
+          capture.result.heightHeld,
+          0,
+          0,
+          0,
+          false,
+          capture.result.drawnOnScroll,
+        ),
+      );
+      const oneMode = new Set(widthLabels).size === 1;
       await openResultTab(
         {
           kind: 'sweep',
-          captureModeLabel: captureModeLabel(first.mode, first.revealForced, first.segments, first.heightHeld),
+          captureModeLabel: sweepModeChip(widthLabels),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
           images: outcome.captures.map((capture, index) => ({
             filename: writtenNames[index],
-            label: `${capture.width} px`,
+            label: oneMode ? `${capture.width} px` : `${capture.width} px - ${widthLabels[index]}`,
             width: capture.result.imageSize.width,
             height: capture.result.imageSize.height,
             bytes: base64Bytes(capture.result.imageBase64),

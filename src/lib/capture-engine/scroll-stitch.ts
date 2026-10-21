@@ -35,7 +35,7 @@ import {
   evaluateInPage,
   sendCommand,
 } from './cdp-fullpage';
-import { MAX_CAPTURE_HEIGHT, PageCanvas } from './slices';
+import { MAX_CAPTURE_HEIGHT, PageCanvas, wholeImageScale } from './slices';
 import type { CaptureRequest, CaptureResult, CaptureStrategy, ScrollStitchInfo } from './types';
 
 /** Wait after each scroll for scroll handlers, canvas repaints and lazy images. */
@@ -84,6 +84,8 @@ interface TargetInfo {
   frame: { x: number; y: number; width: number; height: number };
   scrollTop: number;
   maxScroll: number;
+  /** Height of the target's own viewport; more than the frame when it is taller than the window. */
+  viewHeight: number;
 }
 
 /**
@@ -113,12 +115,24 @@ function targetScript(prefer: ScrollTargetPreference): string {
   let target = null;
   let how = 'page';
   if (${JSON.stringify(prefer)} === 'pointer') {
+    // What is under the pointer: the :hover chain, or - when the pointer has
+    // left the page for the popup, which clears :hover - the element at the
+    // last position the recorder saw it (Codex review on #27).
     const hovered = document.querySelectorAll(':hover');
-    for (let node = hovered.length ? hovered[hovered.length - 1] : null;
+    const last = window[Symbol.for('capture-kit.pointer')];
+    const deepest = hovered.length ? hovered[hovered.length - 1] : null;
+    const start = deepest && deepest !== document.body && deepest !== document.documentElement
+      ? deepest
+      : Array.isArray(last) ? document.elementFromPoint(last[0], last[1]) : null;
+    for (let node = start;
          node && node !== document.body && node !== document.documentElement;
          node = node.parentElement) {
       if (scrollsY(node)) { target = node; how = 'pointer'; break; }
     }
+  }
+  if (!target && ${JSON.stringify(prefer)} === 'largest') {
+    const detected = document.querySelector('[data-capture-kit-canvas-panel]');
+    if (detected && scrollsY(detected)) { target = detected; how = 'largest'; }
   }
   if (!target && (${JSON.stringify(prefer)} === 'largest' || !docScrolls)) {
     let best = null, bestArea = 0;
@@ -154,23 +168,122 @@ function targetScript(prefer: ScrollTargetPreference): string {
 }
 
 /**
+ * A panel partly off screen is brought fully on screen first: the frame is
+ * what is visible, and stitching maps frame rows to panel rows from the
+ * panel's own top, so a cut-off top would shift every frame and a cut-off
+ * bottom would never be photographed (Codex review on #27). The page is
+ * scrolled back afterwards with everything else. Returns how far the panel's
+ * top still sits above the window (0 unless the page cannot scroll there).
+ */
+/**
+ * The part of the window a panel can show through: the window itself, cut
+ * down by every ancestor that clips its overflow - a panel nested in another
+ * scrolling container shows only what that container shows (Codex review on
+ * #27).
+ */
+const CLIP_BOX_JS = `
+  const clipBox = (el) => {
+    let x0 = 0, y0 = 0, x1 = window.innerWidth, y1 = window.innerHeight;
+    for (let n = el.parentElement; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+      let cs;
+      try { cs = getComputedStyle(n); } catch { continue; }
+      if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+      const r = n.getBoundingClientRect();
+      const l = r.left + n.clientLeft, t = r.top + n.clientTop;
+      x0 = Math.max(x0, l); y0 = Math.max(y0, t);
+      x1 = Math.min(x1, l + n.clientWidth); y1 = Math.min(y1, t + n.clientHeight);
+    }
+    // Bars outside the panel that sit over its top or bottom edge - a page's
+    // sticky header, a fixed bar UNSTICK pinned in place - stay put while the
+    // panel scrolls, so they would repeat in every frame over the panel's
+    // rows. The frame stops at them instead (Codex review on #27). Ones in
+    // the middle (a floating button) are left to show once per frame, as
+    // they do on screen.
+    const pinned = document.querySelectorAll('[data-capture-kit-position]');
+    const candidates = new Set(pinned);
+    for (const n of document.body ? document.body.querySelectorAll('*') : []) {
+      let p;
+      try { p = getComputedStyle(n).position; } catch { continue; }
+      if (p === 'fixed' || p === 'sticky') candidates.add(n);
+    }
+    for (const n of candidates) {
+      if (n === el || n.contains(el) || el.contains(n)) continue;
+      const r = n.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      let cs;
+      try { cs = getComputedStyle(n); } catch { continue; }
+      if (cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0 || cs.display === 'none') continue;
+      const overlapX = Math.min(r.right, x1) - Math.max(r.left, x0);
+      if (overlapX < (x1 - x0) * 0.3) continue;
+      if (r.top <= y0 + 1 && r.bottom > y0) y0 = Math.min(y1, r.bottom);
+      else if (r.bottom >= y1 - 1 && r.top < y1) y1 = Math.max(y0, r.top);
+    }
+    return { x0, y0, x1, y1 };
+  };`;
+
+const ALIGN_PANEL_SCRIPT = `(() => {
+  ${CLIP_BOX_JS}
+  const el = document.querySelector('[${TARGET_ATTR}]');
+  if (!el) return null;
+  const view = () => {
+    const r = el.getBoundingClientRect();
+    const top = r.top + el.clientTop;
+    return { top, bottom: top + el.clientHeight, box: clipBox(el) };
+  };
+  let v = view();
+  if (v.top < v.box.y0 || v.bottom > v.box.y1) {
+    // Scrolls the page and every container around the panel, as needed.
+    el.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
+    v = view();
+    // Aligned to the window's top, it can sit under a sticky header: move
+    // the page back by what still covers it.
+    if (v.top < v.box.y0) {
+      window.scrollBy({ left: 0, top: v.top - v.box.y0, behavior: 'instant' });
+      v = view();
+    }
+  }
+  return Math.max(0, v.box.y0 - v.top);
+})()`;
+
+/** Every scrolled container around the panel, remembered before UNSTICK returns them to the top. */
+const ANCESTORS_KEY = "Symbol.for('capture-kit.stitch-ancestors')";
+const SAVE_ANCESTORS_SCRIPT = `(() => {
+  const el = document.querySelector('[${TARGET_ATTR}]');
+  const list = [];
+  // Every ancestor, at zero too: scrollIntoView can move one that started
+  // at the top (Codex review on #27).
+  for (let n = el ? el.parentElement : null; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+    list.push([n, n.scrollTop, n.scrollLeft]);
+  }
+  window[${ANCESTORS_KEY}] = list;
+  return list.length;
+})()`;
+const RESTORE_ANCESTORS_SCRIPT = `(() => {
+  for (const [n, top, left] of window[${ANCESTORS_KEY}] || []) { n.scrollTop = top; n.scrollLeft = left; }
+})()`;
+const FORGET_ANCESTORS_SCRIPT = `(() => { delete window[${ANCESTORS_KEY}]; })()`;
+
+/**
  * The marked panel's visible box and scroll range, measured after UNSTICK so
  * neutralized chrome cannot shift it afterwards. The frame is the panel's
  * padding box (no border, no scrollbar) clipped to the viewport.
  */
 const MEASURE_PANEL_SCRIPT = `(() => {
+  ${CLIP_BOX_JS}
   const el = document.querySelector('[${TARGET_ATTR}]');
   if (!el) return null;
   const r = el.getBoundingClientRect();
   const left = r.left + el.clientLeft, top = r.top + el.clientTop;
-  const x0 = Math.max(0, left), y0 = Math.max(0, top);
-  const x1 = Math.min(window.innerWidth, left + el.clientWidth);
-  const y1 = Math.min(window.innerHeight, top + el.clientHeight);
+  const box = clipBox(el);
+  const x0 = Math.max(box.x0, left), y0 = Math.max(box.y0, top);
+  const x1 = Math.min(box.x1, left + el.clientWidth);
+  const y1 = Math.min(box.y1, top + el.clientHeight);
   return {
     scrollHeight: el.scrollHeight,
     frame: { x: x0, y: y0, width: Math.max(0, x1 - x0), height: Math.max(0, y1 - y0) },
     scrollTop: el.scrollTop,
     maxScroll: Math.max(0, el.scrollHeight - el.clientHeight),
+    viewHeight: el.clientHeight,
   };
 })()`;
 
@@ -184,6 +297,7 @@ const MEASURE_PAGE_SCRIPT = `(() => {
     frame: { x: 0, y: 0, width: root.clientWidth || window.innerWidth, height },
     scrollTop: window.scrollY,
     maxScroll: Math.max(0, doc.scrollHeight - height),
+    viewHeight: height,
   };
 })()`;
 
@@ -203,6 +317,22 @@ function scrollScript(kind: 'page' | 'panel', y: number, settleMs: number): stri
 }
 
 const STICKY_ATTR = 'data-capture-kit-sticky';
+const STICKY_BOTTOM_ATTR = 'data-capture-kit-sticky-bottom';
+const STICKY_BOTTOM_STYLE = 'capture-kit-sticky-bottom-style';
+const NO_SNAP_STYLE = 'capture-kit-no-snap-style';
+/**
+ * Scroll snapping off for the capture: a snapping page or panel lands past
+ * the offset each step asks for, which leaves unpainted rows between frames
+ * (Codex review on #27). Smooth scrolling off too, so every step lands at
+ * once.
+ */
+const NO_SNAP_SCRIPT = `(() => {
+  if (document.getElementById('${NO_SNAP_STYLE}')) return;
+  const style = document.createElement('style');
+  style.id = '${NO_SNAP_STYLE}';
+  style.textContent = '*,html,body{scroll-snap-type:none !important;scroll-behavior:auto !important}';
+  document.documentElement.appendChild(style);
+})()`;
 
 /**
  * Marks the top-sticky elements inside the target (or the whole page), once,
@@ -216,9 +346,22 @@ function markStickyScript(kind: 'page' | 'panel'): string {
   for (const el of root.querySelectorAll('*')) {
     let cs;
     try { cs = getComputedStyle(el); } catch { continue; }
-    if (cs.position !== 'sticky' || !Number.isFinite(parseFloat(cs.top))) continue;
-    el.setAttribute('${STICKY_ATTR}', '');
-    n += 1;
+    if (cs.position !== 'sticky') continue;
+    if (Number.isFinite(parseFloat(cs.top))) {
+      el.setAttribute('${STICKY_ATTR}', '');
+      n += 1;
+    } else if (Number.isFinite(parseFloat(cs.bottom))) {
+      // Stuck to the bottom (a sticky footer): it would sit over the same
+      // rows in every frame. Back in the flow for the capture, it appears
+      // once, where it belongs at the end (Codex review on #27).
+      el.setAttribute('${STICKY_BOTTOM_ATTR}', '');
+    }
+  }
+  if (root.querySelector('[${STICKY_BOTTOM_ATTR}]') && !document.getElementById('${STICKY_BOTTOM_STYLE}')) {
+    const style = document.createElement('style');
+    style.id = '${STICKY_BOTTOM_STYLE}';
+    style.textContent = '[${STICKY_BOTTOM_ATTR}]{position:static !important}';
+    document.documentElement.appendChild(style);
   }
   return n;
 })()`;
@@ -284,6 +427,10 @@ function stepScript(
 const CLEAR_TARGET_SCRIPT = `(() => {
   for (const el of document.querySelectorAll('[${TARGET_ATTR}]')) el.removeAttribute('${TARGET_ATTR}');
   for (const el of document.querySelectorAll('[${STICKY_ATTR}]')) el.removeAttribute('${STICKY_ATTR}');
+  for (const el of document.querySelectorAll('[data-capture-kit-canvas-panel]')) el.removeAttribute('data-capture-kit-canvas-panel');
+  for (const el of document.querySelectorAll('[${STICKY_BOTTOM_ATTR}]')) el.removeAttribute('${STICKY_BOTTOM_ATTR}');
+  document.getElementById('${STICKY_BOTTOM_STYLE}')?.remove();
+  document.getElementById('${NO_SNAP_STYLE}')?.remove();
 })()`;
 
 interface ScreenshotResult {
@@ -296,28 +443,18 @@ async function captureByScrolling(
   prefer: ScrollTargetPreference,
   reason: ScrollStitchReason,
 ): Promise<CaptureResult> {
-  // Same zoom normalization as the standard path: frames are measured in CSS
-  // pixels, and a zoomed tab would make every offset wrong.
-  let restoreZoom: number | null = null;
-  let browserZoom = 1;
-  try {
-    const zoom = await chrome.tabs.getZoom(request.tabId);
-    if (Number.isFinite(zoom) && zoom > 0) browserZoom = zoom;
-    if (Math.abs(browserZoom - 1) > 0.001) {
-      restoreZoom = browserZoom;
-      await chrome.tabs.setZoom(request.tabId, 1);
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
-  } catch {
-    /* zoom unavailable; capture at whatever zoom is set */
-  }
-
+  // Read before the zoom is touched: changing it reflows the page and moves
+  // the CSS scroll offset, and this is where you are put back (Codex review
+  // on #27).
   const originalScroll = await evaluateInPage<{ x: number; y: number }>(
     target,
     '({ x: window.scrollX, y: window.scrollY })',
   );
+  let restoreZoom: number | null = null;
+  let browserZoom = 1;
   let frozen = false;
   let unstuck = false;
+  let panelScroll: { top: number; left: number } | null = null;
   try {
     // The target is picked before anything moves, so :hover still names the
     // element under the pointer.
@@ -325,8 +462,34 @@ async function captureByScrolling(
       target,
       targetScript(prefer),
     );
+    // Where the panel was scrolled to, so it goes back there afterwards -
+    // UNSTICK only restores scrollers it moved, and one already at the top is
+    // not one of them (Codex review on #27).
+    if (picked.kind === 'panel') {
+      panelScroll = await evaluateInPage<{ top: number; left: number } | null>(
+        target,
+        `(() => { const el = document.querySelector('[${TARGET_ATTR}]'); return el ? { top: el.scrollTop, left: el.scrollLeft } : null; })()`,
+      );
+      await evaluateInPage<number>(target, SAVE_ANCESTORS_SCRIPT);
+    }
+    // Same zoom normalization as the standard path: frames are measured in
+    // CSS pixels, and a zoomed tab would make every offset wrong. After the
+    // target is chosen and marked - at the zoom you were looking at, where
+    // the pointer position means what it meant (Codex review on #27).
+    try {
+      const zoom = await chrome.tabs.getZoom(request.tabId);
+      if (Number.isFinite(zoom) && zoom > 0) browserZoom = zoom;
+      if (Math.abs(browserZoom - 1) > 0.001) {
+        restoreZoom = browserZoom;
+        await chrome.tabs.setZoom(request.tabId, 1);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    } catch {
+      /* zoom unavailable; capture at whatever zoom is set */
+    }
     await evaluateInPage<void>(target, FREEZE_SCRIPT);
     frozen = true;
+    await evaluateInPage<void>(target, NO_SNAP_SCRIPT);
     if (picked.kind === 'page') {
       await evaluateInPage<number>(target, scrollScript('page', 0, 120));
     }
@@ -339,6 +502,35 @@ async function captureByScrolling(
     await evaluateInPage<void>(target, 'window.__captureKitUnstickFixedOnly = true');
     unstuck = true;
     await evaluateInPage<number>(target, UNSTICK_SCRIPT);
+    // UNSTICK returns every scroller to the top, the document included. A
+    // panel is captured where it sits on screen, so the document goes back to
+    // where you had it - otherwise a panel further down the page would be
+    // moved off screen before it is measured (Codex review on #27).
+    if (picked.kind === 'panel') {
+      await evaluateInPage<void>(
+        target,
+        `window.scrollTo({ left: ${originalScroll.x}, top: ${originalScroll.y}, behavior: 'instant' })`,
+      );
+      await evaluateInPage<void>(target, RESTORE_ANCESTORS_SCRIPT);
+      // The panel's own sideways position too: the stitch scrolls it down
+      // only, so a spreadsheet scrolled to the right must stay there or the
+      // wrong columns are captured (Codex review on #27).
+      if (panelScroll && panelScroll.left) {
+        await evaluateInPage<void>(
+          target,
+          `(() => { const el = document.querySelector('[${TARGET_ATTR}]'); if (el) el.scrollLeft = ${panelScroll.left}; })()`,
+        );
+      }
+      const hiddenAbove = await evaluateInPage<number | null>(target, ALIGN_PANEL_SCRIPT);
+      if (hiddenAbove === null) throw new Error('The panel to scroll disappeared before the capture started.');
+      if (hiddenAbove > 1) throw new Error('The panel to scroll could not be brought on screen.');
+    }
+
+    // Likewise the page: the stitch moves it down only, from the left
+    // position you had.
+    if (picked.kind === 'page' && originalScroll.x) {
+      await evaluateInPage<void>(target, `window.scrollTo({ left: ${originalScroll.x}, top: 0, behavior: 'instant' })`);
+    }
 
     let info: TargetInfo;
     if (picked.kind === 'page') {
@@ -368,6 +560,8 @@ async function captureByScrolling(
     let done = 0;
     let framesCut = false;
     let lastY = -1;
+    /** Stopped because scrolling went no further: the content got shorter. */
+    let shrank = false;
     for (;;) {
       if (done >= MAX_SCROLL_FRAMES) {
         framesCut = true;
@@ -394,7 +588,10 @@ async function captureByScrolling(
       // The page would not scroll any further: it is shorter now than when
       // the capture started (content collapsed or unloaded as it scrolled).
       // Stop instead of photographing the same screen until the frame cap.
-      if (done > 0 && y <= lastY) break;
+      if (done > 0 && y <= lastY) {
+        shrank = true;
+        break;
+      }
       lastY = y;
       const band = done > 0 ? Math.min(step.band, frameH - 1) : 0;
       const shot = await sendCommand<ScreenshotResult>(target, 'Page.captureScreenshot', {
@@ -408,13 +605,18 @@ async function captureByScrolling(
         // path keeps the display's sharpness.
         const size = readEncodedImageSize(shot.data, 'png');
         ratio = size ? size.width / frameW : 1;
+        const canvasW = Math.round(frameW * ratio);
+        const canvasH = Math.round((maxScroll + frameH) * ratio);
         canvas = new PageCanvas(
-          Math.round(frameW * ratio),
-          Math.round((maxScroll + frameH) * ratio),
+          canvasW,
+          canvasH,
           request.format,
-          // Sliced afterwards from the cropped image (capture-engine/index),
-          // because the stitched length is only known at the end.
-          false,
+          // Normally sliced afterwards from the cropped image
+          // (capture-engine/index), because the stitched length is only known
+          // at the end. But a stitch too big to keep at full size is scaled
+          // down, and slices cut from that would not be full size - so then
+          // they are cut from the frames as they arrive (Codex review on #27).
+          request.slices === true && wholeImageScale(canvasW, canvasH) < 1,
         );
       }
       await canvas.add(0, Math.round((y + band) * ratio), shot.data);
@@ -438,7 +640,12 @@ async function captureByScrolling(
     );
     const grew = typeof after === 'number' && after > info.scrollHeight + 4;
 
-    const { imageBase64 } = await canvas.finish(Math.round(covered * ratio));
+    const painted = Math.round(covered * ratio);
+    const finished = await canvas.finish(painted);
+    const imageBase64 = finished.imageBase64;
+    // Slices cut as the frames arrived cover the length planned at the start;
+    // the ones below what was actually drawn are blank and dropped.
+    const slices = finished.slices.filter((slice) => slice.top < painted);
     const scrollStitch: ScrollStitchInfo = {
       target: info.kind,
       how: info.how,
@@ -446,6 +653,10 @@ async function captureByScrolling(
       reason,
       frames: done,
       grew,
+      ...(shrank && reachedBottom < maxScroll + frameH - 2 ? { shrank: true } : {}),
+      // A panel taller than the window: its last rows never come into view
+      // however far it scrolls, and the report says how many.
+      ...(info.viewHeight - frameH > 2 ? { cutRows: Math.round(info.viewHeight - frameH) } : {}),
     };
     const fullSize = { width: frameW, height: Math.min(reachedBottom, maxScroll + frameH) };
     return {
@@ -455,11 +666,12 @@ async function captureByScrolling(
       fullSize,
       contentSize: { width: frameW, height: info.scrollHeight },
       imageSize: readEncodedImageSize(imageBase64, request.format) ?? canvas.wholeSize,
-      truncated: framesCut || maxScroll < info.maxScroll,
+      truncated: framesCut || maxScroll < info.maxScroll || info.viewHeight - frameH > 2 || (shrank && reachedBottom < maxScroll + frameH - 2),
       segments: done,
       revealForced: 0,
       browserZoom,
       scrollStitch,
+      ...(slices.length > 0 ? { slices } : {}),
       ...(canvas.scale < 1 ? { scale: canvas.scale } : {}),
     };
   } finally {
@@ -482,6 +694,22 @@ async function captureByScrolling(
         await evaluateInPage<void>(target, UNFREEZE_SCRIPT);
       } catch {
         /* best-effort */
+      }
+    }
+    if (panelScroll) {
+      try {
+        await evaluateInPage<void>(target, RESTORE_ANCESTORS_SCRIPT);
+        await evaluateInPage<void>(target, FORGET_ANCESTORS_SCRIPT);
+      } catch {
+        /* best-effort restore */
+      }
+      try {
+        await evaluateInPage<void>(
+          target,
+          `(() => { const el = document.querySelector('[${TARGET_ATTR}]'); if (el) { el.scrollTop = ${panelScroll.top}; el.scrollLeft = ${panelScroll.left}; } })()`,
+        );
+      } catch {
+        /* best-effort restore */
       }
     }
     try {
@@ -555,6 +783,9 @@ export async function detectCanvasScroller(tabId: number): Promise<boolean> {
             bestArea = a;
           }
         }
+        for (const el of Array.from(document.querySelectorAll('[data-capture-kit-canvas-panel]'))) {
+          el.removeAttribute('data-capture-kit-canvas-panel');
+        }
         if (!best || bestArea < 0.3 * vw * vh) return false;
         const b = visible(best.getBoundingClientRect());
         let canvasArea = 0;
@@ -564,7 +795,11 @@ export async function detectCanvasScroller(tabId: number): Promise<boolean> {
           const h = Math.min(v.y1, b.y1) - Math.max(v.y0, b.y0);
           if (w > 0 && h > 0) canvasArea += w * h;
         }
-        return canvasArea >= 0.4 * bestArea;
+        if (canvasArea < 0.4 * bestArea) return false;
+        // The capture stitches this panel, not whichever one a looser rule
+        // would call largest (Codex review on #27).
+        best.setAttribute('data-capture-kit-canvas-panel', '');
+        return true;
       },
     });
     return result?.result === true;
