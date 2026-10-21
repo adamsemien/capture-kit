@@ -101,6 +101,15 @@ export const K_RGB = {
   lazy: { r: 0x45, g: 0x27, b: 0xa0 }, // #4527a0 - an opacity:0 section that MUST still be revealed
 };
 
+// Variant V, Vercel's environment-variables list (2026-10-19): rows drawn only
+// near the viewport. The first 20 rows carry one colour, the rest another, so
+// "did the whole list draw" is whether the second colour is in the image.
+export const V_RGB = {
+  top: { r: 0x1b, g: 0x5e, b: 0x20 }, // #1b5e20 - rows 1-20, on screen at load
+  rest: { r: 0xe6, g: 0x51, b: 0x00 }, // #e65100 - rows 21-120, only drawn when scrolled to
+};
+export const V_ROWS = 120;
+
 export const hex = (c) =>
   '#' + [c.r, c.g, c.b].map((n) => n.toString(16).padStart(2, '0')).join('');
 
@@ -146,6 +155,10 @@ export const DRAWER_VARIANTS = {
   // Before the fix the overlay washed out the first screen, the badge
   // widened the image, and the icon painted as a stray mark.
   'K parked-hidden-layers': null,
+  // Vercel's environment-variables shape: a window-scroll virtualized list
+  // short enough (120 rows x 52px) for the single-shot path, which captured
+  // the rows drawn at load and a blank spacer below them.
+  'V virtualized-short': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
   // /studio: position:fixed, off-canvas right, clipped by overflow:clip on
   // body and html, and NO dominant inner scroller — shouldExpand is false, so
@@ -187,6 +200,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('H ')) return lazySectionsFixture(variant, { reportsResult, manual });
   if (variant.startsWith('J ')) return pinnedPanelFixture(variant, { reportsResult, manual });
   if (variant.startsWith('K ')) return parkedLayersFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('V ')) return virtualizedFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
   const rows = Array.from(
     { length: ROW_COUNT },
@@ -371,6 +385,50 @@ function lazySectionsFixture(variant, { reportsResult = false, manual = false } 
 <body>
   <div id="hero"><h1>repro: ${variant}</h1><p>hero content, always visible</p></div>
   ${sections}
+  ${reporter}
+</body></html>`;
+}
+
+/**
+ * Variant V. A list that keeps a full-height spacer and renders only the rows
+ * within a few rows of the viewport, re-rendering on scroll and resize - the
+ * way react-window, TanStack Virtual and Vercel's dashboard behave.
+ */
+function virtualizedFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>
+  html,body{margin:0;font:14px sans-serif;background:#fafafa}
+  header{padding:14px 24px;background:#222;color:#fff}
+  #list{position:relative;margin:24px;background:#fff;border:1px solid #ddd}
+  .row{position:absolute;left:0;right:0;height:52px;display:flex;align-items:center;gap:16px;padding:0 16px;box-sizing:border-box;border-bottom:1px solid #eee}
+  .swatch{width:200px;height:32px}
+</style></head>
+<body>
+  <header>repro: ${variant}</header>
+  <div id="list"></div>
+  <script>
+    const N = ${V_ROWS}, H = 52, list = document.getElementById('list');
+    list.style.height = N * H + 'px';
+    function render() {
+      const top = list.getBoundingClientRect().top;
+      const first = Math.max(0, Math.floor(-top / H) - 3);
+      const last = Math.min(N, Math.ceil((innerHeight - top) / H) + 3);
+      list.textContent = '';
+      for (let i = first; i < last; i++) {
+        const r = document.createElement('div');
+        r.className = 'row';
+        r.style.top = i * H + 'px';
+        r.innerHTML = '<span class="swatch" style="background:' + (i < 20 ? '${hex(V_RGB.top)}' : '${hex(V_RGB.rest)}') +
+          '"></span>VARIABLE_' + String(i + 1).padStart(3, '0');
+        list.appendChild(r);
+      }
+    }
+    addEventListener('scroll', render, { passive: true });
+    addEventListener('resize', render);
+    render();
+  </script>
   ${reporter}
 </body></html>`;
 }

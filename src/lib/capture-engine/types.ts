@@ -128,6 +128,11 @@ export interface CaptureResult {
    * 0 on single-shot, where no viewport override happens.
    */
   heightHeld?: number;
+  /**
+   * The page removed content while being scrolled (a virtualized list), so it
+   * was captured under a full-height viewport even though it fit one shot.
+   */
+  drawnOnScroll?: boolean;
   /** Present only when the URL footer was composited onto this image. */
   stamp?: StampInfo;
   /**
