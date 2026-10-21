@@ -412,6 +412,11 @@ function startHttp() {
       }));
       return;
     }
+    // CHECK A19: a first-party request that fails, per version of the page.
+    if (url.pathname.startsWith('/missing')) {
+      res.writeHead(404, { 'content-type': 'text/plain' }).end('missing');
+      return;
+    }
     // CHECK A13's decoy: the page the person is "looking at" in another window.
     if (url.pathname === '/decoy') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -1133,6 +1138,73 @@ function a15Verdict(r) {
   return problems.length
     ? `FAIL — ${problems.join('; ')}`
     : `PASS — no hidden layer painted, width ${r.run.px.width}px, lazy section revealed (${r.by.lazy} px)`;
+}
+
+// --- CHECK A19: before/after -----------------------------------------------
+// Capture #v1, then #v2 of the same page (same page key). The second report
+// must compare against the first: one changed area with an outlined copy
+// written, E2 new and E1 gone, /missing-v2 new and /missing-v1 gone. The
+// first report must have no comparison (a first capture has nothing to
+// compare against).
+const Z_VARIANT = 'Z before-after';
+async function beforeAfterCheck() {
+  await setSetting(options, { compareWithPrevious: true, openResult: false, autoCopyImage: false, stampUrlOnImage: false });
+  const base = `http://127.0.0.1:${HTTP_PORT}/drawer?v=${encodeURIComponent(Z_VARIANT)}&manual=1&n=${Date.now()}`;
+  const t = await openExact(`${base}#v1`);
+  if (!t) return { error: 'fixture tab never appeared' };
+  await sleep(1500);
+  const tabId = await options.eval(
+    `chrome.tabs.query({}).then((ts) => ts.find((x) => (x.url ?? '').startsWith(${JSON.stringify(base)}))?.id ?? null)`,
+  );
+  const capture = async () => {
+    await options.eval(`chrome.tabs.update(${tabId}, { active: true }).then(() => true)`);
+    await sleep(300);
+    const r = await options.eval(`chrome.runtime.sendMessage({ type: 'CAPTURE_BUNDLE', tabId: ${tabId} })`);
+    await sleep(1500);
+    return { r, report: newestFile('.md') };
+  };
+  const first = await capture();
+  const firstText = first.report ? readCapture(first.report) : '';
+  await options.eval(`chrome.tabs.update(${tabId}, { url: ${JSON.stringify(`${base}#v2`)} }).then(() => chrome.tabs.reload(${tabId})).then(() => true)`);
+  await sleep(2500);
+  const second = await capture();
+  const text = second.report ? readCapture(second.report) : '';
+  const changesFile = /outlined in (\S+_changes\.png)/.exec(text)?.[1] ?? null;
+  await cdp(`/json/close/${t.id}`);
+  return {
+    firstOk: first.r?.ok === true,
+    secondOk: second.r?.ok === true,
+    firstHasSection: firstText.includes('## Changes since the last capture'),
+    section: text.split('## Changes since the last capture of this page')[1]?.split('\n## ')[0] ?? null,
+    changesFile,
+    changesFileExists: changesFile ? existsSync(`${captureDir()}/${changesFile}`) : false,
+  };
+}
+function a19Verdict(r) {
+  if (r.error) return `INCONCLUSIVE — ${r.error}`;
+  const problems = [];
+  if (!r.firstOk || !r.secondOk) problems.push('a capture failed');
+  if (r.firstHasSection) problems.push('the first capture of the page already had a comparison');
+  const s = r.section ?? '';
+  if (!s) problems.push('the second report has no comparison section');
+  if (!/\*\*Picture:\*\* [1-9]\d* areas? changed/.test(s)) problems.push('no changed area reported');
+  if (!r.changesFileExists) problems.push('no outlined changes image written');
+  if (!/Console errors:\*\* 1 new, 1 gone/.test(s) || !/E2 new problem/.test(s) || !/E1 boot failed/.test(s)) problems.push('console errors not compared right');
+  if (!/Failed requests:\*\* 1 new, 1 gone/.test(s) || !/missing-v2/.test(s) || !/missing-v1/.test(s)) problems.push('failed requests not compared right');
+  return problems.length ? `FAIL — ${problems.join('; ')}` : `PASS — second report: area outlined in ${r.changesFile}, E2 new / E1 gone, /missing-v2 new / /missing-v1 gone; first report had no comparison`;
+}
+
+if (process.argv.includes('--only-before-after')) {
+  heading('CHECK A19 — before/after');
+  const r = await beforeAfterCheck();
+  console.log('result: ' + JSON.stringify(r));
+  console.log('VERDICT A19 before/after: ' + a19Verdict(r));
+  options.close();
+  chrome.kill('SIGTERM');
+  killStrays();
+  await sleep(2000);
+  http.close();
+  process.exit(0);
 }
 
 // --- CHECK A16: a virtualized list captures whole (Vercel) ---------------
@@ -2212,6 +2284,12 @@ heading('CHECK A15 — hidden layers stay hidden, lazy content still revealed');
   const own = await hiddenLayersCheck();
   console.log('pixels: ' + JSON.stringify(own.run.px));
   console.log('VERDICT A15 hidden layers: ' + a15Verdict(own));
+}
+
+heading('CHECK A19 — before/after');
+{
+  const r = await beforeAfterCheck();
+  console.log('VERDICT A19 before/after: ' + a19Verdict(r));
 }
 
 heading('CHECK A16 — a virtualized list captures whole');

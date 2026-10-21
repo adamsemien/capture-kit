@@ -30,6 +30,9 @@ export { tallPageSections, scaleLabel, buildContentsLine } from '${ROOT}/src/lib
 export { contentColumns, planTrim, TRIM_PADDING } from '${ROOT}/src/lib/capture-engine/slices.ts';
 export { decidePageTrigger, parseSitePattern, normalizeSiteList, normalizeTriggerMode, DEFAULT_TRIGGER_SITES } from '${ROOT}/src/lib/site-access.ts';
 export { storedTriggerMode } from '${ROOT}/src/lib/settings.ts';
+export { errorSignature, failureSignature, diffSigned, pageKey } from '${ROOT}/src/lib/compare/signatures.ts';
+export { changedCells, mergeCells, changedShare, CELL } from '${ROOT}/src/lib/compare/pixels.ts';
+export { changesSection, agoLabel } from '${ROOT}/src/lib/bundle/markdown.ts';
 export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
@@ -1463,6 +1466,111 @@ test('a page that redraws on scroll says it was captured at full height, not sin
     mod.captureModeLabel('standard', 2, 3, 0, 0, 0, 0, false, true),
     'standard, segmented, 3 segments + reveal-forced (2 elements) + page redraws as it scrolls',
   );
+});
+
+heading('before/after - matching errors and requests across captures');
+test('the same error with a different id and query string is the same error', () => {
+  const a = mod.errorSignature({ level: 'error', message: 'Failed to load order 98234511 from https://api.x.com/o?v=1', source: 'https://x.com/app.js?h=abc:12:40', timestamp: 1 });
+  const b = mod.errorSignature({ level: 'error', message: 'Failed to load order 55120934 from https://api.x.com/o?v=2', source: 'https://x.com/app.js?h=def:12:7', timestamp: 2 });
+  assert.equal(a.sig, b.sig);
+});
+test('a different line or message is a different error; short numbers are kept', () => {
+  const a = mod.errorSignature({ level: 'error', message: 'HTTP 404', source: 'app.js:12:1', timestamp: 1 });
+  const b = mod.errorSignature({ level: 'error', message: 'HTTP 500', source: 'app.js:12:1', timestamp: 1 });
+  const c = mod.errorSignature({ level: 'error', message: 'HTTP 404', source: 'app.js:13:1', timestamp: 1 });
+  assert.notEqual(a.sig, b.sig);
+  assert.notEqual(a.sig, c.sig);
+});
+test('failed requests match on method, path and status, not the query', () => {
+  const a = mod.failureSignature({ method: 'get', url: 'https://x.com/api/user?id=1', status: 500, durationMs: 1, timestamp: 1 });
+  const b = mod.failureSignature({ method: 'GET', url: 'https://x.com/api/user?id=2', status: 500, durationMs: 1, timestamp: 1 });
+  const c = mod.failureSignature({ method: 'GET', url: 'https://x.com/api/user?id=2', status: 0, durationMs: 1, timestamp: 1 });
+  assert.equal(a.sig, b.sig);
+  assert.notEqual(b.sig, c.sig);
+  assert.match(c.text, /no response/);
+});
+test('new, gone and still-there are counted once per signature', () => {
+  const s = (sig) => ({ sig, text: sig });
+  const d = mod.diffSigned([s('a'), s('b'), s('b')], [s('b'), s('c'), s('c')]);
+  assert.deepEqual(d.added.map((x) => x.sig), ['c']);
+  assert.deepEqual(d.removed.map((x) => x.sig), ['a']);
+  assert.equal(d.kept, 1);
+});
+test('the page key drops the fragment and tracking parameters, keeps real query', () => {
+  assert.equal(mod.pageKey('https://x.com/a?id=3&utm_source=nl#top'), 'https://x.com/a?id=3');
+  assert.notEqual(mod.pageKey('https://x.com/a?id=3'), mod.pageKey('https://x.com/a?id=4'));
+});
+
+heading('before/after - where the picture changed');
+function solid(w, h, rgb) {
+  const a = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) { a[i * 4] = rgb[0]; a[i * 4 + 1] = rgb[1]; a[i * 4 + 2] = rgb[2]; a[i * 4 + 3] = 255; }
+  return a;
+}
+function paint(a, w, x0, y0, x1, y1, rgb) {
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const i = (y * w + x) * 4; a[i] = rgb[0]; a[i + 1] = rgb[1]; a[i + 2] = rgb[2]; }
+}
+test('identical images have no changed cells', () => {
+  const a = solid(120, 120, [240, 240, 240]);
+  const { cols, rows, grid } = mod.changedCells(a, a.slice(), 120, 120);
+  assert.equal(mod.mergeCells(cols, rows, grid).length, 0);
+  assert.equal(mod.changedShare(grid), 0);
+});
+test('small JPEG-style noise is ignored', () => {
+  const a = solid(120, 120, [240, 240, 240]);
+  const b = solid(120, 120, [236, 244, 238]);
+  const { grid } = mod.changedCells(a, b, 120, 120);
+  assert.equal(mod.changedShare(grid), 0);
+});
+test('two separate changes are two boxes, in the right places', () => {
+  const a = solid(240, 240, [255, 255, 255]);
+  const b = a.slice();
+  paint(b, 240, 10, 10, 50, 30, [200, 0, 0]);
+  paint(b, 240, 150, 180, 230, 230, [0, 0, 200]);
+  const { cols, rows, grid } = mod.changedCells(a, b, 240, 240);
+  const boxes = mod.mergeCells(cols, rows, grid);
+  assert.equal(boxes.length, 2);
+  const big = boxes[0];
+  assert.ok(big.x <= 150 && big.x + big.width >= 230 && big.y <= 180 && big.y + big.height >= 230, JSON.stringify(big));
+});
+test('changes a cell apart merge into one area', () => {
+  const a = solid(240, 120, [255, 255, 255]);
+  const b = a.slice();
+  paint(b, 240, 0, 0, 24, 24, [0, 0, 0]);
+  paint(b, 240, 36, 0, 60, 24, [0, 0, 0]);
+  const { cols, rows, grid } = mod.changedCells(a, b, 240, 120);
+  assert.equal(mod.mergeCells(cols, rows, grid).length, 1);
+});
+
+heading('before/after - the report section');
+const sum = (over = {}) => ({
+  previous: { capturedAt: Date.parse('2026-10-21T15:00:00Z'), imageFilename: 'app_2026-10-21_10-00.jpg' },
+  picture: { compared: true, share: 0.04, boxes: [{ x: 0, y: 120, width: 1440, height: 220 }], heightBefore: 2400, heightAfter: 2400, diffImageFilename: 'app_2026-10-21_10-14_changes.png' },
+  errors: { added: [{ sig: 'x', text: 'TypeError: a is undefined (app.js:12)' }], removed: [{ sig: 'y', text: 'GET /api 500' }], kept: 2 },
+  failures: { added: [], removed: [], kept: 0 },
+  ...over,
+});
+test('it says how long ago, what changed, and new/gone/still-there', () => {
+  const [title, body] = mod.changesSection(sum(), new Date('2026-10-21T15:14:00Z'));
+  assert.equal(title, '## Changes since the last capture of this page');
+  assert.match(body, /capture from 14 minutes ago \(app_2026-10-21_10-00\.jpg\)/);
+  assert.match(body, /1 area changed, about 4% of the page - outlined in app_2026-10-21_10-14_changes\.png/);
+  assert.match(body, /x 0-1440, y 120-340/);
+  assert.match(body, /Console errors:\*\* 1 new, 1 gone, 2 still there/);
+  assert.match(body, /New: `TypeError: a is undefined \(app\.js:12\)`/);
+});
+test('no change, a skipped comparison and a height change each read plainly', () => {
+  const none = mod.changesSection(sum({ picture: { compared: true, share: 0, boxes: [], heightBefore: 2400, heightAfter: 2520 } }), new Date('2026-10-21T15:00:30Z'))[1];
+  assert.match(none, /no visible change/);
+  assert.match(none, /Page height:\*\* 2520 px \(was 2400 px\)/);
+  const skipped = mod.changesSection(sum({ picture: { compared: false, reason: 'the window was a different width (1280 px then, 1440 px now)' } }), new Date())[1];
+  assert.match(skipped, /not compared - the window was a different width/);
+});
+test('ago labels', () => {
+  const now = new Date('2026-10-21T15:00:00Z');
+  assert.equal(mod.agoLabel(now.getTime() - 1000, now), '1 second ago');
+  assert.equal(mod.agoLabel(now.getTime() - 3 * 3600e3, now), '3 hours ago');
+  assert.equal(mod.agoLabel(now.getTime() - 2 * 86400e3, now), '2 days ago');
 });
 
 rmSync(dir, { recursive: true, force: true });

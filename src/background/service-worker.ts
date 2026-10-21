@@ -33,6 +33,7 @@ import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
 import { ICON_MODE_KEY, getSettings } from '../lib/settings';
 import { decidePageTrigger } from '../lib/site-access';
+import { compareCapture, type Comparison } from '../lib/compare';
 import type { Settings } from '../lib/settings';
 import { outputDirHasFile, outputDirStatus, writeToOutputDir } from '../lib/output-dir';
 import { redactPage, redactText } from '../lib/redact';
@@ -705,6 +706,26 @@ async function captureReport(
 
   const basename = captureBasename(page.meta.title, page.meta.url, capturedAt);
   const isJpeg = result.format === 'jpeg';
+  // Before/after against the last capture of this page. Never fails the
+  // capture: anything wrong here just means no comparison this time.
+  let comparison: Comparison | null = null;
+  if (settings.compareWithPrevious) {
+    try {
+      comparison = await compareCapture({
+        url: page.meta.url,
+        capturedAt,
+        imageBase64: result.imageBase64,
+        imageMime: isJpeg ? 'image/jpeg' : 'image/png',
+        pageWidth: result.fullSize.width,
+        pageHeight: result.fullSize.height,
+        viewportWidth: page.meta.viewport.width,
+        consoleEntries: page.console,
+        networkFailures: page.network,
+      });
+    } catch (error) {
+      console.warn('[capture-kit] comparison with the last capture skipped:', error);
+    }
+  }
   const imageFilename = `${basename}.${isJpeg ? 'jpg' : 'png'}`;
   const markdownFilename = `${basename}.md`;
   const meta = page.meta;
@@ -799,6 +820,19 @@ async function captureReport(
       });
     }
   });
+  // The outlined "what changed" copy, beside the image.
+  if (comparison?.summary && comparison.diffImageBase64 && comparison.summary.picture.compared) {
+    try {
+      const diffWrite = await writeBundleFile(
+        `${folder}${basename}_changes.png`,
+        'image/png',
+        comparison.diffImageBase64,
+      );
+      comparison.summary.picture.diffImageFilename = diffWrite.filename;
+    } catch (error) {
+      console.warn('[capture-kit] could not write the changes image:', error);
+    }
+  }
   // The report is written after the image and names the file that actually
   // landed. A collision renames the new image to "… (1).jpg", and a report
   // still pointing at "….jpg" would send its reader to the PREVIOUS capture's
@@ -807,12 +841,21 @@ async function captureReport(
     ...markdownInput,
     imageFilename: imageWrite.filename,
     slices: sliceRefs,
+    changes: comparison?.summary ?? undefined,
   });
   const markdownWrite = await writeBundleFile(
     `${folder}${markdownFilename}`,
     'text/markdown',
     textToBase64(markdown),
   );
+  // This capture becomes the one the next capture of the page is compared with.
+  if (comparison) {
+    try {
+      await comparison.save(imageWrite.filename);
+    } catch (error) {
+      console.warn('[capture-kit] could not save this capture for the next comparison:', error);
+    }
+  }
 
   return {
     capturedAt,

@@ -120,6 +120,18 @@
         </div>
 
         <label class="field">
+          <input id="compare-previous" type="checkbox" />
+          <span class="field-text">
+            <span class="field-title">Compare with my last capture of the same page</span>
+            <small>Each report gets a "Changes since the last capture" section: which areas of the picture changed (with an outlined copy), and which console errors and failed requests are new, gone or still there. Capture, fix, capture again, and the report says whether it worked. To do this Capture Kit keeps a small copy of the last capture of each page in its own storage on this computer, up to 50 pages. Nothing leaves your computer.</small>
+            <span class="output-dir">
+              <button id="compare-forget" type="button">Forget saved comparisons</button>
+              <small id="compare-count"></small>
+            </span>
+          </span>
+        </label>
+
+        <label class="field">
           <input id="stamp-url" type="checkbox" />
           <span class="field-text">
             <span class="field-title">Stamp URL on image</span>

@@ -159,6 +159,9 @@ export const DRAWER_VARIANTS = {
   // short enough (120 rows x 52px) for the single-shot path, which captured
   // the rows drawn at load and a blank spacer below them.
   'V virtualized-short': null,
+  // Before/after: #v1 and #v2 of the same page (the hash is not part of the
+  // page key) differ in one box, one console error and one failed request.
+  'Z before-after': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
   // /studio: position:fixed, off-canvas right, clipped by overflow:clip on
   // body and html, and NO dominant inner scroller — shouldExpand is false, so
@@ -201,6 +204,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('J ')) return pinnedPanelFixture(variant, { reportsResult, manual });
   if (variant.startsWith('K ')) return parkedLayersFixture(variant, { reportsResult, manual });
   if (variant.startsWith('V ')) return virtualizedFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('Z ')) return beforeAfterFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
   const rows = Array.from(
     { length: ROW_COUNT },
@@ -386,6 +390,24 @@ function lazySectionsFixture(variant, { reportsResult = false, manual = false } 
   <div id="hero"><h1>repro: ${variant}</h1><p>hero content, always visible</p></div>
   ${sections}
   ${reporter}
+</body></html>`;
+}
+
+function beforeAfterFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>html,body{margin:0;font:18px sans-serif;background:#fff}main{height:900px;padding:16px}#box{position:absolute;top:120px;width:200px;height:120px}</style>
+</head><body><main>repro: ${variant}</main><div id="box"></div>
+<script>
+  const v = location.hash === '#v2' ? 2 : 1;
+  const box = document.getElementById('box');
+  box.style.background = v === 1 ? '#1565c0' : '#c62828';
+  box.style.left = v === 1 ? '40px' : '400px';
+  console.error(v === 1 ? 'E1 boot failed' : 'E2 new problem');
+  fetch('/missing-v' + v).catch(() => {});
+</script>
+${reporter}
 </body></html>`;
 }
 

@@ -1,6 +1,6 @@
 # Privacy policy
 
-_Capture Kit Chrome extension. Last updated 17 October 2026._
+_Capture Kit Chrome extension. Last updated 21 October 2026._
 
 **Capture Kit does not collect, transmit, sell or share any data.** It has no
 server, no account, no analytics and no telemetry.
@@ -29,6 +29,11 @@ not sent anywhere else.
 - The output folder you chose, stored locally so captures can keep writing
   there.
 - The last report, kept until the browser closes so "Copy last report" works.
+- For "Compare with my last capture of the same page" (on by default): a small
+  copy of the last capture of each page (at most 480 pixels wide) and the list
+  of its console errors and failed requests, in the extension's own storage, for
+  up to 50 pages. It never leaves your computer. Turn the setting off, or use
+  "Forget saved comparisons" in Settings, to remove it.
 
 ## Secrets in reports
 
