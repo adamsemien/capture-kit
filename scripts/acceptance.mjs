@@ -1119,7 +1119,7 @@ async function hiddenLayersCheck() {
   // the suite's window is narrower than 1440.
   const vwLine = /Viewport:\*\*\s*(\d+)/.exec((run.modeLine ?? []).join(' '));
   const vw = vwLine ? Number(vwLine[1]) : viewportFor(K_VARIANT).width;
-  const leaks = ['overlay', 'badge', 'icon', 'backToTop'].filter((k) => (by[k] ?? 0) > 50);
+  const leaks = ['overlay', 'badge', 'icon', 'backToTop', 'closedMenu'].filter((k) => (by[k] ?? 0) > 50);
   const widened = (run.px?.width ?? 0) > vw;
   const lazyShown = (by.lazy ?? 0) > 200;
   const respLazyShown = (by.respLazy ?? 0) > 200;

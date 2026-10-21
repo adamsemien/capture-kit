@@ -139,19 +139,24 @@ const FORCE_REVEAL_SCRIPT = `(() => {
   const classIsHiding = (el) => {
     const classAttr = el.getAttribute('class');
     const styleAttr = el.getAttribute('style');
-    let shows = false;
+    let hides = false;
     try {
       el.style.setProperty('transition', 'none', 'important');
+      const withIt = getComputedStyle(el);
+      const before = [withIt.display, withIt.visibility, withIt.opacity].join('|');
       el.setAttribute('class', [...el.classList].filter((c) => !HIDDEN_CLASS.test(c)).join(' '));
       const without = getComputedStyle(el);
-      shows = without.display !== 'none' && without.visibility !== 'hidden' && parseFloat(without.opacity) !== 0;
+      // Hiding if taking it off changes anything that hides: class="invisible
+      // opacity-0" stays opacity:0 without "invisible", but its visibility
+      // changes, so it is still the class at work (Codex review on #26).
+      hides = [without.display, without.visibility, without.opacity].join('|') !== before;
     } finally {
       el.setAttribute('class', classAttr);
       getComputedStyle(el).opacity; // settle with transitions still off
       if (styleAttr === null) el.removeAttribute('style');
       else el.setAttribute('style', styleAttr);
     }
-    return shows;
+    return hides;
   };
 
   // Parked off the page. Third-party widgets keep hidden layers waiting

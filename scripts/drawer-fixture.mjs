@@ -107,6 +107,8 @@ export const K_RGB = {
   // A back-to-top button: fixed, opacity:0 at the top, shown by a scroll handler. The page is
   // taller than one segment, so the segment loop's scrolling would show it in every later segment.
   backToTop: { r: 0x1b, g: 0x5e, b: 0x20 }, // #1b5e20 - MUST NOT paint
+  // A closed menu hidden two ways at once: class="invisible" AND opacity:0 (Tailwind's "invisible opacity-0").
+  closedMenu: { r: 0x9e, g: 0x9d, b: 0x24 }, // #9e9d24 - MUST NOT paint
 };
 
 // Variant V, Vercel's environment-variables list (2026-10-19): rows drawn only
@@ -462,6 +464,7 @@ function parkedLayersFixture(variant, { reportsResult = false, manual = false } 
   html,body{margin:0}
   #hero{height:100vh;background:#f2f2f4;font:20px sans-serif;padding:16px;box-sizing:border-box}
   .hidden{visibility:hidden}
+  .invisible{visibility:hidden}
   /* Tailwind's hidden md:block shape: the token stays, a later rule shows it. */
   .hidden.md-show{visibility:visible;display:block}
   .row{font:18px sans-serif;padding:12px 16px;border-bottom:1px solid #ddd;background:#fff}
@@ -475,6 +478,8 @@ function parkedLayersFixture(variant, { reportsResult = false, manual = false } 
   <div class="hidden md-show"><section id="resp-lazy" style="opacity:0;height:300px;background:${hex(K_RGB.respLazy)}">inside a showing .hidden - SHOULD be revealed</section></div>
   <div style="height:200px;background:#fff"></div>
   <section id="resp-same" class="hidden md-show" style="opacity:0;height:300px;background:${hex(K_RGB.respSame)}">a showing .hidden that is also lazy - SHOULD be revealed</section>
+  <div style="height:200px;background:#fff"></div>
+  <ul id="closed-menu" class="invisible" style="opacity:0;height:240px;margin:0;background:${hex(K_RGB.closedMenu)}"><li>closed menu - SHOULD stay hidden</li></ul>
   <div style="height:17000px;background:#fff"></div>
   <a id="back-to-top" href="#" style="position:fixed;bottom:20px;right:20px;width:56px;height:56px;opacity:0;background:${hex(K_RGB.backToTop)}"></a>
   <script>addEventListener('scroll', () => { document.getElementById('back-to-top').style.opacity = scrollY > 300 ? '1' : '0'; });</script>
