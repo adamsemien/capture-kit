@@ -981,7 +981,23 @@ async function captureBundle(
 
     await beginIndicator();
     const report = await captureReport(tab, settings, trigger, '', undefined, options.scroll === true);
-    if (options.allowUrl && !options.allowUrl(report.url)) {
+    // report.url was read before the screenshot; the tab's address now says
+    // where it actually is, so both have to pass (Codex review on #28).
+    let tabNow: chrome.tabs.Tab | null = null;
+    if (options.allowUrl) {
+      try {
+        tabNow = await chrome.tabs.get(tabId);
+      } catch {
+        tabNow = null;
+      }
+    }
+    if (
+      options.allowUrl &&
+      (!options.allowUrl(report.url) ||
+        !tabNow ||
+        !options.allowUrl(tabNow.url) ||
+        (tabNow.pendingUrl !== undefined && !options.allowUrl(tabNow.pendingUrl)))
+    ) {
       // The page moved during the capture. The files are yours, in your own
       // folder; the agent gets nothing.
       await endIndicator(false, announce);
@@ -2158,9 +2174,17 @@ async function bridgeCapture(params: { urlContains?: string; scroll?: boolean })
     const tab = candidates[0];
     // Chrome does not paint a background tab, so the tab comes to the front,
     // exactly as a page-fired capture does.
-    if (!tab.active) {
-      await chrome.tabs.update(tab.id as number, { active: true });
-      await chrome.windows.update(tab.windowId, { focused: true });
+    // Its window too: a background window's active tab is active but not in
+    // front (Codex review on #28).
+    let windowFocused = false;
+    try {
+      windowFocused = (await chrome.windows.get(tab.windowId)).focused === true;
+    } catch {
+      /* treat as not focused */
+    }
+    if (!tab.active || !windowFocused) {
+      if (!tab.active) await chrome.tabs.update(tab.id as number, { active: true });
+      if (!windowFocused) await chrome.windows.update(tab.windowId, { focused: true });
       await new Promise((r) => setTimeout(r, 250));
     }
     // Judged again on the tab as it is when the capture starts, and on the

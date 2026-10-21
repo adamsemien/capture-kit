@@ -161,6 +161,31 @@ test("a sweep's other widths are stored beside it, inside the folder, and listed
   ext.ws.close();
 });
 
+test('stopping the helper answers a wait that is still open', async () => {
+  const otherPort = port + 1;
+  const other = startDaemon({ port: otherPort, token, store: new CaptureStore(join(home, 'captures-stop')) });
+  await other.ready;
+  const started = Date.now();
+  const waiting = new Promise((resolve) => {
+    const req = request(
+      { host: '127.0.0.1', port: otherPort, path: '/wait?timeout=600', headers: { authorization: `Bearer ${token}` } },
+      (res) => {
+        let body = '';
+        res.on('data', (d) => (body += d));
+        res.on('end', () => resolve({ status: res.statusCode, body }));
+      },
+    );
+    req.end();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  other.close();
+  const answer = await waiting;
+  assert.equal(answer.status, 503);
+  assert.match(answer.body, /stopped/);
+  await new Promise((resolve) => other.server.once('close', resolve).listening || resolve());
+  assert.ok(Date.now() - started < 5000, 'the helper closed promptly');
+});
+
 test('wait returns the next capture, and times out cleanly', async () => {
   const ext = await fakeExtension();
   const waiting = client().wait(5);

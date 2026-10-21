@@ -23,6 +23,9 @@ const REQUEST_TIMEOUT_MS = 180_000;
 const MAX_WAIT_S = 900;
 const EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
 
+/** What a pending /wait is answered with when the helper stops. */
+const STOPPED = Symbol('stopped');
+
 export function startDaemon({ port, token, store = new CaptureStore(), log = () => {} }) {
   /** The extension's socket once it has said hello with the right code. */
   let ext = null;
@@ -133,6 +136,7 @@ export function startDaemon({ port, token, store = new CaptureStore(), log = () 
             waiters = waiters.filter((w) => w !== waiter);
           });
         });
+        if (meta === STOPPED) return send(res, 503, { ok: false, error: 'the Capture Kit helper was stopped' });
         return meta ? send(res, 200, { ok: true, capture: withMarkdown(meta) }) : send(res, 408, { ok: false, error: `no capture within ${seconds} s` });
       }
       if (req.method === 'POST' && url.pathname === '/shutdown') {
@@ -218,12 +222,26 @@ export function startDaemon({ port, token, store = new CaptureStore(), log = () 
     });
   });
 
+  // Everything still waiting is answered before the server closes: an open
+  // /wait would otherwise hold the process alive after "ck stop" said it
+  // stopped (Codex review on #28).
   function close() {
-    for (const w of waiters) clearTimeout(w.timer);
+    const stillWaiting = waiters;
     waiters = [];
+    for (const w of stillWaiting) {
+      clearTimeout(w.timer);
+      w.resolve(STOPPED);
+    }
+    for (const [id, p] of pending) {
+      clearTimeout(p.timer);
+      p.reject(new Error('the Capture Kit helper was stopped'));
+      pending.delete(id);
+    }
     for (const client of wss.clients) client.terminate();
     wss.close();
     server.close();
+    // Drop idle keep-alive sockets once the answers above have gone out.
+    setTimeout(() => server.closeAllConnections?.(), 100).unref?.();
   }
 
   const ready = new Promise((resolve, reject) => {
