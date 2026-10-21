@@ -193,6 +193,9 @@ export const DRAWER_VARIANTS = {
   // The panel starts 120px above the bottom of the window, so most of it is
   // off screen when the pointer is put on it.
   'R clipped-panel': null,
+  // A panel inside another scrolling container that is scrolled to it: the
+  // inner panel must be stitched whole and the outer one left where it was.
+  'N nested-panel': null,
   // A long page with a sticky header. Stitched, the header must appear once.
   'Y sticky-header-page': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
@@ -240,6 +243,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('W ')) return canvasAppFixture(variant, { reportsResult, manual });
   if (variant.startsWith('X ')) return pointerPanelFixture(variant, { reportsResult, manual });
   if (variant.startsWith('Q ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 1500 });
+  if (variant.startsWith('N ')) return nestedPanelFixture(variant, { reportsResult, manual });
   if (variant.startsWith('R ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 'calc(100vh - 120px)', tail: true });
   if (variant.startsWith('Y ')) return stickyHeaderFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
@@ -464,6 +468,26 @@ function canvasAppFixture(variant, { reportsResult = false, manual = false } = {
     sc.addEventListener('scroll', draw, { passive: true });
     addEventListener('resize', () => { layout(); draw(); });
   </script>
+  ${reporter}
+</body></html>`;
+}
+
+function nestedPanelFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  const blocks = [X_RGB.d, X_RGB.e, X_RGB.f]
+    .map((c) => `<div style="height:500px;background:${hex(c)}"></div>`)
+    .join('') + `<div style="height:60px;background:${hex(R_RGB.tail)}"></div>`;
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>
+  html,body{margin:0;font:16px sans-serif;background:#fafafa}
+  header{padding:16px}
+  #outer{height:320px;overflow:auto;margin:16px;border:1px solid #999;background:#eee}
+  #panel{height:260px;overflow:auto;margin:0 16px;border:1px solid #ccc;background:#fff}
+</style></head>
+<body>
+  <header>repro: ${variant}</header>
+  <div id="outer"><div style="height:500px"></div><div id="panel">${blocks}</div><div style="height:500px"></div></div>
   ${reporter}
 </body></html>`;
 }

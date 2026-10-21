@@ -35,7 +35,7 @@ import {
   evaluateInPage,
   sendCommand,
 } from './cdp-fullpage';
-import { MAX_CAPTURE_HEIGHT, PageCanvas } from './slices';
+import { MAX_CAPTURE_HEIGHT, PageCanvas, wholeImageScale } from './slices';
 import type { CaptureRequest, CaptureResult, CaptureStrategy, ScrollStitchInfo } from './types';
 
 /** Wait after each scroll for scroll handlers, canvas repaints and lazy images. */
@@ -171,17 +171,60 @@ function targetScript(prefer: ScrollTargetPreference): string {
  * scrolled back afterwards with everything else. Returns how far the panel's
  * top still sits above the window (0 unless the page cannot scroll there).
  */
+/**
+ * The part of the window a panel can show through: the window itself, cut
+ * down by every ancestor that clips its overflow - a panel nested in another
+ * scrolling container shows only what that container shows (Codex review on
+ * #27).
+ */
+const CLIP_BOX_JS = `
+  const clipBox = (el) => {
+    let x0 = 0, y0 = 0, x1 = window.innerWidth, y1 = window.innerHeight;
+    for (let n = el.parentElement; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+      let cs;
+      try { cs = getComputedStyle(n); } catch { continue; }
+      if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+      const r = n.getBoundingClientRect();
+      const l = r.left + n.clientLeft, t = r.top + n.clientTop;
+      x0 = Math.max(x0, l); y0 = Math.max(y0, t);
+      x1 = Math.min(x1, l + n.clientWidth); y1 = Math.min(y1, t + n.clientHeight);
+    }
+    return { x0, y0, x1, y1 };
+  };`;
+
 const ALIGN_PANEL_SCRIPT = `(() => {
+  ${CLIP_BOX_JS}
   const el = document.querySelector('[${TARGET_ATTR}]');
   if (!el) return null;
-  const r = el.getBoundingClientRect();
-  const top = r.top + el.clientTop;
-  if (top < 0 || top + el.clientHeight > window.innerHeight) {
-    window.scrollBy({ left: 0, top: top, behavior: 'instant' });
+  const view = () => {
+    const r = el.getBoundingClientRect();
+    const top = r.top + el.clientTop;
+    return { top, bottom: top + el.clientHeight, box: clipBox(el) };
+  };
+  let v = view();
+  if (v.top < v.box.y0 || v.bottom > v.box.y1) {
+    // Scrolls the page and every container around the panel, as needed.
+    el.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
+    v = view();
   }
-  const after = el.getBoundingClientRect().top + el.clientTop;
-  return Math.max(0, -after);
+  return Math.max(0, v.box.y0 - v.top);
 })()`;
+
+/** Every scrolled container around the panel, remembered before UNSTICK returns them to the top. */
+const ANCESTORS_KEY = "Symbol.for('capture-kit.stitch-ancestors')";
+const SAVE_ANCESTORS_SCRIPT = `(() => {
+  const el = document.querySelector('[${TARGET_ATTR}]');
+  const list = [];
+  for (let n = el ? el.parentElement : null; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+    if (n.scrollTop || n.scrollLeft) list.push([n, n.scrollTop, n.scrollLeft]);
+  }
+  window[${ANCESTORS_KEY}] = list;
+  return list.length;
+})()`;
+const RESTORE_ANCESTORS_SCRIPT = `(() => {
+  for (const [n, top, left] of window[${ANCESTORS_KEY}] || []) { n.scrollTop = top; n.scrollLeft = left; }
+})()`;
+const FORGET_ANCESTORS_SCRIPT = `(() => { delete window[${ANCESTORS_KEY}]; })()`;
 
 /**
  * The marked panel's visible box and scroll range, measured after UNSTICK so
@@ -189,13 +232,15 @@ const ALIGN_PANEL_SCRIPT = `(() => {
  * padding box (no border, no scrollbar) clipped to the viewport.
  */
 const MEASURE_PANEL_SCRIPT = `(() => {
+  ${CLIP_BOX_JS}
   const el = document.querySelector('[${TARGET_ATTR}]');
   if (!el) return null;
   const r = el.getBoundingClientRect();
   const left = r.left + el.clientLeft, top = r.top + el.clientTop;
-  const x0 = Math.max(0, left), y0 = Math.max(0, top);
-  const x1 = Math.min(window.innerWidth, left + el.clientWidth);
-  const y1 = Math.min(window.innerHeight, top + el.clientHeight);
+  const box = clipBox(el);
+  const x0 = Math.max(box.x0, left), y0 = Math.max(box.y0, top);
+  const x1 = Math.min(box.x1, left + el.clientWidth);
+  const y1 = Math.min(box.y1, top + el.clientHeight);
   return {
     scrollHeight: el.scrollHeight,
     frame: { x: x0, y: y0, width: Math.max(0, x1 - x0), height: Math.max(0, y1 - y0) },
@@ -366,6 +411,7 @@ async function captureByScrolling(
         target,
         `(() => { const el = document.querySelector('[${TARGET_ATTR}]'); return el ? { top: el.scrollTop, left: el.scrollLeft } : null; })()`,
       );
+      await evaluateInPage<number>(target, SAVE_ANCESTORS_SCRIPT);
     }
     await evaluateInPage<void>(target, FREEZE_SCRIPT);
     frozen = true;
@@ -390,6 +436,7 @@ async function captureByScrolling(
         target,
         `window.scrollTo({ left: ${originalScroll.x}, top: ${originalScroll.y}, behavior: 'instant' })`,
       );
+      await evaluateInPage<void>(target, RESTORE_ANCESTORS_SCRIPT);
       const hiddenAbove = await evaluateInPage<number | null>(target, ALIGN_PANEL_SCRIPT);
       if (hiddenAbove === null) throw new Error('The panel to scroll disappeared before the capture started.');
       if (hiddenAbove > 1) throw new Error('The panel to scroll could not be brought on screen.');
@@ -463,13 +510,18 @@ async function captureByScrolling(
         // path keeps the display's sharpness.
         const size = readEncodedImageSize(shot.data, 'png');
         ratio = size ? size.width / frameW : 1;
+        const canvasW = Math.round(frameW * ratio);
+        const canvasH = Math.round((maxScroll + frameH) * ratio);
         canvas = new PageCanvas(
-          Math.round(frameW * ratio),
-          Math.round((maxScroll + frameH) * ratio),
+          canvasW,
+          canvasH,
           request.format,
-          // Sliced afterwards from the cropped image (capture-engine/index),
-          // because the stitched length is only known at the end.
-          false,
+          // Normally sliced afterwards from the cropped image
+          // (capture-engine/index), because the stitched length is only known
+          // at the end. But a stitch too big to keep at full size is scaled
+          // down, and slices cut from that would not be full size - so then
+          // they are cut from the frames as they arrive (Codex review on #27).
+          request.slices === true && wholeImageScale(canvasW, canvasH) < 1,
         );
       }
       await canvas.add(0, Math.round((y + band) * ratio), shot.data);
@@ -493,7 +545,12 @@ async function captureByScrolling(
     );
     const grew = typeof after === 'number' && after > info.scrollHeight + 4;
 
-    const { imageBase64 } = await canvas.finish(Math.round(covered * ratio));
+    const painted = Math.round(covered * ratio);
+    const finished = await canvas.finish(painted);
+    const imageBase64 = finished.imageBase64;
+    // Slices cut as the frames arrived cover the length planned at the start;
+    // the ones below what was actually drawn are blank and dropped.
+    const slices = finished.slices.filter((slice) => slice.top < painted);
     const scrollStitch: ScrollStitchInfo = {
       target: info.kind,
       how: info.how,
@@ -518,6 +575,7 @@ async function captureByScrolling(
       revealForced: 0,
       browserZoom,
       scrollStitch,
+      ...(slices.length > 0 ? { slices } : {}),
       ...(canvas.scale < 1 ? { scale: canvas.scale } : {}),
     };
   } finally {
@@ -543,6 +601,12 @@ async function captureByScrolling(
       }
     }
     if (panelScroll) {
+      try {
+        await evaluateInPage<void>(target, RESTORE_ANCESTORS_SCRIPT);
+        await evaluateInPage<void>(target, FORGET_ANCESTORS_SCRIPT);
+      } catch {
+        /* best-effort restore */
+      }
       try {
         await evaluateInPage<void>(
           target,
