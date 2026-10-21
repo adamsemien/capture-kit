@@ -1211,6 +1211,8 @@ async function beforeAfterCheck() {
   await options.eval(`chrome.storage.sync.set({ compareWithPrevious: false }).then(() => true)`);
   await sleep(800);
   const keptAfter = await options.eval(countKept);
+  // The settings page open meanwhile shows the change, so a later save there cannot undo it.
+  const boxAfterOff = await options.eval(`document.getElementById('compare-previous')?.checked ?? null`);
   await options.eval(`chrome.storage.sync.set({ compareWithPrevious: true }).then(() => true)`);
   return {
     firstOk: first.r?.ok === true,
@@ -1222,6 +1224,7 @@ async function beforeAfterCheck() {
     sessionOk: session?.ok !== false,
     keptBefore,
     keptAfter,
+    boxAfterOff,
     mirrorFound: Boolean(mirrorDir),
     mirrorHasSection: mirrorText.includes('## Changes since the last capture'),
     mirrorOutlined: /outlined in 01_changes\.png/.test(mirrorText) && Boolean(mirrorDir && existsSync(`${mirrorDir}/01_changes.png`)),
@@ -1238,6 +1241,7 @@ function a19Verdict(r) {
   if (!r.changesFileExists) problems.push('no outlined changes image written');
   if (!/Console errors:\*\* 1 new, 1 gone/.test(s) || !/E2 new problem/.test(s) || !/E1 boot failed/.test(s)) problems.push('console errors not compared right');
   if (!/Failed requests:\*\* 1 new, 1 gone/.test(s) || !/missing-v2/.test(s) || !/missing-v1/.test(s)) problems.push('failed requests not compared right');
+  if (r.boxAfterOff !== false) problems.push(`the open settings page still shows comparison on (${r.boxAfterOff})`);
   if (!(r.keptBefore > 0) || r.keptAfter !== 0) problems.push(`turning it off in synced storage did not clear the kept copies (${r.keptBefore} then ${r.keptAfter})`);
   if (!r.mirrorFound) problems.push('the session mirror latest-session/01.md was not found');
   else if (!r.mirrorHasSection) problems.push('the session mirror has no comparison section');

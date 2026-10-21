@@ -233,6 +233,14 @@ compareForgetBtn.addEventListener('click', () => {
   })();
 });
 void renderCompareCount();
+// Switched off on another synced Chrome while this page is open: show it, or
+// the next save of any other option here would write the old tick back and
+// turn comparison on again (Codex review on #29).
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'sync' || !changes.compareWithPrevious) return;
+  comparePreviousInput.checked = changes.compareWithPrevious.newValue !== false;
+  void renderCompareCount();
+});
 clipDelayInput.addEventListener('change', () => void save());
 for (const input of formatInputs) {
   input.addEventListener('change', () => void save());
