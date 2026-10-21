@@ -84,9 +84,15 @@ function sameProof(a: unknown, b: string): boolean {
 }
 
 let socket: WebSocket | null = null;
+/**
+ * Bumped by every syncBridge call. A call that finds a newer one started
+ * while it was awaiting stops there, so an older call holding settings from
+ * before you turned the bridge off cannot reconnect after it (Codex review
+ * on #28).
+ */
+let generation = 0;
 let ready = false;
 let keepalive: ReturnType<typeof setInterval> | undefined;
-let connecting = false;
 let handlers: BridgeHandlers | null = null;
 
 async function setStatus(state: BridgeStatus['state'], detail?: string): Promise<void> {
@@ -141,7 +147,10 @@ async function answer(id: string, action: string, params: Record<string, unknown
 
 /** Connects if the bridge is on and paired; closes it otherwise. Safe to call any time. */
 export async function syncBridge(): Promise<void> {
+  const mine = ++generation;
+  const current = () => mine === generation;
   const settings = await getBridgeSettings();
+  if (!current()) return;
   if (!settings.bridgeEnabled) {
     teardown();
     await armRetry(false);
@@ -154,11 +163,13 @@ export async function syncBridge(): Promise<void> {
     await setStatus('unpaired');
     return;
   }
-  if (socket || connecting) return;
-  connecting = true;
-  await armRetry(true);
-  await setStatus('connecting');
+  // A live or opening socket is this generation's: nothing to do. An older
+  // call still mid-connect is not waited for - it sees it is stale and stops.
+  if (socket) return;
   try {
+    await armRetry(true);
+    await setStatus('connecting');
+    if (!current()) return;
     const ws = new WebSocket(`ws://127.0.0.1:${settings.bridgePort}`);
     socket = ws;
     const mine = randomNonce();
@@ -169,6 +180,7 @@ export async function syncBridge(): Promise<void> {
       ws.send(JSON.stringify({ type: 'hello', nonce: mine, version: chrome.runtime.getManifest().version }));
     };
     ws.onmessage = async (event) => {
+      if (socket !== ws) return;
       let msg: { type?: string; id?: string; action?: string; params?: Record<string, unknown>; nonce?: string; proof?: string };
       try {
         msg = JSON.parse(String(event.data));
@@ -221,8 +233,6 @@ export async function syncBridge(): Promise<void> {
   } catch (error) {
     teardown();
     await setStatus('unreachable', String(error));
-  } finally {
-    connecting = false;
   }
 }
 

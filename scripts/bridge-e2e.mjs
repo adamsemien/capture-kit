@@ -12,6 +12,7 @@
 //   E6 with agent captures off, a capture request is refused, plainly
 //   E7 a wrong pairing code is refused and the status says so
 //   E11 something else on the port gets nothing: no code, no proof, no capture
+//   E12 switching the bridge off straight after on leaves it off
 //   E9 a responsive sweep reaches the agent with every width
 //   E10 a tab that moves to a site agents may not capture, as it comes to
 //       the front, is refused - the agent gets nothing
@@ -215,6 +216,28 @@ try {
     !viaMcp.isError && /# Capture —/.test(viaMcp.content?.[0]?.text ?? '') && image?.mimeType === 'image/jpeg' && image.data.length > 1000,
     `isError ${viaMcp.isError ?? false}, image ${image ? `${image.mimeType}, ${image.data.length} b64 chars` : 'none'}`);
   await mcp.close();
+
+  // E12: on and off in quick succession, from a disconnected start.
+  await options.eval(`chrome.storage.local.set({ bridgeEnabled: false })`);
+  await sleep(500);
+  await options.eval(`(async () => {
+    for (let i = 0; i < 5; i++) {
+      chrome.storage.local.set({ bridgeEnabled: true });
+      chrome.storage.local.set({ bridgeEnabled: false });
+    }
+    await chrome.storage.local.set({ bridgeEnabled: false });
+    return true;
+  })()`);
+  await sleep(3000);
+  const toggled = JSON.parse((await ck('status', '--json')).out || '{}');
+  const toggledState = await options.eval(`chrome.storage.session.get('bridgeStatus').then((s) => s.bridgeStatus?.state ?? null)`);
+  verdict('E12 switched off straight after on, the bridge stays off', toggled.connected === false && toggledState === 'off',
+    `helper connected=${toggled.connected}, settings page says ${toggledState}`);
+  await options.eval(`chrome.storage.local.set({ bridgeEnabled: true })`);
+  for (let i = 0; i < 40; i++) {
+    if (JSON.parse((await ck('status', '--json')).out || '{}').connected) break;
+    await sleep(250);
+  }
 
   // E9
   const sweepTaken = await options.eval(`chrome.tabs.update(${tabId}, { active: true }).then(() => chrome.runtime.sendMessage({ type: 'CAPTURE_SWEEP', tabId: ${tabId} }))`);
