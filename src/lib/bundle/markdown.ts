@@ -32,6 +32,8 @@ export interface BundleInput {
   revealForced: number;
   /** Elements whose viewport-unit lengths were held at the real viewport (segmented only). */
   heightHeld?: number;
+  /** Virtualized content: captured under a full-height viewport so it all drew. */
+  drawnOnScroll?: boolean;
   /** Inner scrollers unrolled (expanded-inner-scroll mode only). */
   innerScrollers?: number;
   /** Embedded frames kept at their on-screen height (expanded-inner-scroll mode only). */
@@ -136,6 +138,7 @@ export function captureModeLabel(
   framesHeld = 0,
   panelsReflowed = 0,
   innerScrollAbandoned = false,
+  drawnOnScroll = false,
 ): string {
   // The counts say how many columns were unrolled and how many embedded
   // pages were not - a reader comparing a three-column app to its capture
@@ -158,13 +161,22 @@ export function captureModeLabel(
       : innerScrollAbandoned
         ? 'standard (inner-scroll expansion undone - it would have hidden the page, so this is the page as it looks on screen)'
         : 'standard';
-  const path = segments > 1 ? `segmented, ${segments} segments` : 'single-shot';
+  // A page that draws only what is on screen is photographed under a
+  // full-height viewport even when it fits one frame, and says so: an AI
+  // reading "single-shot" would assume the one path that drops its rows.
+  const path =
+    segments > 1
+      ? `segmented, ${segments} segments`
+      : drawnOnScroll
+        ? 'full-height viewport, 1 segment'
+        : 'single-shot';
   const reveal = revealForced > 0 ? ` + reveal-forced (${revealForced} elements)` : '';
   // Says the page was altered for the capture, and how: viewport-unit lengths
   // were held at the real viewport instead of resolving against the segmented
   // path's taller virtual one. Absent when nothing moved.
   const held = heightHeld > 0 ? ` + viewport heights held (${heightHeld} elements)` : '';
-  return `${strategy}, ${path}${reveal}${held}`;
+  const drawn = drawnOnScroll ? ' + page redraws as it scrolls' : '';
+  return `${strategy}, ${path}${reveal}${held}${drawn}`;
 }
 
 /**
@@ -407,6 +419,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
           input.framesHeld,
           input.panelsReflowed,
           input.innerScrollAbandoned,
+          input.drawnOnScroll,
         ),
         trigger: input.trigger,
         recorderActive: input.recorderActive,

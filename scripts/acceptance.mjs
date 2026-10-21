@@ -38,6 +38,7 @@ import {
   NAV_RGB,
   NAV_WIDTH,
   SENTINEL_RGB,
+  V_RGB,
   fixture as drawerFixture,
   viewportFor,
 } from './drawer-fixture.mjs';
@@ -1134,6 +1135,54 @@ function a15Verdict(r) {
     : `PASS — no hidden layer painted, width ${r.run.px.width}px, lazy section revealed (${r.by.lazy} px)`;
 }
 
+// --- CHECK A16: a virtualized list captures whole (Vercel) ---------------
+// Variant V: 120 rows drawn only near the viewport, short enough for the
+// single-shot path. Rows 1-20 carry one colour, rows 21-120 another. Before
+// the fix the image held the rows drawn at load and a blank spacer, so the
+// second colour was missing. Five times as many "rest" rows as "top" rows, so
+// a whole list shows rest at well over twice top.
+const V_VARIANT = 'V virtualized-short';
+const V_COLOURS = Object.entries(V_RGB).map(([name, c]) => ({ name, r: c.r, g: c.g, b: c.b }));
+async function virtualizedCheck() {
+  const run = await captureVariant(V_VARIANT, V_COLOURS);
+  const by = Object.fromEntries((run.px?.colours ?? []).map((c) => [c.name, c.pixels]));
+  return { run, by };
+}
+function a16Verdict(r) {
+  if (r.run.error || r.run.px?.error) return `INCONCLUSIVE — ${r.run.error ?? r.run.px.error}`;
+  const top = r.by.top ?? 0;
+  const rest = r.by.rest ?? 0;
+  if (top < 200) return `INCONCLUSIVE — the first rows did not paint either (${top} px)`;
+  return rest >= 2 * top
+    ? `PASS — whole list drawn: rows 21-120 ${rest} px against rows 1-20 ${top} px`
+    : `FAIL — list cut off: rows 21-120 ${rest} px against rows 1-20 ${top} px`;
+}
+
+if (process.argv.includes('--only-virtualized')) {
+  heading('CHECK A16 — a virtualized list captures whole');
+  await setSetting(options, { segmentSize: 8192, stampUrlOnImage: false });
+  const own = await virtualizedCheck();
+  console.log('pixels: ' + JSON.stringify(own.run.px) + ' mode: ' + JSON.stringify(own.run.modeLine));
+  console.log('VERDICT A16 virtualized list: ' + a16Verdict(own));
+  if (process.env.CK_COMPARE_DIST) {
+    heading('CHECK A16 (falsifiability) — the same fixture on the comparison build');
+    console.log(`extension id (comparison build): ${await relaunchWith(process.env.CK_COMPARE_DIST)}`);
+    const old = await virtualizedCheck();
+    console.log('pixels: ' + JSON.stringify(old.run.px) + ' mode: ' + JSON.stringify(old.run.modeLine));
+    const v = a16Verdict(old);
+    console.log(
+      'VERDICT A16 is falsifiable: ' +
+        (v.startsWith('FAIL') ? `PASS — the comparison build cuts the list off (${v})` : `FAIL — ${v}`),
+    );
+  }
+  options.close();
+  chrome.kill('SIGTERM');
+  killStrays();
+  await sleep(2000);
+  http.close();
+  process.exit(0);
+}
+
 if (process.argv.includes('--only-hidden-layers')) {
   heading('CHECK A15 — hidden layers stay hidden, lazy content still revealed');
   console.log(
@@ -2163,6 +2212,13 @@ heading('CHECK A15 — hidden layers stay hidden, lazy content still revealed');
   const own = await hiddenLayersCheck();
   console.log('pixels: ' + JSON.stringify(own.run.px));
   console.log('VERDICT A15 hidden layers: ' + a15Verdict(own));
+}
+
+heading('CHECK A16 — a virtualized list captures whole');
+{
+  const own = await virtualizedCheck();
+  console.log('pixels: ' + JSON.stringify(own.run.px));
+  console.log('VERDICT A16 virtualized list: ' + a16Verdict(own));
 }
 
 options.close();

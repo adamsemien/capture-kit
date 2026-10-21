@@ -1454,6 +1454,16 @@ test('an undone expansion says the capture is one screen, and why', () => {
 test('a plain standard capture is unchanged', () => {
   assert.equal(mod.captureModeLabel('standard', 0, 1), 'standard, single-shot');
 });
+test('a page that redraws on scroll says it was captured at full height, not single-shot', () => {
+  assert.equal(
+    mod.captureModeLabel('standard', 0, 1, 0, 0, 0, 0, false, true),
+    'standard, full-height viewport, 1 segment + page redraws as it scrolls',
+  );
+  assert.equal(
+    mod.captureModeLabel('standard', 2, 3, 0, 0, 0, 0, false, true),
+    'standard, segmented, 3 segments + reveal-forced (2 elements) + page redraws as it scrolls',
+  );
+});
 
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${passed} passed, ${failed} failed`);

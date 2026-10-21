@@ -203,22 +203,79 @@ const UNFORCE_REVEAL_SCRIPT = `(() => {
   }
 })()`;
 
+// Pages that draw only what is on screen. A virtualized list (Vercel's
+// environment variables, most long tables in web apps) keeps a full-height
+// spacer and renders the dozen rows near the viewport, swapping rows in and
+// out as it scrolls. The single-shot path photographs beyond the viewport
+// without the page ever learning its viewport grew, so it gets the rows that
+// happened to be drawn and a blank spacer below them: 13 rows over 6,000px of
+// white on vercel.com/.../settings/environment-variables (2026-10-19). The
+// segmented path overrides the viewport first, the page sees a resize and
+// draws for it, and the same list captures whole.
+//
+// The tell is the reveal pass itself: scrolling a virtualized page removes
+// elements from the document. A static page scrolled top to bottom removes
+// almost nothing. Counted with a MutationObserver around the pass; scripts,
+// styles and frames are ignored because ad and analytics code churns them.
+const DRAWN_ON_SCROLL_MIN_REMOVED = 20;
+
+const WATCH_REMOVALS_SCRIPT = `(() => {
+  if (window.__captureKitRemovalWatch) window.__captureKitRemovalWatch.disconnect();
+  window.__captureKitRemoved = 0;
+  const IGNORED = /^(SCRIPT|STYLE|LINK|IFRAME|META|NOSCRIPT)$/;
+  const watch = new MutationObserver((records) => {
+    for (const r of records) {
+      for (const n of r.removedNodes) {
+        if (n.nodeType === 1 && !IGNORED.test(n.tagName)) window.__captureKitRemoved += 1;
+      }
+    }
+  });
+  watch.observe(document.documentElement, { childList: true, subtree: true });
+  window.__captureKitRemovalWatch = watch;
+})()`;
+
+// Records already queued are flushed into the count before disconnecting.
+const STOP_WATCHING_REMOVALS_SCRIPT = `(() => {
+  const watch = window.__captureKitRemovalWatch;
+  let removed = window.__captureKitRemoved || 0;
+  if (watch) {
+    for (const r of watch.takeRecords()) {
+      for (const n of r.removedNodes) {
+        if (n.nodeType === 1 && !/^(SCRIPT|STYLE|LINK|IFRAME|META|NOSCRIPT)$/.test(n.tagName)) removed += 1;
+      }
+    }
+    watch.disconnect();
+  }
+  delete window.__captureKitRemovalWatch;
+  delete window.__captureKitRemoved;
+  return removed;
+})()`;
+
 // One pass down the page in real-viewport steps so IntersectionObservers
 // fire for every section (capped — the residual force catches anything a
-// coarse pass skips on extremely tall pages).
-async function revealScrollPass(target: chrome.debugger.Debuggee): Promise<void> {
+// coarse pass skips on extremely tall pages). Returns how many elements the
+// page removed while being scrolled (see DRAWN_ON_SCROLL_MIN_REMOVED).
+async function revealScrollPass(target: chrome.debugger.Debuggee): Promise<number> {
   const viewport = await evaluateInPage<number>(target, 'window.innerHeight || 800');
   const size = await readContentSize(target);
   const maxY = Math.max(0, size.height - viewport);
-  if (maxY === 0) return;
+  if (maxY === 0) return 0;
   const stepCount = Math.min(MAX_REVEAL_STEPS, Math.ceil(maxY / viewport) + 1);
   const stride = maxY / Math.max(1, stepCount - 1);
-  for (let i = 0; i < stepCount; i++) {
-    await evaluateInPage<ScrollPosition>(
-      target,
-      scrollAndSettleScript(0, Math.round(i * stride), REVEAL_SETTLE_MS),
-    );
+  await evaluateInPage<void>(target, WATCH_REMOVALS_SCRIPT);
+  try {
+    for (let i = 0; i < stepCount; i++) {
+      await evaluateInPage<ScrollPosition>(
+        target,
+        scrollAndSettleScript(0, Math.round(i * stride), REVEAL_SETTLE_MS),
+      );
+    }
+  } catch (err) {
+    // Disconnect the observer even when the pass fails, then let it throw.
+    await evaluateInPage<number>(target, STOP_WATCHING_REMOVALS_SCRIPT).catch(() => 0);
+    throw err;
   }
+  return (await evaluateInPage<number>(target, STOP_WATCHING_REMOVALS_SCRIPT)) || 0;
 }
 
 // Sticky/fixed neutralization, applied to BOTH capture paths. A full-page
@@ -684,7 +741,8 @@ export async function captureAttached(
   try {
     await evaluateInPage<void>(target, FREEZE_SCRIPT);
     frozen = true;
-    await revealScrollPass(target);
+    const removedOnScroll = await revealScrollPass(target);
+    const drawnOnScroll = removedOnScroll >= DRAWN_ON_SCROLL_MIN_REMOVED;
     // Force-reveal runs BEFORE unsticking on purpose: it skips elements that
     // are still computed position:fixed so hidden fixed UI (menus, modals)
     // is never forced visible. Unsticking first rewrites those to absolute
@@ -714,12 +772,17 @@ export async function captureAttached(
     const dpr = await evaluateInPage<number>(target, 'window.devicePixelRatio || 1');
     const surfaceCap = Math.floor(SINGLE_SHOT_SURFACE_LIMIT / Math.max(1, dpr || 1));
     const singleShotCap = Math.min(request.segmentSize, surfaceCap);
+    // A page that draws only what is on screen goes segmented even when it
+    // would fit in one shot: only the viewport override makes it draw the
+    // rest (see DRAWN_ON_SCROLL_MIN_REMOVED).
     const fitsInOneShot =
-      contentSize.width <= singleShotCap && contentSize.height <= singleShotCap;
+      !drawnOnScroll &&
+      contentSize.width <= singleShotCap &&
+      contentSize.height <= singleShotCap;
     const result = fitsInOneShot
       ? await captureSingleShot(target, contentSize, request.format)
       : await captureSegmented(target, contentSize, request);
-    return { ...result, revealForced, browserZoom };
+    return { ...result, revealForced, browserZoom, ...(drawnOnScroll ? { drawnOnScroll } : {}) };
   } finally {
     if (restoreZoom !== null) {
       try {
