@@ -33,6 +33,7 @@ import type { SessionFailure, SessionPage } from '../lib/session/manifest';
 import { textToBase64 } from '../lib/base64';
 import { ICON_MODE_KEY, getSettings } from '../lib/settings';
 import { decidePageTrigger } from '../lib/site-access';
+import { flashesFor, showCaptureFlash } from '../lib/flash';
 import type { Settings } from '../lib/settings';
 import { outputDirHasFile, outputDirStatus, writeToOutputDir } from '../lib/output-dir';
 import { redactPage, redactText } from '../lib/redact';
@@ -624,6 +625,21 @@ function describeError(error: unknown): string {
 }
 
 /**
+ * The "photo taken" flash on the captured tab (see lib/flash.ts). Called only
+ * once the capture has returned - the debugger is detached and every change
+ * to the page undone - so the overlay can never be in the image.
+ * Fire-and-forget: a page that refuses script injection simply gets no flash.
+ */
+function flashCapturedTab(tabId: number, trigger: CaptureTrigger, settings: Settings): void {
+  if (!flashesFor(trigger, settings.captureFlash)) return;
+  void chrome.scripting
+    .executeScript({ target: { tabId }, func: showCaptureFlash })
+    .catch(() => {
+      /* restricted page or a tab that went away */
+    });
+}
+
+/**
  * One page report: capture, build markdown, write both files. Shared by the
  * single-page button and the session runner, which is why the tab and the
  * output folder are parameters rather than "whatever is active".
@@ -920,6 +936,7 @@ async function captureBundle(trigger: CaptureTrigger, targetTabId?: number): Pro
 
     await beginIndicator();
     const report = await captureReport(tab, settings, trigger);
+    flashCapturedTab(tabId, trigger, settings);
     const {
       capturedAt, imageFilename, markdown, clipboardMarkdown,
       imageMime, imageDownloadId, result,
@@ -1047,6 +1064,8 @@ async function capturePage(asPng: boolean, targetTabId?: number): Promise<Captur
       stamp: stampRequest(settings, redactText(tab.url ?? '').text, capturedAt),
       onProgress: (done, total) => void reportProgress(done, total),
     });
+    // Only the popup reaches this path ("Image only"), and that is a person.
+    flashCapturedTab(tab.id as number, 'popup', settings);
     const mime = format === 'png' ? 'image/png' : 'image/jpeg';
     const imageFilename = `${captureBasename(tab.title || '', tab.url, capturedAt)}.${
       format === 'png' ? 'png' : 'jpg'

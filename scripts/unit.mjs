@@ -30,6 +30,7 @@ export { tallPageSections, scaleLabel, buildContentsLine } from '${ROOT}/src/lib
 export { contentColumns, planTrim, TRIM_PADDING } from '${ROOT}/src/lib/capture-engine/slices.ts';
 export { decidePageTrigger, parseSitePattern, normalizeSiteList, normalizeTriggerMode, DEFAULT_TRIGGER_SITES } from '${ROOT}/src/lib/site-access.ts';
 export { storedTriggerMode } from '${ROOT}/src/lib/settings.ts';
+export { flashesFor, FLASH_ATTR } from '${ROOT}/src/lib/flash.ts';
 export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
@@ -1463,6 +1464,19 @@ test('a page that redraws on scroll says it was captured at full height, not sin
     mod.captureModeLabel('standard', 2, 3, 0, 0, 0, 0, false, true),
     'standard, segmented, 3 segments + reveal-forced (2 elements) + page redraws as it scrolls',
   );
+});
+
+heading('capture flash - who gets it');
+test('a person firing a capture gets the flash when the setting is on', () => {
+  for (const t of ['shortcut', 'icon', 'popup']) assert.equal(mod.flashesFor(t, true), true, t);
+});
+test('pages, agents, sessions, sweeps and clips never flash', () => {
+  for (const t of ['agent', 'session', 'sweep', 'clip', 'clip-shortcut', 'agent-clip']) {
+    assert.equal(mod.flashesFor(t, true), false, t);
+  }
+});
+test('the setting off means no flash for anyone', () => {
+  for (const t of ['shortcut', 'icon', 'popup']) assert.equal(mod.flashesFor(t, false), false, t);
 });
 
 rmSync(dir, { recursive: true, force: true });

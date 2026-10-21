@@ -23,6 +23,7 @@ const iconCapturesInput = document.getElementById('icon-captures') as HTMLInputE
 const stampUrlInput = document.getElementById('stamp-url') as HTMLInputElement;
 const autoCopyInput = document.getElementById('auto-copy-image') as HTMLInputElement;
 const imageOnlyInput = document.getElementById('clipboard-image-only') as HTMLInputElement;
+const captureFlashInput = document.getElementById('capture-flash') as HTMLInputElement;
 const clipSecondsInput = document.getElementById('clip-seconds') as HTMLInputElement;
 const clipDelayInput = document.getElementById('clip-delay') as HTMLInputElement;
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
@@ -48,6 +49,7 @@ async function load(): Promise<void> {
   stampUrlInput.checked = settings.stampUrlOnImage;
   autoCopyInput.checked = settings.autoCopyImage;
   imageOnlyInput.checked = settings.clipboardImageOnly;
+  captureFlashInput.checked = settings.captureFlash;
   clipSecondsInput.value = String(settings.clipSeconds);
   clipDelayInput.value = String(settings.clipDelaySeconds);
   syncAutoCopy();
@@ -146,6 +148,7 @@ async function save(): Promise<void> {
     stampUrlOnImage: stampUrlInput.checked,
     autoCopyImage: autoCopyInput.checked,
     clipboardImageOnly: imageOnlyInput.checked,
+    captureFlash: captureFlashInput.checked,
     clipSeconds: clipSecondsInput.value ? Number(clipSecondsInput.value) : clipSeconds,
     clipDelaySeconds: clipDelayInput.value ? Number(clipDelayInput.value) : clipDelaySeconds,
   });
@@ -199,6 +202,7 @@ iconCapturesInput.addEventListener('change', () => void save());
 stampUrlInput.addEventListener('change', () => void save());
 autoCopyInput.addEventListener('change', () => void save());
 imageOnlyInput.addEventListener('change', () => void save());
+captureFlashInput.addEventListener('change', () => void save());
 clipSecondsInput.addEventListener('change', () => void save());
 clipDelayInput.addEventListener('change', () => void save());
 for (const input of formatInputs) {
