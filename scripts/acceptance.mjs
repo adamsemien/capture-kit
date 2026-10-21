@@ -43,6 +43,7 @@ import {
   X_RGB,
   R_RGB,
   O_RGB,
+  T_RGB,
   Y_RGB,
   fixture as drawerFixture,
   viewportFor,
@@ -1153,6 +1154,7 @@ const Q_VARIANT = 'Q low-panel';
 const R_VARIANT = 'R clipped-panel';
 const N_VARIANT = 'N nested-panel';
 const U_VARIANT = 'U canvas-beside-list';
+const T_VARIANT = 'T wide-panel';
 const O_VARIANT = 'O sticky-page-panel';
 const Y_VARIANT = 'Y sticky-header-page';
 const named18 = (obj) => Object.entries(obj).map(([name, c]) => ({ name, r: c.r, g: c.g, b: c.b }));
@@ -1238,7 +1240,12 @@ async function stitchCheck() {
   const qz = await scrollCaptureVariant(Q_VARIANT, named18(X_RGB), [200, 250], { scrollTo: 1400, leave: true, zoom: 1.5 });
   // U through the ordinary page-fired capture: the detected canvas panel, not the larger list.
   const u = await captureVariant(U_VARIANT, named18(W_RGB));
-  return { w, x, y, q, r: rr, n, o, qz, u };
+  // T: the panel scrolled all the way right; the stitch must show the right half only.
+  const tt = await scrollCaptureVariant(T_VARIANT, named18({ ...X_RGB, ...T_RGB }), [200, 200], {
+    setup: `(() => { const p = document.getElementById('panel'); p.scrollLeft = p.scrollWidth; })()`,
+    probe: `({ panelLeft: document.getElementById('panel').scrollLeft, panelMax: document.getElementById('panel').scrollWidth - document.getElementById('panel').clientWidth })`,
+  });
+  return { w, x, y, q, r: rr, n, o, qz, u, t: tt };
 }
 function colourMap(px) {
   return Object.fromEntries((px?.colours ?? []).map((c) => [c.name, c.pixels]));
@@ -1257,10 +1264,15 @@ function a18Verdict(r) {
   if (r.q.after?.page !== 1400 || r.q.after?.panel !== 0) problems.push(`low panel capture left the page at ${r.q.after?.page} and the panel at ${r.q.after?.panel} (want 1400 and 0)`);
   const rc = colourMap(r.r.px);
   if (!['d', 'e', 'f', 'tail'].every((k) => (rc[k] ?? 0) > 200)) problems.push(`clipped panel lost rows: ${JSON.stringify(rc)}`);
-  for (const k of ['x', 'y', 'q', 'r', 'n', 'o', 'qz']) {
+  for (const k of ['x', 'y', 'q', 'r', 'n', 'o', 'qz', 't']) {
     if (r[k]?.response?.ok !== true) problems.push(`${k}: the capture itself failed (${r[k]?.response?.reason ?? r[k]?.response?.error ?? JSON.stringify(r[k]?.response)})`);
   }
   if ((r.n.modeLine ?? []).join(' ') === (r.r.modeLine ?? []).join(' ')) problems.push('nested panel report is the clipped panel report again - no new capture');
+  const tc = colourMap(r.t.px);
+  if ((tc.right ?? 0) < 1000 || ['d', 'e', 'f'].some((k) => (tc[k] ?? 0) > 200)) {
+    problems.push(`a panel scrolled right was captured from its left edge (right ${tc.right ?? 0}, d/e/f ${tc.d ?? 0}/${tc.e ?? 0}/${tc.f ?? 0})`);
+  }
+  if (r.t.after?.panelLeft !== r.t.after?.panelMax) problems.push(`the wide panel was left at ${r.t.after?.panelLeft} of ${r.t.after?.panelMax}`);
   const qzc = colourMap(r.qz.px);
   if (!['d', 'e', 'f'].every((k) => (qzc[k] ?? 0) > 200) || !/panel under your pointer/.test((r.qz.modeLine ?? []).join(' '))) {
     problems.push(`at 150% zoom the panel under the pointer was not stitched: ${JSON.stringify(qzc)} ${(r.qz.modeLine ?? []).join(' ')}`);

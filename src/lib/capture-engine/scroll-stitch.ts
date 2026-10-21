@@ -479,9 +479,24 @@ async function captureByScrolling(
         `window.scrollTo({ left: ${originalScroll.x}, top: ${originalScroll.y}, behavior: 'instant' })`,
       );
       await evaluateInPage<void>(target, RESTORE_ANCESTORS_SCRIPT);
+      // The panel's own sideways position too: the stitch scrolls it down
+      // only, so a spreadsheet scrolled to the right must stay there or the
+      // wrong columns are captured (Codex review on #27).
+      if (panelScroll && panelScroll.left) {
+        await evaluateInPage<void>(
+          target,
+          `(() => { const el = document.querySelector('[${TARGET_ATTR}]'); if (el) el.scrollLeft = ${panelScroll.left}; })()`,
+        );
+      }
       const hiddenAbove = await evaluateInPage<number | null>(target, ALIGN_PANEL_SCRIPT);
       if (hiddenAbove === null) throw new Error('The panel to scroll disappeared before the capture started.');
       if (hiddenAbove > 1) throw new Error('The panel to scroll could not be brought on screen.');
+    }
+
+    // Likewise the page: the stitch moves it down only, from the left
+    // position you had.
+    if (picked.kind === 'page' && originalScroll.x) {
+      await evaluateInPage<void>(target, `window.scrollTo({ left: ${originalScroll.x}, top: 0, behavior: 'instant' })`);
     }
 
     let info: TargetInfo;

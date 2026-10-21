@@ -125,6 +125,10 @@ export const X_RGB = {
 // Variant R: the X panel mostly below the window, its content ending in a
 // strip that only a capture reaching the panel's last rows can contain.
 export const R_RGB = { ...X_RGB, tail: { r: 0xfd, g: 0xd8, b: 0x35 } }; // #fdd835
+// Variant T: each panel row is twice the panel's width - the left half in
+// the X colours, the right half in one colour - and the panel is scrolled
+// all the way right before the capture.
+export const T_RGB = { right: { r: 0x2e, g: 0x7d, b: 0x32 } }; // #2e7d32
 // Variant O adds the page's sticky header, which must not appear in a panel stitch.
 export const O_RGB = { ...R_RGB, header: { r: 0x3e, g: 0x27, b: 0x23 } }; // #3e2723
 export const Y_RGB = {
@@ -205,6 +209,7 @@ export const DRAWER_VARIANTS = {
   // A page with a sticky header; the panel sits low inside a container that
   // has not been scrolled, so bringing it into view scrolls that container.
   'O sticky-page-panel': null,
+  'T wide-panel': null,
   // A long page with a sticky header. Stitched, the header must appear once.
   'Y sticky-header-page': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
@@ -255,6 +260,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('Q ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 1500 });
   if (variant.startsWith('N ')) return nestedPanelFixture(variant, { reportsResult, manual });
   if (variant.startsWith('O ')) return nestedPanelFixture(variant, { reportsResult, manual, header: true });
+  if (variant.startsWith('T ')) return pointerPanelFixture(variant, { reportsResult, manual, wide: true });
   if (variant.startsWith('R ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 'calc(100vh - 120px)', tail: true });
   if (variant.startsWith('Y ')) return stickyHeaderFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
@@ -509,10 +515,12 @@ function nestedPanelFixture(variant, { reportsResult = false, manual = false, he
 </body></html>`;
 }
 
-function pointerPanelFixture(variant, { reportsResult = false, manual = false, spacer = 0, tail = false } = {}) {
+function pointerPanelFixture(variant, { reportsResult = false, manual = false, spacer = 0, tail = false, wide = false } = {}) {
   const reporter = reporterScript(reportsResult, manual);
   const blocks = [X_RGB.d, X_RGB.e, X_RGB.f]
-    .map((c) => `<div style="height:800px;background:${hex(c)}"></div>`)
+    .map((c) => wide
+      ? `<div style="height:800px;width:200%;display:flex"><div style="flex:1;background:${hex(c)}"></div><div style="flex:1;background:${hex(T_RGB.right)}"></div></div>`
+      : `<div style="height:800px;background:${hex(c)}"></div>`)
     .join('') + (tail ? `<div style="height:60px;background:${hex(R_RGB.tail)}"></div>` : '');
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
