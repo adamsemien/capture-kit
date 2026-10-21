@@ -17,6 +17,8 @@ import { diffSigned, errorSignature, failureSignature, pageKey, type SetDiff } f
 import { getPage, putPage, type PageRecord } from './store';
 
 /** Width of the stored copy and of the comparison, in image px. */
+/** Page-width difference still compared: a classic scrollbar is 15-17 px. */
+export const SCROLLBAR_SLACK = 24;
 export const COMPARE_WIDTH = 480;
 /** Rows of the stored copy kept, in its own px - about 13 screens of a laptop page. */
 export const THUMB_MAX_HEIGHT = 8000;
@@ -104,7 +106,10 @@ async function comparePictures(
   cur: Thumb,
   input: CompareInput,
 ): Promise<{ picture: PictureComparison; diff: string | null }> {
-  if (prev.viewportWidth !== input.viewportWidth || prev.pageWidth !== input.pageWidth) {
+  // A page that grows past one screen gains a scrollbar and narrows by its
+  // width; that is the same layout, not a different one, so a difference
+  // that small is still compared.
+  if (prev.viewportWidth !== input.viewportWidth || Math.abs(prev.pageWidth - input.pageWidth) > SCROLLBAR_SLACK) {
     return {
       picture: {
         compared: false,

@@ -1474,12 +1474,18 @@ test('the same error with a different id and query string is the same error', ()
   const b = mod.errorSignature({ level: 'error', message: 'Failed to load order 55120934 from https://api.x.com/o?v=2', source: 'https://x.com/app.js?h=def:12:7', timestamp: 2 });
   assert.equal(a.sig, b.sig);
 });
-test('a different line or message is a different error; short numbers are kept', () => {
+test('a different message or file is a different error; short numbers are kept', () => {
   const a = mod.errorSignature({ level: 'error', message: 'HTTP 404', source: 'app.js:12:1', timestamp: 1 });
   const b = mod.errorSignature({ level: 'error', message: 'HTTP 500', source: 'app.js:12:1', timestamp: 1 });
-  const c = mod.errorSignature({ level: 'error', message: 'HTTP 404', source: 'app.js:13:1', timestamp: 1 });
+  const c = mod.errorSignature({ level: 'error', message: 'HTTP 404', source: 'other.js:12:1', timestamp: 1 });
   assert.notEqual(a.sig, b.sig);
   assert.notEqual(a.sig, c.sig);
+});
+test('an error that only moved is the same error, location notes and all', () => {
+  const a = mod.errorSignature({ level: 'error', message: 'E2E boom', source: 'http://127.0.0.1:8931/app:2:50 (no source map)', timestamp: 1 });
+  const b = mod.errorSignature({ level: 'error', message: 'E2E boom', source: 'http://127.0.0.1:8931/app:9:125 (no source map)', timestamp: 2 });
+  assert.equal(a.sig, b.sig);
+  assert.match(b.text, /app:9:125/);
 });
 test('failed requests match on method, path and status, not the query', () => {
   const a = mod.failureSignature({ method: 'get', url: 'https://x.com/api/user?id=1', status: 500, durationMs: 1, timestamp: 1 });

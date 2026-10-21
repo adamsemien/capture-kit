@@ -43,11 +43,17 @@ function stripRunNoise(text: string): string {
     .replace(/\b\d{5,}\b/g, '<n>');
 }
 
-/** "file.js:12:34" with the column dropped - a rebuild moves columns, not lines that matter. */
+/**
+ * The file an error came from, without its line and column. An edit above
+ * the error moves both - inline page scripts shift with every change to the
+ * HTML - and the same message from the same file is, to the person asking
+ * "did my fix work", the same error. The note Capture Kit appends, like
+ * "(no source map)", is dropped with them.
+ */
 function sourceKey(source: string | undefined): string {
   if (!source) return '';
-  const noQuery = stripUrlNoise(source);
-  return noQuery.replace(/:(\d+):\d+$/, ':$1');
+  const noNote = source.replace(/\s*\([^()]*\)\s*$/, '');
+  return stripUrlNoise(noNote).replace(/(:\d+){1,2}$/, '');
 }
 
 export function errorSignature(entry: ConsoleEntry): Signed {
