@@ -64,7 +64,7 @@ export async function saveBridgeSettings(patch: Partial<BridgeSettings>): Promis
 
 /** What the options page shows; written by the worker to storage.session. */
 export interface BridgeStatus {
-  state: 'off' | 'unpaired' | 'connecting' | 'connected' | 'refused' | 'unreachable';
+  state: 'off' | 'unpaired' | 'connecting' | 'connected' | 'refused' | 'unreachable' | 'mismatch';
   at: number;
   detail?: string;
 }

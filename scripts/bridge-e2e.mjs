@@ -11,6 +11,7 @@
 //   E5 the MCP server's capture_tab returns the report and the image
 //   E6 with agent captures off, a capture request is refused, plainly
 //   E7 a wrong pairing code is refused and the status says so
+//   E11 something else on the port gets nothing: no code, no proof, no capture
 //   E9 a responsive sweep reaches the agent with every width
 //   E10 a tab that moves to a site agents may not capture, as it comes to
 //       the front, is refused - the agent gets nothing
@@ -252,12 +253,39 @@ try {
   let wrongState = null;
   for (let i = 0; i < 40; i++) {
     wrongState = await options.eval(`chrome.storage.session.get('bridgeStatus').then((s) => s.bridgeStatus?.state ?? null)`);
-    if (wrongState === 'refused') break;
+    if (wrongState === 'mismatch') break;
     await sleep(250);
   }
   const after = JSON.parse((await ck('status', '--json')).out || '{}');
-  verdict('E7 a wrong pairing code is refused', wrongState === 'refused' && after.connected === false,
+  verdict('E7 a wrong pairing code is refused', wrongState === 'mismatch' && after.connected === false,
     `settings page says ${wrongState}, helper connected=${after.connected}`);
+
+  // E11: an impostor on another port; Capture Kit is pointed at it with the
+  // real code. It must refuse to go on and say why, having sent nothing.
+  const { WebSocketServer } = await import(join(ROOT, 'bridge/node_modules/ws/wrapper.mjs'));
+  const impostorPort = BRIDGE_PORT + 50;
+  const heard = [];
+  const impostor = new WebSocketServer({ host: '127.0.0.1', port: impostorPort });
+  impostor.on('connection', (ws) => {
+    ws.on('message', (data) => {
+      heard.push(String(data));
+      const msg = JSON.parse(String(data));
+      if (msg.type === 'hello') ws.send(JSON.stringify({ type: 'challenge', nonce: 'n'.repeat(24), proof: 'guess' }));
+    });
+  });
+  await options.eval(`chrome.storage.local.set(${JSON.stringify({ bridgeToken: token, bridgePort: impostorPort, bridgeCaptureMode: 'any' })})`);
+  let impostorState = null;
+  for (let i = 0; i < 40; i++) {
+    impostorState = await options.eval(`chrome.storage.session.get('bridgeStatus').then((s) => s.bridgeStatus?.state ?? null)`);
+    if (impostorState === 'mismatch') break;
+    await sleep(250);
+  }
+  await userCapture();
+  await sleep(800);
+  impostor.close();
+  const leaked = heard.some((m) => m.includes(token) || /"type":"(auth|capture|result)"/.test(m));
+  verdict('E11 something else on the port gets nothing', impostorState === 'mismatch' && heard.length >= 1 && !leaked,
+    `settings page says ${impostorState}; the impostor heard ${heard.length} message(s): ${heard.map((m) => JSON.parse(m).type).join(', ')}; code or capture leaked: ${leaked}`);
   options.close();
 } catch (error) {
   console.error('e2e failed to run:', error);

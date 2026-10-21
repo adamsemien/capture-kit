@@ -161,10 +161,14 @@ setting, **Agent captures**, off by default, with the same Off / Allowed sites
 / Any page choices as the table above. An agent capture brings its tab to the
 front, like a page-fired one. A refused request says why.
 
-The helper listens on `127.0.0.1` only. It refuses a browser page outright,
-refuses Capture Kit without the pairing code, and refuses `ck` and the MCP
-server unless they read the code from `~/.capture-kit/bridge.json`, a file only
-you can read. Captures are kept in `~/.capture-kit/captures/`, the newest 20.
+The helper listens on `127.0.0.1` only and refuses a browser page outright.
+The pairing code itself is never sent: Capture Kit, `ck` and the MCP server
+each make the helper prove it holds the code before they send anything, then
+prove it themselves. `ck` and the MCP server read it from
+`~/.capture-kit/bridge.json`, a file only you can read - so on a shared
+computer, another account that grabs the port while the helper is stopped
+learns nothing, and Capture Kit says something other than the helper
+answered. Captures are kept in `~/.capture-kit/captures/`, the newest 20.
 `ck stop` stops the helper. For a new pairing code, run `ck stop`, delete
 `~/.capture-kit/bridge.json`, then `ck pair` and paste the new code.
 

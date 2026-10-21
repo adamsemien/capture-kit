@@ -2,11 +2,10 @@
 //
 // ~/.capture-kit/bridge.json holds the port and a random pairing code. The
 // folder is readable by you only (0700) and the file likewise (0600). The
-// same code is pasted once into Capture Kit's settings; without it the
-// extension's connection is refused, and so is every request from ck or the
-// MCP server.
+// same code is pasted once into Capture Kit's settings. It is never sent:
+// each side proves it holds it (see proof.mjs).
 
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -46,12 +45,4 @@ export function loadConfig() {
   writeFileSync(path, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
   chmodSync(path, 0o600);
   return { port: Number(process.env.CAPTURE_KIT_PORT ?? config.port), token: config.token, path };
-}
-
-/** Constant-time comparison, so the code cannot be guessed a character at a time. */
-export function tokenMatches(given, expected) {
-  if (typeof given !== 'string' || typeof expected !== 'string') return false;
-  const a = Buffer.from(given);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
 }

@@ -10,6 +10,13 @@
  *
  * Nothing is sent anywhere else, and nothing at all while the bridge is off.
  *
+ * Proving who is who: the pairing code is never sent. Capture Kit says hello
+ * with a random nonce; the helper must answer with an HMAC of both nonces
+ * keyed by the code before Capture Kit answers with its own, and before it
+ * sends any capture or acts on any request. A program that merely took the
+ * port - another account on a shared computer, while the helper is stopped -
+ * gets nothing (Codex review on #28; the helper side is bridge/src/proof.mjs).
+ *
  * Staying connected: since Chrome 116 a WebSocket that exchanges a message
  * every 30 s keeps the service worker alive, so a keepalive goes out every
  * 20 s (developer.chrome.com/docs/extensions/how-to/web-platform/websockets).
@@ -49,6 +56,31 @@ export interface BridgeRecord {
 export interface BridgeHandlers {
   capture(params: { urlContains?: string; scroll?: boolean }): Promise<{ ok: boolean; id?: string; error?: string }>;
   tabs(): Promise<{ ok: boolean; tabs?: { title: string; url: string; active: boolean }[]; error?: string }>;
+}
+
+/** HMAC-SHA256 over "role|a|b", keyed by the pairing code, base64url - as bridge/src/proof.mjs. */
+async function proof(token: string, role: string, a: string, b: string): Promise<string> {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode(token), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(`${role}|${a}|${b}`)));
+  let bin = '';
+  for (const byte of mac) bin += String.fromCharCode(byte);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function randomNonce(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(18));
+  let bin = '';
+  for (const byte of bytes) bin += String.fromCharCode(byte);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Equal-length strings compared without stopping at the first difference. */
+function sameProof(a: unknown, b: string): boolean {
+  if (typeof a !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }
 
 let socket: WebSocket | null = null;
@@ -129,20 +161,32 @@ export async function syncBridge(): Promise<void> {
   try {
     const ws = new WebSocket(`ws://127.0.0.1:${settings.bridgePort}`);
     socket = ws;
+    const mine = randomNonce();
+    /** Set once the helper has proved itself; until then nothing else is answered. */
+    let helperProved = false;
+    let mismatch = false;
     ws.onopen = () => {
-      ws.send(
-        JSON.stringify({
-          type: 'hello',
-          token: settings.bridgeToken,
-          version: chrome.runtime.getManifest().version,
-        }),
-      );
+      ws.send(JSON.stringify({ type: 'hello', nonce: mine, version: chrome.runtime.getManifest().version }));
     };
-    ws.onmessage = (event) => {
-      let msg: { type?: string; id?: string; action?: string; params?: Record<string, unknown> };
+    ws.onmessage = async (event) => {
+      let msg: { type?: string; id?: string; action?: string; params?: Record<string, unknown>; nonce?: string; proof?: string };
       try {
         msg = JSON.parse(String(event.data));
       } catch {
+        return;
+      }
+      if (!helperProved) {
+        const expected =
+          msg.type === 'challenge' && typeof msg.nonce === 'string'
+            ? await proof(settings.bridgeToken, 'helper', mine, msg.nonce)
+            : null;
+        if (!expected || !sameProof(msg.proof, expected)) {
+          mismatch = true;
+          ws.close(4403, 'no proof of the pairing code');
+          return;
+        }
+        helperProved = true;
+        ws.send(JSON.stringify({ type: 'auth', proof: await proof(settings.bridgeToken, 'extension', msg.nonce as string, mine) }));
         return;
       }
       if (msg.type === 'welcome') {
@@ -161,10 +205,14 @@ export async function syncBridge(): Promise<void> {
       const refused = event.code === 4401;
       teardown();
       void setStatus(
-        refused ? 'refused' : 'unreachable',
-        refused
-          ? 'The helper did not accept the pairing code. Run "ck pair" again and paste the new code.'
-          : 'The helper is not running. Any ck command or the MCP server starts it; Capture Kit retries every minute.',
+        mismatch ? 'mismatch' : refused ? 'refused' : 'unreachable',
+        mismatch
+          // The two causes look the same from here, by design: neither side
+          // shows the other anything until both have proved the code.
+          ? `Whatever answered on port ${settings.bridgePort} did not prove it has this pairing code, so Capture Kit sent it nothing. Either the code here is not the helper's - run "ck pair" and paste it again - or something other than the helper is using that port.`
+          : refused
+            ? 'The helper did not accept the pairing code. Run "ck pair" again and paste the new code.'
+            : 'The helper is not running. Any ck command or the MCP server starts it; Capture Kit retries every minute.',
       );
     };
     ws.onerror = () => {

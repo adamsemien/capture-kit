@@ -238,6 +238,7 @@ const BRIDGE_STATUS_TEXT: Record<BridgeStatus['state'], string> = {
   connected: 'Connected. Agents on this computer can read your captures.',
   refused: 'The helper refused the pairing code.',
   unreachable: 'The helper is not running.',
+  mismatch: 'The helper on that port did not prove it has this pairing code. Capture Kit sent it nothing.',
 };
 
 function renderBridgeStatus(status: BridgeStatus | undefined): void {

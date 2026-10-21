@@ -36,14 +36,22 @@ function record(id, extra = {}) {
   };
 }
 
-/** A pretend extension: connects, says hello, answers requests with `onRequest`. */
+const { nonce, proof } = await import('../src/proof.mjs');
+
+/** A pretend extension: proves itself with `code`, answers requests with `onRequest`. */
 function fakeExtension({ code = token, origin = EXT_ORIGIN, onRequest } = {}) {
   return new Promise((resolve) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { origin } });
-    const state = { ws, closedWith: null, welcomed: false };
-    ws.on('open', () => ws.send(JSON.stringify({ type: 'hello', token: code, version: 'test' })));
+    const mine = nonce();
+    const state = { ws, closedWith: null, welcomed: false, helperProved: null };
+    ws.on('open', () => ws.send(JSON.stringify({ type: 'hello', nonce: mine, version: 'test' })));
     ws.on('message', async (data) => {
       const msg = JSON.parse(String(data));
+      if (msg.type === 'challenge') {
+        state.helperProved = msg.proof === proof(token, 'helper', mine, msg.nonce);
+        ws.send(JSON.stringify({ type: 'auth', proof: proof(code, 'extension', msg.nonce, mine) }));
+        return;
+      }
       if (msg.type === 'welcome') { state.welcomed = true; resolve(state); }
       if (msg.type === 'request' && onRequest) {
         const result = await onRequest(msg, ws);
@@ -84,14 +92,60 @@ test('the config file and folder are private to the user', () => {
   assert.ok(cfg.token.length >= 40);
 });
 
-test('HTTP needs the pairing code, no Origin, and a local Host', async () => {
+/** A signed request the way the client makes one: challenge first, then the proof. */
+async function signed(path, { code = token, method = 'GET', headers = {}, reuse } = {}) {
+  const mine = nonce();
+  const c = await raw(`/challenge?c=${mine}`);
+  const n = reuse ?? c.body.nonce;
+  return { challenge: c, n, res: await raw(path, { 'x-capture-kit-auth': `${n}.${proof(code, 'client', n, `${method} ${path}`)}`, ...headers }) };
+}
+
+test('HTTP needs a proof of the pairing code, no Origin, and a local Host', async () => {
   assert.equal((await raw('/status')).status, 401);
-  assert.equal((await raw('/status', { authorization: 'Bearer wrong' })).status, 401);
-  assert.equal((await raw('/status', { authorization: `Bearer ${token}`, origin: 'https://evil.example' })).status, 403);
-  assert.equal((await raw('/status', { authorization: `Bearer ${token}`, host: 'evil.example' })).status, 403);
-  const ok = await raw('/status', { authorization: `Bearer ${token}` });
-  assert.equal(ok.status, 200);
-  assert.equal(ok.body.connected, false);
+  assert.equal((await raw('/status', { authorization: `Bearer ${token}` })).status, 401, 'the bare code is not accepted');
+  assert.equal((await signed('/status', { code: 'wrong-code-'.repeat(4) })).res.status, 401);
+  assert.equal((await signed('/status', { headers: { origin: 'https://evil.example' } })).res.status, 403);
+  assert.equal((await signed('/status', { headers: { host: 'evil.example' } })).res.status, 403);
+  const ok = await signed('/status');
+  assert.equal(ok.res.status, 200);
+  assert.equal(ok.res.body.connected, false);
+  // The helper proved itself in the challenge, and a challenge works once.
+  const mine = nonce();
+  const c = await raw(`/challenge?c=${mine}`);
+  assert.equal(c.body.proof, proof(token, 'helper', mine, c.body.nonce));
+  assert.equal((await signed('/status', { reuse: ok.n })).res.status, 401, 'a used challenge is refused');
+  // A proof for one request does not authorize another.
+  const other = await raw(`/challenge?c=${nonce()}`);
+  const forStatus = proof(token, 'client', other.body.nonce, 'GET /status');
+  assert.equal((await raw('/captures', { 'x-capture-kit-auth': `${other.body.nonce}.${forStatus}` })).status, 401);
+});
+
+test('ck and the MCP server send nothing to a program that is not the helper', async () => {
+  const { createServer } = await import('node:http');
+  const seen = [];
+  const fakePort = port + 2;
+  const fake = createServer((req, res) => {
+    seen.push({ url: req.url, headers: req.headers });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, helper: 'capture-kit', nonce: 'x'.repeat(24), proof: 'not-a-proof' }));
+  });
+  await new Promise((r) => fake.listen(fakePort, '127.0.0.1', r));
+  const prev = process.env.CAPTURE_KIT_PORT;
+  process.env.CAPTURE_KIT_PORT = String(fakePort);
+  try {
+    await assert.rejects(createClient().latest(), /Something other than the Capture Kit helper/);
+  } finally {
+    if (prev === undefined) delete process.env.CAPTURE_KIT_PORT;
+    else process.env.CAPTURE_KIT_PORT = prev;
+    fake.close();
+  }
+  assert.ok(seen.length >= 1);
+  for (const r of seen) {
+    assert.match(r.url, /^\/challenge\?c=/, `only challenges reach it, got ${r.url}`);
+    assert.equal(r.headers['x-capture-kit-auth'], undefined);
+    assert.equal(r.headers.authorization, undefined);
+    assert.ok(!JSON.stringify(r).includes(token), 'the pairing code never reaches it');
+  }
 });
 
 test('a web page cannot connect as the extension, and a wrong code is refused', async () => {
@@ -100,6 +154,14 @@ test('a web page cannot connect as the extension, and a wrong code is refused', 
   const wrong = await fakeExtension({ code: 'nope' });
   assert.equal(wrong.welcomed, false);
   assert.equal(wrong.closedWith, 4401);
+  assert.equal(wrong.helperProved, true, 'the helper proved itself first');
+  // The old hello that carried the code itself is refused.
+  const legacy = await new Promise((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { origin: EXT_ORIGIN } });
+    ws.on('open', () => ws.send(JSON.stringify({ type: 'hello', token, version: 'old' })));
+    ws.on('close', (code) => resolve(code));
+  });
+  assert.equal(legacy, 4401);
 });
 
 test('a paired extension connects and its captures are stored as files', async () => {
@@ -166,9 +228,18 @@ test('stopping the helper answers a wait that is still open', async () => {
   const other = startDaemon({ port: otherPort, token, store: new CaptureStore(join(home, 'captures-stop')) });
   await other.ready;
   const started = Date.now();
+  const mine = nonce();
+  const c = await new Promise((resolve) => {
+    request({ host: '127.0.0.1', port: otherPort, path: `/challenge?c=${mine}` }, (res) => {
+      let t = '';
+      res.on('data', (d) => (t += d));
+      res.on('end', () => resolve(JSON.parse(t)));
+    }).end();
+  });
+  const waitAuth = `${c.nonce}.${proof(token, 'client', c.nonce, 'GET /wait?timeout=600')}`;
   const waiting = new Promise((resolve) => {
     const req = request(
-      { host: '127.0.0.1', port: otherPort, path: '/wait?timeout=600', headers: { authorization: `Bearer ${token}` } },
+      { host: '127.0.0.1', port: otherPort, path: '/wait?timeout=600', headers: { 'x-capture-kit-auth': waitAuth } },
       (res) => {
         let body = '';
         res.on('data', (d) => (body += d));
