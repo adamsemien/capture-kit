@@ -6,7 +6,25 @@ export interface PageDimensions {
 export type CaptureFormat = 'png' | 'jpeg';
 
 /** Which pipeline produced the image — logged into the bundle markdown. */
-export type CaptureMode = 'standard' | 'expanded-inner-scroll';
+export type CaptureMode = 'standard' | 'expanded-inner-scroll' | 'scroll-stitch';
+
+/** What the scroll-and-stitch path scrolled, and why it ran (see scroll-stitch.ts). */
+export interface ScrollStitchInfo {
+  target: 'page' | 'panel';
+  /** How the target was chosen: under the pointer, the largest panel, or the page itself. */
+  how: 'pointer' | 'largest' | 'page';
+  /** Short description of the panel ("div#editor"), or "the page". */
+  label: string;
+  /** asked = the scroll-capture command; canvas / abandoned = picked automatically. */
+  reason: 'asked' | 'canvas' | 'abandoned';
+  frames: number;
+  /** The content got longer while it was scrolled; the capture stops at the starting length. */
+  grew: boolean;
+  /** Scrolling stopped short of the measured bottom: the content got shorter while it was scrolled. */
+  shrank?: boolean;
+  /** A panel taller than the window: this many rows at its bottom never came into view. */
+  cutRows?: number;
+}
 
 /** CDP quality is 0–100; canvas encoding divides by 100. */
 export const JPEG_QUALITY = 85;
@@ -59,6 +77,12 @@ export interface CaptureRequest {
    * (NOBC-161). Only the report path asks; a plain screenshot does not pay for it.
    */
   slices?: boolean;
+  /**
+   * Scroll the page (or the panel under the pointer) a screen at a time and
+   * stitch the screens, instead of rendering tall. Set by the scroll-capture
+   * command and button.
+   */
+  scrollStitch?: boolean;
 }
 
 /** One full-resolution piece of a tall capture, in image pixels from the top. */
@@ -133,6 +157,8 @@ export interface CaptureResult {
    * was captured under a full-height viewport even though it fit one shot.
    */
   drawnOnScroll?: boolean;
+  /** Present when the image was made by scrolling and stitching. */
+  scrollStitch?: ScrollStitchInfo;
   /** Present only when the URL footer was composited onto this image. */
   stamp?: StampInfo;
   /**

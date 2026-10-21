@@ -701,6 +701,8 @@ async function captureReport(
   folder = '',
   /** Ordinal for the mirror copy ("01"); the extension follows the real format. */
   mirrorBasename?: string,
+  /** Scroll and stitch instead of rendering tall (the scroll-capture command). */
+  scrollStitch = false,
 ): Promise<ReportArtifacts> {
   const tabId = tab.id as number;
   const { snapshot, recorderActive } = await getSnapshot(tabId);
@@ -718,6 +720,7 @@ async function captureReport(
     // Tall pages also come back as screen-sized slices an assistant can read
     // (NOBC-161), written beside the image and listed in the report.
     slices: true,
+    scrollStitch,
   });
 
   const basename = captureBasename(page.meta.title, page.meta.url, capturedAt);
@@ -749,6 +752,7 @@ async function captureReport(
     panelsReflowed: result.panelsReflowed,
     innerScrollAbandoned: result.innerScrollAbandoned,
     drawnOnScroll: result.drawnOnScroll,
+    scrollStitch: result.scrollStitch,
     segments: result.segments,
     imageSize: result.imageSize,
     trigger,
@@ -919,7 +923,11 @@ async function copyImageThroughPage(
  * and without the pin an agent's request photographed whatever the person
  * had in front of them instead (NOBC-166 follow-up).
  */
-async function captureBundle(trigger: CaptureTrigger, targetTabId?: number): Promise<CaptureResponse> {
+async function captureBundle(
+  trigger: CaptureTrigger,
+  targetTabId?: number,
+  options: { scroll?: boolean } = {},
+): Promise<CaptureResponse> {
   const announce = trigger !== 'popup';
   try {
     const tab = await targetTab(targetTabId);
@@ -936,7 +944,7 @@ async function captureBundle(trigger: CaptureTrigger, targetTabId?: number): Pro
     await ensureOutputReadme();
 
     await beginIndicator();
-    const report = await captureReport(tab, settings, trigger);
+    const report = await captureReport(tab, settings, trigger, '', undefined, options.scroll === true);
     const {
       capturedAt, imageFilename, markdown, clipboardMarkdown,
       imageMime, imageDownloadId, result,
@@ -1009,6 +1017,7 @@ async function captureBundle(trigger: CaptureTrigger, targetTabId?: number): Pro
             result.panelsReflowed,
             result.innerScrollAbandoned,
             result.drawnOnScroll,
+            result.scrollStitch,
           ),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
@@ -1086,6 +1095,7 @@ async function capturePage(asPng: boolean, targetTabId?: number): Promise<Captur
             result.panelsReflowed,
             result.innerScrollAbandoned,
             result.drawnOnScroll,
+            result.scrollStitch,
           ),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
@@ -1814,7 +1824,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
     return true;
   }
   if (message?.type === 'CAPTURE_BUNDLE') {
-    void captureBundle('popup', message.tabId).then(sendResponse);
+    void captureBundle('popup', message.tabId, { scroll: message.scroll === true }).then(sendResponse);
     return true;
   }
   if (message?.type === 'CAPTURE_PAGE') {
@@ -1856,6 +1866,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
 // Chrome names the tab the shortcut was pressed in; that tab is the target.
 chrome.commands.onCommand.addListener((command, tab) => {
   if (command === 'capture-bundle') void captureBundle('shortcut', tab?.id);
+  if (command === 'capture-scroll') void captureBundle('scroll-shortcut', tab?.id, { scroll: true });
   if (command === 'record-clip') void recordClip('clip-shortcut', tab?.id);
 });
 

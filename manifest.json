@@ -53,6 +53,10 @@
       "suggested_key": { "default": "Ctrl+Shift+9", "mac": "Command+Shift+9" },
       "description": "Capture + Report (image + markdown, copied to clipboard)"
     },
+    "capture-scroll": {
+      "suggested_key": { "default": "Ctrl+Shift+7", "mac": "Command+Shift+7" },
+      "description": "Scroll capture (scrolls the page or the panel under the pointer and stitches the screens)"
+    },
     "record-clip": {
       "suggested_key": { "default": "Ctrl+Shift+8", "mac": "Command+Shift+8" },
       "description": "Record clip (a few seconds of the tab; frames that changed go to the clipboard)"

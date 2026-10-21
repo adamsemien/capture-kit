@@ -39,6 +39,14 @@ import {
   NAV_WIDTH,
   SENTINEL_RGB,
   V_RGB,
+  W_RGB,
+  X_RGB,
+  R_RGB,
+  O_RGB,
+  T_RGB,
+  M_RGB,
+  P_RGB,
+  Y_RGB,
   fixture as drawerFixture,
   viewportFor,
 } from './drawer-fixture.mjs';
@@ -1209,6 +1217,207 @@ if (process.argv.includes('--only-flash')) {
   process.exit(0);
 }
 
+// --- CHECK A18: scroll and stitch ----------------------------------------
+// W: a canvas app (page does not scroll, a panel does, a sticky canvas paints
+//    only the rows on screen) - an ordinary capture must pick stitching on
+//    its own and get all three bands.
+// X: scroll capture with the pointer over a 300px panel stitches that panel.
+// Y: scroll capture of a long page with a sticky header: header once, the
+//    last block present.
+const W_VARIANT = 'W canvas-app';
+const X_VARIANT = 'X pointer-panel';
+const Q_VARIANT = 'Q low-panel';
+const R_VARIANT = 'R clipped-panel';
+const N_VARIANT = 'N nested-panel';
+const U_VARIANT = 'U canvas-beside-list';
+const T_VARIANT = 'T wide-panel';
+const M_VARIANT = 'M footer-and-carousel';
+const P_VARIANT = 'P snap-page';
+const O_VARIANT = 'O sticky-page-panel';
+const Y_VARIANT = 'Y sticky-header-page';
+const named18 = (obj) => Object.entries(obj).map(([name, c]) => ({ name, r: c.r, g: c.g, b: c.b }));
+async function scrollCaptureVariant(variant, colours, hover, { scrollTo = 0, leave = false, setup = null, probe = null, zoom = 1 } = {}) {
+  const url = `http://127.0.0.1:${HTTP_PORT}/drawer?v=${encodeURIComponent(variant)}&manual=1&n=${Date.now()}`;
+  const t = await openExact(url);
+  if (!t) return { error: 'fixture tab never appeared' };
+  await sleep(800);
+  const tabId = await options.eval(
+    `chrome.tabs.query({}).then((ts) => ts.find((x) => x.url === ${JSON.stringify(url)})?.id ?? null)`,
+  );
+  await options.eval(`chrome.tabs.update(${tabId}, { active: true }).then(() => true)`);
+  if (zoom !== 1) {
+    await options.eval(`chrome.tabs.setZoom(${tabId}, ${zoom}).then(() => true)`);
+    await sleep(500);
+  }
+  const live = new Session(t.webSocketDebuggerUrl);
+  await live.open();
+  await live.send('Runtime.enable');
+  if (setup) {
+    await live.send('Runtime.evaluate', { expression: setup });
+    await sleep(300);
+  }
+  if (scrollTo) {
+    await live.send('Runtime.evaluate', { expression: `window.scrollTo(0, ${scrollTo})` });
+    await sleep(300);
+  }
+  if (typeof hover === 'string') {
+    // An expression giving [x, y] - for a target whose position is only known in the page.
+    hover = (await live.send('Runtime.evaluate', { expression: hover, returnByValue: true })).result.value;
+  }
+  if (hover) {
+    // A negative y counts up from the bottom of the window.
+    const vh = hover[1] < 0
+      ? (await live.send('Runtime.evaluate', { expression: 'window.innerHeight', returnByValue: true })).result.value
+      : 0;
+    await live.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hover[0], y: hover[1] < 0 ? vh + hover[1] : hover[1] });
+  }
+  // The pointer leaves the page, as it does on its way to the popup.
+  if (leave) await live.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: -20, y: -20 });
+  await sleep(300);
+  const hoverLeft = leave
+    ? (await live.send('Runtime.evaluate', { expression: `[...document.querySelectorAll(':hover')].map((e) => e.tagName).join('>')`, returnByValue: true })).result.value
+    : null;
+  const response = await options.eval(`chrome.runtime.sendMessage({ type: 'CAPTURE_BUNDLE', tabId: ${tabId}, scroll: true })`);
+  await sleep(1500);
+  const zoomAfter = zoom !== 1 ? await options.eval(`chrome.tabs.getZoom(${tabId})`) : 1;
+  const after = (await live.send('Runtime.evaluate', {
+    expression: probe ?? `({ page: window.scrollY, panel: document.getElementById('panel')?.scrollTop ?? null })`,
+    returnByValue: true,
+  })).result.value;
+  live.close();
+  const image = newestFile('.jpg');
+  const report = newestFile('.md');
+  const modeLine = report ? readCapture(report).split('\n').filter((l) => /Full page:|Capture mode:/.test(l)) : [];
+  const px = await inspectColours(image, colours);
+  // Zoom is per site in Chrome, so it is put back while the tab still exists.
+  if (zoom !== 1) await options.eval(`chrome.tabs.setZoom(${tabId}, 1).then(() => true)`);
+  await cdp(`/json/close/${t.id}`);
+  return { response, modeLine, px, after: after && typeof after === 'object' ? { ...after, zoom: zoomAfter } : after, hoverLeft };
+}
+async function stitchCheck() {
+  await setSetting(options, { openResult: false, autoCopyImage: false, stampUrlOnImage: false, pageTriggerMode: 'any' });
+  // W through the ordinary page-fired capture: the canvas case must be picked automatically.
+  const w = await captureVariant(W_VARIANT, named18(W_RGB));
+  const x = await scrollCaptureVariant(X_VARIANT, named18(X_RGB), [200, 200]);
+  const y = await scrollCaptureVariant(Y_VARIANT, named18(Y_RGB), [300, 300]);
+  const q = await scrollCaptureVariant(Q_VARIANT, named18(X_RGB), [200, 250], { scrollTo: 1400, leave: true });
+  const rr = await scrollCaptureVariant(R_VARIANT, named18(R_RGB), [200, -25]);
+  // The outer container scrolled so the inner panel's top sits 40px into it; the pointer on the inner panel.
+  const n = await scrollCaptureVariant(N_VARIANT, named18(R_RGB), [200, 180], {
+    setup: `document.getElementById('outer').scrollTop = 460`,
+    probe: `({ outer: document.getElementById('outer').scrollTop, panel: document.getElementById('panel').scrollTop })`,
+  });
+  // Page scrolled to 250 under its sticky header; the panel peeks out of the bottom of an unscrolled container.
+  const o = await scrollCaptureVariant(O_VARIANT, named18(O_RGB),
+    `(() => { const p = document.getElementById('panel').getBoundingClientRect(); const c = document.getElementById('outer').getBoundingClientRect(); return [p.left + 60, Math.round((Math.max(p.top, c.top) + Math.min(p.bottom, c.bottom, innerHeight)) / 2)]; })()`,
+    {
+      scrollTo: 250,
+      probe: `({ page: window.scrollY, outer: document.getElementById('outer').scrollTop, panel: document.getElementById('panel').scrollTop })`,
+    });
+  // Q again at 150% zoom, pointer gone: the panel is still found where it was at that zoom.
+  const qz = await scrollCaptureVariant(Q_VARIANT, named18(X_RGB), [200, 250], { scrollTo: 1400, leave: true, zoom: 1.5 });
+  // U through the ordinary page-fired capture: the detected canvas panel, not the larger list.
+  const u = await captureVariant(U_VARIANT, named18(W_RGB));
+  // T: the panel scrolled all the way right; the stitch must show the right half only.
+  const tt = await scrollCaptureVariant(T_VARIANT, named18({ ...X_RGB, ...T_RGB }), [200, 200], {
+    setup: `(() => { const p = document.getElementById('panel'); p.scrollLeft = p.scrollWidth; })()`,
+    probe: `({ panelLeft: document.getElementById('panel').scrollLeft, panelMax: document.getElementById('panel').scrollWidth - document.getElementById('panel').clientWidth })`,
+  });
+  // M: the whole page stitched, carousel scrolled to its second half, pointer on plain page.
+  const m = await scrollCaptureVariant(M_VARIANT, named18(M_RGB), [300, 380], {
+    setup: `(() => { const c = document.getElementById('carousel'); c.scrollLeft = c.scrollWidth; })()`,
+    probe: `({ carousel: document.getElementById('carousel').scrollLeft, page: window.scrollY })`,
+  });
+  // P: a snapping page under a sticky header, stitched whole.
+  const p = await scrollCaptureVariant(P_VARIANT, named18(P_RGB), [300, 300], {
+    probe: `({ snap: getComputedStyle(document.documentElement).scrollSnapType })`,
+  });
+  return { w, x, y, q, r: rr, n, o, qz, u, t: tt, m, p };
+}
+function colourMap(px) {
+  return Object.fromEntries((px?.colours ?? []).map((c) => [c.name, c.pixels]));
+}
+function a18Verdict(r) {
+  const problems = [];
+  const w = colourMap(r.w.px);
+  if (!['a', 'b', 'c'].every((k) => (w[k] ?? 0) > 200)) problems.push(`canvas app missing bands: ${JSON.stringify(w)}`);
+  if (!/scrolled and stitched/.test((r.w.modeLine ?? []).join(' '))) problems.push('canvas app was not stitched automatically');
+  const x = colourMap(r.x.px);
+  if (!['d', 'e', 'f'].every((k) => (x[k] ?? 0) > 200)) problems.push(`pointer panel missing blocks: ${JSON.stringify(x)}`);
+  if (!/panel under your pointer/.test((r.x.modeLine ?? []).join(' '))) problems.push('pointer panel was not the target');
+  const q = colourMap(r.q.px);
+  if (!['d', 'e', 'f'].every((k) => (q[k] ?? 0) > 200)) problems.push(`low panel (page scrolled, pointer gone) missing blocks: ${JSON.stringify(q)}`);
+  if (!/panel under your pointer/.test((r.q.modeLine ?? []).join(' '))) problems.push('low panel was not the target once the pointer left');
+  if (r.q.after?.page !== 1400 || r.q.after?.panel !== 0) problems.push(`low panel capture left the page at ${r.q.after?.page} and the panel at ${r.q.after?.panel} (want 1400 and 0)`);
+  const rc = colourMap(r.r.px);
+  if (!['d', 'e', 'f', 'tail'].every((k) => (rc[k] ?? 0) > 200)) problems.push(`clipped panel lost rows: ${JSON.stringify(rc)}`);
+  for (const k of ['x', 'y', 'q', 'r', 'n', 'o', 'qz', 't', 'm', 'p']) {
+    if (r[k]?.response?.ok !== true) problems.push(`${k}: the capture itself failed (${r[k]?.response?.reason ?? r[k]?.response?.error ?? JSON.stringify(r[k]?.response)})`);
+  }
+  if ((r.n.modeLine ?? []).join(' ') === (r.r.modeLine ?? []).join(' ')) problems.push('nested panel report is the clipped panel report again - no new capture');
+  const pc = colourMap(r.p.px);
+  if ((pc.gap ?? 0) > 100 || !['s1', 's2', 's3'].every((k) => (pc[k] ?? 0) > 1000)) problems.push(`snapping page left gaps or lost sections (gap ${pc.gap ?? 0}, s1/s2/s3 ${pc.s1 ?? 0}/${pc.s2 ?? 0}/${pc.s3 ?? 0})`);
+  if (!/mandatory/.test(r.p.after?.snap ?? '')) problems.push(`the page's scroll snapping was not restored (${r.p.after?.snap})`);
+  const mc = colourMap(r.m.px);
+  if ((mc.slideTwo ?? 0) < 500 || (mc.slideOne ?? 0) > 200) problems.push(`a carousel scrolled sideways was captured from its start (second half ${mc.slideTwo ?? 0}, first half ${mc.slideOne ?? 0})`);
+  if ((mc.foot ?? 0) < 500 || (mc.foot ?? 0) > 4000) problems.push(`the sticky footer appears ${mc.foot ?? 0} px (want once, roughly 500-4000)`);
+  const tc = colourMap(r.t.px);
+  if ((tc.right ?? 0) < 1000 || ['d', 'e', 'f'].some((k) => (tc[k] ?? 0) > 200)) {
+    problems.push(`a panel scrolled right was captured from its left edge (right ${tc.right ?? 0}, d/e/f ${tc.d ?? 0}/${tc.e ?? 0}/${tc.f ?? 0})`);
+  }
+  if (r.t.after?.panelLeft !== r.t.after?.panelMax) problems.push(`the wide panel was left at ${r.t.after?.panelLeft} of ${r.t.after?.panelMax}`);
+  const qzc = colourMap(r.qz.px);
+  if (!['d', 'e', 'f'].every((k) => (qzc[k] ?? 0) > 200) || !/panel under your pointer/.test((r.qz.modeLine ?? []).join(' '))) {
+    problems.push(`at 150% zoom the panel under the pointer was not stitched: ${JSON.stringify(qzc)} ${(r.qz.modeLine ?? []).join(' ')}`);
+  }
+  if (r.qz.after?.zoom !== 1.5 || r.qz.after?.panel !== 0) problems.push(`at 150% zoom the capture left zoom/panel at ${r.qz.after?.zoom}/${r.qz.after?.panel}`);
+  if (r.u.error || r.u.px?.error) problems.push(`u: the capture itself failed (${r.u.error ?? r.u.px.error})`);
+  const uc = colourMap(r.u.px);
+  if (!['a', 'b', 'c'].every((k) => (uc[k] ?? 0) > 200) || !/div#scroller/.test((r.u.modeLine ?? []).join(' '))) {
+    problems.push(`canvas beside a larger list: stitched the wrong panel (${(r.u.modeLine ?? []).join(' ')}; ${JSON.stringify(uc)})`);
+  }
+  const oc = colourMap(r.o.px);
+  if (!['d', 'e', 'f', 'tail'].every((k) => (oc[k] ?? 0) > 200)) problems.push(`panel under a sticky page header lost rows: ${JSON.stringify(oc)}`);
+  if ((oc.header ?? 0) > 50) problems.push(`the page's sticky header was stitched into the panel (${oc.header} px)`);
+  if (r.o.after?.page !== 250 || r.o.after?.outer !== 0 || r.o.after?.panel !== 0) problems.push(`sticky-page panel capture left page/outer/panel at ${r.o.after?.page}/${r.o.after?.outer}/${r.o.after?.panel} (want 250/0/0)`);
+  const nc = colourMap(r.n.px);
+  if (!['d', 'e', 'f', 'tail'].every((k) => (nc[k] ?? 0) > 200)) problems.push(`nested panel lost rows: ${JSON.stringify(nc)}`);
+  if (!/panel under your pointer/.test((r.n.modeLine ?? []).join(' '))) problems.push('nested panel was not the target');
+  if (r.n.after?.outer !== 460 || r.n.after?.panel !== 0) problems.push(`nested panel capture left the outer container at ${r.n.after?.outer} and the panel at ${r.n.after?.panel} (want 460 and 0)`);
+  const y = colourMap(r.y.px);
+  if ((y.end ?? 0) < 100) problems.push(`sticky page lost its last block (${y.end ?? 0} px)`);
+  return problems.length
+    ? `FAIL — ${problems.join('; ')}`
+    : `PASS — canvas app stitched automatically with all 3 bands; pointer panel stitched whole; clipped panel complete to its last rows (tail ${colourMap(r.r.px).tail ?? 0}); nested panel complete (tail ${colourMap(r.n.px).tail ?? 0}) and outer container left at ${r.n.after?.outer}; under a sticky page header: header ${colourMap(r.o.px).header ?? 0} px, tail ${colourMap(r.o.px).tail ?? 0}, page/outer left at ${r.o.after?.page}/${r.o.after?.outer}; low panel stitched with the pointer gone and page/panel left at ${r.q.after?.page}/${r.q.after?.panel} (hover after leaving: ${r.q.hoverLeft || "none"}); sticky page complete (a/b/c ${w.a}/${w.b}/${w.c}, d/e/f ${x.d}/${x.e}/${x.f}, end ${y.end})`;
+}
+
+if (process.argv.includes('--only-stitch')) {
+  heading('CHECK A18 — scroll and stitch');
+  const r = await stitchCheck();
+  for (const k of ['w', 'x', 'y', 'q', 'r', 'n', 'o', 'qz', 'u', 't', 'm', 'p']) console.log(`${k}: ` + JSON.stringify({ mode: r[k].modeLine, px: r[k].px?.colours?.map((c) => [c.name, c.pixels]) }));
+  console.log('VERDICT A18 scroll and stitch: ' + a18Verdict(r));
+  if (process.env.CK_COMPARE_DIST) {
+    heading('CHECK A18 (falsifiability) — the canvas app on the comparison build');
+    console.log(`extension id (comparison build): ${await relaunchWith(process.env.CK_COMPARE_DIST)}`);
+    await setSetting(options, { openResult: false, autoCopyImage: false, stampUrlOnImage: false, pageTriggerMode: 'any' });
+    const w = await captureVariant(W_VARIANT, named18(W_RGB));
+    const m = colourMap(w.px);
+    console.log('w: ' + JSON.stringify({ mode: w.modeLine, px: m }));
+    console.log(
+      'VERDICT A18 is falsifiable: ' +
+        ((m.b ?? 0) < 100 || (m.c ?? 0) < 100
+          ? `PASS — the comparison build loses canvas bands (b ${m.b ?? 0}, c ${m.c ?? 0})`
+          : `FAIL — the comparison build drew every band too`),
+    );
+  }
+  options.close();
+  chrome.kill('SIGTERM');
+  killStrays();
+  await sleep(2000);
+  http.close();
+  process.exit(0);
+}
+
 // --- CHECK A16: a virtualized list captures whole (Vercel) ---------------
 // Variant V: 120 rows drawn only near the viewport, short enough for the
 // single-shot path. Rows 1-20 carry one colour, rows 21-120 another. Before
@@ -2286,6 +2495,12 @@ heading('CHECK A15 — hidden layers stay hidden, lazy content still revealed');
   const own = await hiddenLayersCheck();
   console.log('pixels: ' + JSON.stringify(own.run.px));
   console.log('VERDICT A15 hidden layers: ' + a15Verdict(own));
+}
+
+heading('CHECK A18 — scroll and stitch');
+{
+  const r = await stitchCheck();
+  console.log('VERDICT A18 scroll and stitch: ' + a18Verdict(r));
 }
 
 heading('CHECK A17 — the capture flash');

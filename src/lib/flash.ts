@@ -30,7 +30,7 @@ export const FLASH_ATTR = 'data-capture-kit-flash';
  * flash - an agent's next screenshot should not catch an overlay, and a
  * session would flash at every tab.
  */
-const FLASH_TRIGGERS: ReadonlySet<CaptureTrigger> = new Set<CaptureTrigger>(['shortcut', 'icon', 'popup']);
+const FLASH_TRIGGERS: ReadonlySet<CaptureTrigger> = new Set<CaptureTrigger>(['shortcut', 'scroll-shortcut', 'icon', 'popup']);
 
 export function flashesFor(trigger: CaptureTrigger, enabled: boolean): boolean {
   return enabled && FLASH_TRIGGERS.has(trigger);

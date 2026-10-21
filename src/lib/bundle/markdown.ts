@@ -1,6 +1,6 @@
 import type { CaptureTrigger, ConsoleEntry, NetworkFailure, PageMeta } from '../messages';
 import { CAPTURE_TRIGGER_LABEL, CONSOLE_LOGS_IN_BUNDLE } from '../messages';
-import type { CaptureMode, PageDimensions, StampInfo } from '../capture-engine/types';
+import type { ScrollStitchInfo, CaptureMode, PageDimensions, StampInfo } from '../capture-engine/types';
 import { classifyEnvironment } from '../env-marker';
 import { stampLabel } from '../capture-engine/stamp';
 import { redactedLabel } from '../redact';
@@ -34,6 +34,8 @@ export interface BundleInput {
   heightHeld?: number;
   /** Virtualized content: captured under a full-height viewport so it all drew. */
   drawnOnScroll?: boolean;
+  /** Present when the image was made by scrolling and stitching. */
+  scrollStitch?: ScrollStitchInfo;
   /** Inner scrollers unrolled (expanded-inner-scroll mode only). */
   innerScrollers?: number;
   /** Embedded frames kept at their on-screen height (expanded-inner-scroll mode only). */
@@ -139,7 +141,9 @@ export function captureModeLabel(
   panelsReflowed = 0,
   innerScrollAbandoned = false,
   drawnOnScroll = false,
+  scrollStitch?: ScrollStitchInfo,
 ): string {
+  if (scrollStitch) return scrollStitchLabel(scrollStitch, revealForced);
   // The counts say how many columns were unrolled and how many embedded
   // pages were not - a reader comparing a three-column app to its capture
   // needs to know which parts are whole.
@@ -177,6 +181,36 @@ export function captureModeLabel(
   const held = heightHeld > 0 ? ` + viewport heights held (${heightHeld} elements)` : '';
   const drawn = drawnOnScroll ? ' + page redraws as it scrolls' : '';
   return `${strategy}, ${path}${reveal}${held}${drawn}`;
+}
+
+/**
+ * The capture-mode line for a scroll-and-stitch capture: what was scrolled,
+ * why this path ran when Capture Kit picked it, and how many screens it took.
+ */
+export function scrollStitchLabel(info: ScrollStitchInfo, revealForced = 0): string {
+  const what =
+    info.how === 'pointer'
+      ? `the panel under your pointer (${info.label})`
+      : info.how === 'largest'
+        ? `the largest scrolling panel (${info.label})`
+        : 'the page';
+  const why =
+    info.reason === 'canvas'
+      ? ' - chosen automatically: the panel is drawn on a canvas, which only paints what is on screen'
+      : info.reason === 'abandoned'
+        ? ' - chosen automatically: unrolling the panel would have hidden the page'
+        : '';
+  const grew = info.grew
+    ? ' - the content grew while it was scrolled, so the capture stops at its starting length'
+    : '';
+  const reveal = revealForced > 0 ? ` + reveal-forced (${revealForced} elements)` : '';
+  const shrank = info.shrank
+    ? ' - the content got shorter while it was scrolled, so the capture ends where scrolling stopped'
+    : '';
+  const cut = info.cutRows
+    ? ` - the panel is taller than the window, so its last ${info.cutRows} px are not in the image`
+    : '';
+  return `scrolled and stitched: ${what}${why}${grew}${shrank}${cut}, ${info.frames} ${info.frames === 1 ? 'screen' : 'screens'}${reveal}`;
 }
 
 /**
@@ -434,6 +468,7 @@ export function buildBundleMarkdown(input: BundleInput): string {
           input.panelsReflowed,
           input.innerScrollAbandoned,
           input.drawnOnScroll,
+          input.scrollStitch,
         ),
         trigger: input.trigger,
         recorderActive: input.recorderActive,

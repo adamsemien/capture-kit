@@ -235,6 +235,8 @@ export class PageCanvas {
   private readonly open = new Map<number, OffscreenCanvasRenderingContext2D>();
   private readonly encoded: CaptureSlice[] = [];
   private next = 0;
+  /** Set by finish(): rows below this were never painted. */
+  private paintedLimit: number | undefined;
 
   constructor(
     private readonly width: number,
@@ -281,9 +283,29 @@ export class PageCanvas {
     }
   }
 
-  async finish(): Promise<{ imageBase64: string; slices: CaptureSlice[] }> {
+  /**
+   * `paintedHeight` (canvas rows, before any scale) crops the whole image to
+   * the rows that were actually drawn. The scroll-and-stitch path allocates
+   * for the length the page had when it started; a page that gets shorter
+   * while it scrolls would otherwise end in unpainted rows, which encode as
+   * black in JPEG. With slices the whole image is cropped the same way; the
+   * caller drops slices that start below the painted rows.
+   */
+  async finish(paintedHeight?: number): Promise<{ imageBase64: string; slices: CaptureSlice[] }> {
+    // Slices still open end at the painted rows, not at the length planned
+    // at the start - a stitch that stopped short would otherwise leave the
+    // last slice with unpainted rows (Codex review on #27).
+    this.paintedLimit = paintedHeight;
     await this.closeAbove(Number.POSITIVE_INFINITY);
-    const imageBase64 = await encode(this.whole, this.format);
+    let canvas = this.whole;
+    if (paintedHeight !== undefined) {
+      const rows = Math.max(1, Math.min(this.wholeSize.height, Math.round(paintedHeight * this.scale)));
+      if (rows < this.wholeSize.height) {
+        canvas = new OffscreenCanvas(this.wholeSize.width, rows);
+        context(canvas).drawImage(this.whole, 0, 0);
+      }
+    }
+    const imageBase64 = await encode(canvas, this.format);
     return { imageBase64, slices: this.encoded };
   }
 
@@ -307,7 +329,21 @@ export class PageCanvas {
       // A slice no segment reached is still written, blank, so the numbering
       // and the report's y ranges stay exact.
       const ctx = this.sliceContext(this.next);
-      this.encoded.push(await encodeSlice(ctx.canvas as OffscreenCanvas, this.format, slice));
+      const limit = this.paintedLimit;
+      if (limit !== undefined && slice.top >= limit) {
+        // Wholly below what was painted: dropped by the caller; nothing to encode.
+        this.open.delete(this.next);
+        this.next += 1;
+        continue;
+      }
+      if (limit !== undefined && slice.top + slice.height > limit) {
+        const rows = Math.max(1, Math.round(limit - slice.top));
+        const cropped = new OffscreenCanvas(ctx.canvas.width, rows);
+        context(cropped).drawImage(ctx.canvas as OffscreenCanvas, 0, 0);
+        this.encoded.push(await encodeSlice(cropped, this.format, { ...slice, height: rows }));
+      } else {
+        this.encoded.push(await encodeSlice(ctx.canvas as OffscreenCanvas, this.format, slice));
+      }
       this.open.delete(this.next);
       this.next += 1;
     }

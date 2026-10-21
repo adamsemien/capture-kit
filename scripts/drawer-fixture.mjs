@@ -120,6 +120,46 @@ export const V_RGB = {
 };
 export const V_ROWS = 120;
 
+// Scroll-and-stitch fixtures (W, X, Y). Each band colour exists in one place
+// only, so "did that part of the content make it into the image" is a count.
+export const W_RGB = {
+  a: { r: 0xd8, g: 0x1b, b: 0x60 }, // #d81b60 - canvas rows 0-999
+  b: { r: 0x1e, g: 0x88, b: 0xe5 }, // #1e88e5 - canvas rows 1000-1999
+  c: { r: 0x43, g: 0xa0, b: 0x47 }, // #43a047 - canvas rows 2000-2999
+};
+export const X_RGB = {
+  d: { r: 0xf4, g: 0x51, b: 0x1e }, // #f4511e - panel content top
+  e: { r: 0x5e, g: 0x35, b: 0xb1 }, // #5e35b1 - panel content middle
+  f: { r: 0x00, g: 0x89, b: 0x7b }, // #00897b - panel content bottom
+};
+// Variant R: the X panel mostly below the window, its content ending in a
+// strip that only a capture reaching the panel's last rows can contain.
+export const R_RGB = { ...X_RGB, tail: { r: 0xfd, g: 0xd8, b: 0x35 } }; // #fdd835
+// Variant T: each panel row is twice the panel's width - the left half in
+// the X colours, the right half in one colour - and the panel is scrolled
+// all the way right before the capture.
+export const T_RGB = { right: { r: 0x2e, g: 0x7d, b: 0x32 } }; // #2e7d32
+// Variant M: a page stitch with a footer stuck to the bottom and a carousel
+// scrolled to its second half.
+export const M_RGB = {
+  foot: { r: 0x88, g: 0x0e, b: 0x4f }, // #880e4f - sticky footer, MUST appear once
+  slideOne: { r: 0x01, g: 0x57, b: 0x9b }, // #01579b - carousel first half, MUST NOT appear
+  slideTwo: { r: 0xff, g: 0x8f, b: 0x00 }, // #ff8f00 - carousel second half, MUST appear
+};
+// Variant P: a page that snaps to full-screen sections under a sticky header.
+export const P_RGB = {
+  s1: { r: 0x6a, g: 0x1b, b: 0x9a }, // #6a1b9a
+  s2: { r: 0x00, g: 0x83, b: 0x8f }, // #00838f
+  s3: { r: 0xef, g: 0x6c, b: 0x00 }, // #ef6c00
+  gap: { r: 0x00, g: 0x00, b: 0x00 }, // unpainted rows encode black - MUST NOT appear
+};
+// Variant O adds the page's sticky header, which must not appear in a panel stitch.
+export const O_RGB = { ...R_RGB, header: { r: 0x3e, g: 0x27, b: 0x23 } }; // #3e2723
+export const Y_RGB = {
+  header: { r: 0x37, g: 0x47, b: 0x4f }, // #37474f - sticky header, must appear once
+  end: { r: 0xfd, g: 0xd8, b: 0x35 }, // #fdd835 - last block on the page
+};
+
 export const hex = (c) =>
   '#' + [c.r, c.g, c.b].map((n) => n.toString(16).padStart(2, '0')).join('');
 
@@ -169,6 +209,35 @@ export const DRAWER_VARIANTS = {
   // short enough (120 rows x 52px) for the single-shot path, which captured
   // the rows drawn at load and a blank spacer below them.
   'V virtualized-short': null,
+  // A canvas app: the page does not scroll, a panel does, and a sticky canvas
+  // inside it repaints only the rows on screen. Rendering tall leaves blank
+  // canvas below the first screen; only scrolling gets bands b and c drawn.
+  'W canvas-app': null,
+  // The canvas app beside a slightly larger list that overflows a little:
+  // automatic detection approves the canvas panel, and the capture must
+  // stitch that one, not the larger list.
+  'U canvas-beside-list': null,
+  // A normal scrolling page holding a 300px panel that scrolls on its own.
+  // Scroll capture with the pointer over the panel must stitch the panel.
+  'X pointer-panel': null,
+  // The same panel 1500px down the page, captured with the page scrolled to it
+  // and the pointer gone (the popup button): the panel must still be the
+  // target, and the page and the panel must be left where they were.
+  'Q low-panel': null,
+  // The panel starts 120px above the bottom of the window, so most of it is
+  // off screen when the pointer is put on it.
+  'R clipped-panel': null,
+  // A panel inside another scrolling container that is scrolled to it: the
+  // inner panel must be stitched whole and the outer one left where it was.
+  'N nested-panel': null,
+  // A page with a sticky header; the panel sits low inside a container that
+  // has not been scrolled, so bringing it into view scrolls that container.
+  'O sticky-page-panel': null,
+  'T wide-panel': null,
+  'M footer-and-carousel': null,
+  'P snap-page': null,
+  // A long page with a sticky header. Stitched, the header must appear once.
+  'Y sticky-header-page': null,
   // The capture flash probe: a plain page that records every flash overlay
   // Capture Kit adds, so a check can ask "did it flash, how, and is it gone".
   'L flash-probe': null,
@@ -214,6 +283,17 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (variant.startsWith('J ')) return pinnedPanelFixture(variant, { reportsResult, manual });
   if (variant.startsWith('K ')) return parkedLayersFixture(variant, { reportsResult, manual });
   if (variant.startsWith('V ')) return virtualizedFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('W ')) return canvasAppFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('U ')) return canvasAppFixture(variant, { reportsResult, manual, beside: true });
+  if (variant.startsWith('X ')) return pointerPanelFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('Q ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 1500 });
+  if (variant.startsWith('N ')) return nestedPanelFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('O ')) return nestedPanelFixture(variant, { reportsResult, manual, header: true });
+  if (variant.startsWith('P ')) return snapPageFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('M ')) return footerCarouselFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('T ')) return pointerPanelFixture(variant, { reportsResult, manual, wide: true });
+  if (variant.startsWith('R ')) return pointerPanelFixture(variant, { reportsResult, manual, spacer: 'calc(100vh - 120px)', tail: true });
+  if (variant.startsWith('Y ')) return stickyHeaderFixture(variant, { reportsResult, manual });
   if (variant.startsWith('L ')) return flashProbeFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
   const rows = Array.from(
@@ -399,6 +479,143 @@ function lazySectionsFixture(variant, { reportsResult = false, manual = false } 
 <body>
   <div id="hero"><h1>repro: ${variant}</h1><p>hero content, always visible</p></div>
   ${sections}
+  ${reporter}
+</body></html>`;
+}
+
+function canvasAppFixture(variant, { reportsResult = false, manual = false, beside = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;font:14px sans-serif}
+  #shell{display:flex;height:100vh}
+  nav{width:${beside ? 0 : 160}px;background:#eceff1;padding:${beside ? 0 : 12}px;box-sizing:border-box;overflow:hidden}
+  #list{width:52%;overflow:auto;background:#fafafa}
+  #scroller{flex:1;overflow:auto;position:relative}
+  #c{position:sticky;top:0;display:block;width:100%;height:100vh}
+</style></head>
+<body>
+  <div id="shell"><nav>repro: ${variant}</nav>${beside ? '<div id="list"><div style="height:120vh">list</div></div>' : ''}<div id="scroller"><canvas id="c"></canvas><div id="spacer"></div></div></div>
+  <script>
+    const TOTAL = 3000;
+    const BANDS = [['${hex(W_RGB.a)}', 0, 1000], ['${hex(W_RGB.b)}', 1000, 2000], ['${hex(W_RGB.c)}', 2000, 3000]];
+    const sc = document.getElementById('scroller');
+    const c = document.getElementById('c');
+    const spacer = document.getElementById('spacer');
+    function layout() { spacer.style.height = Math.max(0, TOTAL - sc.clientHeight) + 'px'; }
+    function draw() {
+      c.width = c.clientWidth; c.height = c.clientHeight;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, c.width, c.height);
+      const top = sc.scrollTop;
+      for (const [colour, from, to] of BANDS) {
+        const y0 = Math.max(from, top) - top, y1 = Math.min(to, top + c.height) - top;
+        if (y1 > y0) { ctx.fillStyle = colour; ctx.fillRect(0, y0, c.width, y1 - y0); }
+      }
+    }
+    layout(); draw();
+    sc.addEventListener('scroll', draw, { passive: true });
+    addEventListener('resize', () => { layout(); draw(); });
+  </script>
+  ${reporter}
+</body></html>`;
+}
+
+function snapPageFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  const sections = [P_RGB.s1, P_RGB.s2, P_RGB.s3, P_RGB.s1, P_RGB.s2, P_RGB.s3]
+    .map((c) => `<section style="height:100vh;scroll-snap-align:start;background:${hex(c)}"></section>`)
+    .join('');
+  return `<!doctype html>
+<html style="scroll-snap-type:y mandatory"><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>html,body{margin:0;background:#fff;font:16px sans-serif}header{position:sticky;top:0;height:50px;background:#fff;z-index:2}</style>
+</head><body><header>repro: ${variant}</header>${sections}${reporter}</body></html>`;
+}
+
+function footerCarouselFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>
+  html,body{margin:0;font:16px sans-serif;background:#fff}
+  #carousel{overflow-x:auto;overflow-y:hidden;margin:16px;height:200px}
+  #track{display:flex;width:200%;height:100%}
+  #track div{flex:1}
+  footer{position:sticky;bottom:0;height:60px;background:${hex(M_RGB.foot)};color:#fff}
+</style></head>
+<body>
+  <header style="padding:16px">repro: ${variant}</header>
+  <div id="carousel"><div id="track"><div style="background:${hex(M_RGB.slideOne)}"></div><div style="background:${hex(M_RGB.slideTwo)}"></div></div></div>
+  <div style="height:2600px;background:#f5f5f5"></div>
+  <footer>footer</footer>
+  ${reporter}
+</body></html>`;
+}
+
+function nestedPanelFixture(variant, { reportsResult = false, manual = false, header = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  const blocks = [X_RGB.d, X_RGB.e, X_RGB.f]
+    .map((c) => `<div style="height:500px;background:${hex(c)}"></div>`)
+    .join('') + `<div style="height:60px;background:${hex(R_RGB.tail)}"></div>`;
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>
+  html,body{margin:0;font:16px sans-serif;background:#fafafa}
+  header{padding:16px}
+  #outer{height:320px;overflow:auto;margin:16px;border:1px solid #999;background:#eee}
+  #panel{height:260px;overflow:auto;margin:0 16px;border:1px solid #ccc;background:#fff}
+</style></head>
+<body>
+  ${header
+    ? `<header style="position:sticky;top:0;z-index:5;height:60px;padding:0;background:${hex(O_RGB.header)};color:#fff">repro: ${variant}</header>
+  <div style="height:300px"></div>
+  <div id="outer"><div style="height:240px"></div><div id="panel">${blocks}</div><div style="height:500px"></div></div>
+  <div style="height:2000px"></div>`
+    : `<header>repro: ${variant}</header>
+  <div id="outer"><div style="height:500px"></div><div id="panel">${blocks}</div><div style="height:500px"></div></div>`}
+  ${reporter}
+</body></html>`;
+}
+
+function pointerPanelFixture(variant, { reportsResult = false, manual = false, spacer = 0, tail = false, wide = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  const blocks = [X_RGB.d, X_RGB.e, X_RGB.f]
+    .map((c) => wide
+      ? `<div style="height:800px;width:200%;display:flex"><div style="flex:1;background:${hex(c)}"></div><div style="flex:1;background:${hex(T_RGB.right)}"></div></div>`
+      : `<div style="height:800px;background:${hex(c)}"></div>`)
+    .join('') + (tail ? `<div style="height:60px;background:${hex(R_RGB.tail)}"></div>` : '');
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>
+  html,body{margin:0;font:16px sans-serif;background:#fafafa}
+  header{padding:16px}
+  #panel{height:300px;overflow:auto;margin:16px;border:1px solid #ccc;background:#fff}
+  #below{height:1600px}
+</style></head>
+<body>
+  <header>repro: ${variant}</header>
+  ${spacer ? `<div id="spacer" style="height:${typeof spacer === 'number' ? `${spacer}px` : spacer}"></div>` : ''}
+  <div id="panel">${blocks}</div>
+  <div id="below"></div>
+  ${reporter}
+</body></html>`;
+}
+
+function stickyHeaderFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  const rows = Array.from({ length: 40 }, (_, i) =>
+    `<div style="height:100px;background:${i % 2 ? '#ffffff' : '#eeeeee'};padding:8px;box-sizing:border-box">row ${i + 1}</div>`).join('');
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>
+  html,body{margin:0;font:16px sans-serif}
+  header{position:sticky;top:0;height:60px;background:${hex(Y_RGB.header)};color:#fff;z-index:2}
+</style></head>
+<body>
+  <header>repro: ${variant}</header>
+  ${rows}
+  <div style="height:200px;background:${hex(Y_RGB.end)}"></div>
   ${reporter}
 </body></html>`;
 }

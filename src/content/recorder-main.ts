@@ -80,6 +80,23 @@ import { RECORDER_EVENT } from '../lib/messages';
   // "no errors since load" from "recorder never ran on this page".
   emit({ kind: 'hello' });
 
+  // Where the pointer last was on this page, for scroll capture's "the panel
+  // under your pointer" - the popup button is clicked after the pointer has
+  // left the page, which clears :hover. Kept under a Symbol.for key, so
+  // nothing the page enumerates changes.
+  try {
+    const POINTER = Symbol.for('capture-kit.pointer');
+    window.addEventListener(
+      'pointermove',
+      (event) => {
+        (window as unknown as Record<symbol, [number, number]>)[POINTER] = [event.clientX, event.clientY];
+      },
+      { capture: true, passive: true },
+    );
+  } catch {
+    /* silent */
+  }
+
   // --- Window error events: installed first, the guaranteed-safe baseline ---
 
   try {
