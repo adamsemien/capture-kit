@@ -99,6 +99,9 @@ export const K_RGB = {
   badge: { r: 0xff, g: 0x6f, b: 0x00 }, // #ff6f00 - fixed badge, half past the right edge, visibility:hidden
   icon: { r: 0x00, g: 0x69, b: 0x5c }, // #00695c - in-flow icon the page hides with class="hidden"
   lazy: { r: 0x45, g: 0x27, b: 0xa0 }, // #4527a0 - an opacity:0 section that MUST still be revealed
+  // Inside class="hidden md-show": the token is there but the element shows (Tailwind's hidden md:block).
+  // Brown, not blue: a blue block against white rings into the icon's teal in JPEG.
+  respLazy: { r: 0x79, g: 0x55, b: 0x48 }, // #795548 - opacity:0 child that MUST still be revealed
 };
 
 // Variant V, Vercel's environment-variables list (2026-10-19): rows drawn only
@@ -450,6 +453,8 @@ function parkedLayersFixture(variant, { reportsResult = false, manual = false } 
   html,body{margin:0}
   #hero{height:100vh;background:#f2f2f4;font:20px sans-serif;padding:16px;box-sizing:border-box}
   .hidden{visibility:hidden}
+  /* Tailwind's hidden md:block shape: the token stays, a later rule shows it. */
+  .hidden.md-show{visibility:visible;display:block}
   .row{font:18px sans-serif;padding:12px 16px;border-bottom:1px solid #ddd;background:#fff}
 </style></head>
 <body>
@@ -457,6 +462,8 @@ function parkedLayersFixture(variant, { reportsResult = false, manual = false } 
     <div class="row">Dashboard <i class="hidden" style="display:inline-block;width:60px;height:60px;background:${hex(K_RGB.icon)}"></i></div>
   </div>
   <section id="lazy" style="position:static;opacity:0;height:400px;background:${hex(K_RGB.lazy)}">lazy - SHOULD be revealed</section>
+  <div style="height:200px;background:#fff"></div>
+  <div class="hidden md-show"><section id="resp-lazy" style="opacity:0;height:300px;background:${hex(K_RGB.respLazy)}">inside a showing .hidden - SHOULD be revealed</section></div>
   <div style="height:600px;background:#fff"></div>
   <div class="badge" style="position:fixed;bottom:14px;right:-186px;width:256px;height:60px;visibility:hidden;background:${hex(K_RGB.badge)}"></div>
   <div style="visibility:hidden;position:absolute;width:100%;top:-10000px;left:0;right:0;opacity:0">

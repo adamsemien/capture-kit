@@ -610,6 +610,8 @@ export interface SweepWidthInput {
   captureMode: CaptureMode;
   revealForced: number;
   heightHeld?: number;
+  /** This width was captured under a full-height viewport because the page redraws as it scrolls. */
+  drawnOnScroll?: boolean;
   segments: number;
 }
 
@@ -689,7 +691,7 @@ export function buildSweepMarkdown(input: SweepMarkdownInput): string {
         }),
         `- **Size:** ${width.fullSize.width}×${width.fullSize.height}`,
         `- **Image file:** ${width.imageSize.width}×${width.imageSize.height}`,
-        `- **Capture mode:** ${captureModeLabel(width.captureMode, width.revealForced, width.segments, width.heightHeld)}`,
+        `- **Capture mode:** ${captureModeLabel(width.captureMode, width.revealForced, width.segments, width.heightHeld, 0, 0, 0, false, width.drawnOnScroll)}`,
       ].join('\n'),
     );
   }

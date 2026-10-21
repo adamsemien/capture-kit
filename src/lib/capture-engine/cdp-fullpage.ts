@@ -175,7 +175,9 @@ const FORCE_REVEAL_SCRIPT = `(() => {
     if (cs.display === 'none') continue;
     if (declaredClosed(el)) continue;
     if (parkedOffPage(el, cs)) continue;
-    if (hiddenByClass(el)) continue;
+    // Only while the class is actually hiding it: responsive markup like
+    // class="hidden md:block" keeps the token on an element that is showing.
+    if (hiddenByClass(el) && (cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0)) continue;
     const hidden =parseFloat(cs.opacity) === 0 || cs.visibility === 'hidden';
     if (hidden) {
       el.setAttribute(ATTR, '');
@@ -460,7 +462,14 @@ const UNSTICK_SCRIPT = `(() => {
     // declares. Legitimate chrome — a header, a toolbar, a bottom bar — is
     // on screen at the unscrolled viewport and carries no closed marker, so
     // neither arm touches it.
-    if (notPainted(el, cs) || (markersOnly ? declaredClosed(el) : !onScreen(rect))) {
+    // Painting nothing right now: left exactly as it is - neither moved nor
+    // marked. It adds nothing to the image while it stays fixed and invisible,
+    // and leaving it unmarked lets pass 2 judge it again: the segmented
+    // path's virtual viewport can cross a breakpoint that makes it visible,
+    // and a sticky veto from pass 1 would have kept it hidden in a layout
+    // where the page shows it (Codex review on #23).
+    if (notPainted(el, cs)) continue;
+    if (markersOnly ? declaredClosed(el) : !onScreen(rect)) {
       vetoed.push(el);
       continue;
     }

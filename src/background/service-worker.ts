@@ -1168,6 +1168,7 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
         captureMode: capture.result.mode,
         revealForced: capture.result.revealForced,
         heightHeld: capture.result.heightHeld,
+        drawnOnScroll: capture.result.drawnOnScroll,
         segments: capture.result.segments,
       })),
       failures: outcome.failures,
@@ -1185,7 +1186,17 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
       await openResultTab(
         {
           kind: 'sweep',
-          captureModeLabel: captureModeLabel(first.mode, first.revealForced, first.segments, first.heightHeld),
+          captureModeLabel: captureModeLabel(
+            first.mode,
+            first.revealForced,
+            first.segments,
+            first.heightHeld,
+            0,
+            0,
+            0,
+            false,
+            first.drawnOnScroll,
+          ),
           filenameConflicts: await collectFilenameConflicts(),
           output: collectOutput(),
           images: outcome.captures.map((capture, index) => ({

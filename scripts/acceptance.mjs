@@ -1122,7 +1122,8 @@ async function hiddenLayersCheck() {
   const leaks = ['overlay', 'badge', 'icon'].filter((k) => (by[k] ?? 0) > 50);
   const widened = (run.px?.width ?? 0) > vw;
   const lazyShown = (by.lazy ?? 0) > 200;
-  return { run, by, vw, leaks, widened, lazyShown };
+  const respLazyShown = (by.respLazy ?? 0) > 200;
+  return { run, by, vw, leaks, widened, lazyShown, respLazyShown };
 }
 function a15Verdict(r) {
   if (r.run.error || r.run.px?.error) return `INCONCLUSIVE — ${r.run.error ?? r.run.px.error}`;
@@ -1130,9 +1131,10 @@ function a15Verdict(r) {
   if (r.leaks.length) problems.push(`hidden layers painted: ${r.leaks.map((k) => `${k} ${r.by[k]} px`).join(', ')}`);
   if (r.widened) problems.push(`image widened to ${r.run.px.width}px past the ${r.vw}px viewport`);
   if (!r.lazyShown) problems.push(`the lazy section was NOT revealed (${r.by.lazy ?? 0} px) - over-corrected`);
+  if (!r.respLazyShown) problems.push(`the lazy section inside a showing class="hidden" was NOT revealed (${r.by.respLazy ?? 0} px)`);
   return problems.length
     ? `FAIL — ${problems.join('; ')}`
-    : `PASS — no hidden layer painted, width ${r.run.px.width}px, lazy section revealed (${r.by.lazy} px)`;
+    : `PASS — no hidden layer painted, width ${r.run.px.width}px, lazy sections revealed (${r.by.lazy} px, ${r.by.respLazy} px inside a showing .hidden)`;
 }
 
 // --- CHECK A16: a virtualized list captures whole (Vercel) ---------------
@@ -1199,9 +1201,9 @@ if (process.argv.includes('--only-hidden-layers')) {
     console.log('pixels: ' + JSON.stringify(old.run.px));
     console.log(
       'VERDICT A15 is falsifiable: ' +
-        (old.leaks.length || old.widened
-          ? `PASS — the comparison build leaks (${a15Verdict(old)})`
-          : `FAIL — the comparison build did not leak either: ${a15Verdict(old)}`),
+        (a15Verdict(old).startsWith('FAIL')
+          ? `PASS — the comparison build fails it (${a15Verdict(old)})`
+          : `FAIL — the comparison build passes too: ${a15Verdict(old)}`),
     );
   }
   options.close();
