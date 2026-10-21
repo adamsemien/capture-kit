@@ -92,6 +92,15 @@ export const H_SECTION_RGB = [
   { r: 0xb7, g: 0x1c, b: 0x1c }, // #b71c1c
 ];
 
+// Variant K, status.sentry.io's shape (2026-10-20). Each colour is unique to
+// one layer the page keeps hidden, so "did it paint" is a colour count.
+export const K_RGB = {
+  overlay: { r: 0x7b, g: 0x1f, b: 0xa2 }, // #7b1fa2 - fixed full-viewport layer inside the parked challenge
+  badge: { r: 0xff, g: 0x6f, b: 0x00 }, // #ff6f00 - fixed badge, half past the right edge, visibility:hidden
+  icon: { r: 0x00, g: 0x69, b: 0x5c }, // #00695c - in-flow icon the page hides with class="hidden"
+  lazy: { r: 0x45, g: 0x27, b: 0xa0 }, // #4527a0 - an opacity:0 section that MUST still be revealed
+};
+
 export const hex = (c) =>
   '#' + [c.r, c.g, c.b].map((n) => n.toString(16).padStart(2, '0')).join('');
 
@@ -130,6 +139,13 @@ export const DRAWER_VARIANTS = {
   // flow - and the overflow:hidden wrapper then clips the whole content area.
   // Before the fix this captured as a header over a blank page.
   'J pinned-panel-shell': null,
+  // status.sentry.io's shape: Google's reCAPTCHA keeps its challenge parked in
+  // an absolute box at top:-10000px (opacity 0, visibility hidden) holding
+  // position:fixed full-viewport overlays, plus a fixed badge half past the
+  // right edge, and the page hides an icon per row with class="hidden".
+  // Before the fix the overlay washed out the first screen, the badge
+  // widened the image, and the icon painted as a stray mark.
+  'K parked-hidden-layers': null,
   // Studio's actual shape, from the probe on app.thenobadcompany.com/operator
   // /studio: position:fixed, off-canvas right, clipped by overflow:clip on
   // body and html, and NO dominant inner scroller — shouldExpand is false, so
@@ -170,6 +186,7 @@ export function fixture(variant, { reportsResult = false, manual = false } = {})
   if (/^S\d* /.test(variant)) return studioFixture(variant, { reportsResult, manual });
   if (variant.startsWith('H ')) return lazySectionsFixture(variant, { reportsResult, manual });
   if (variant.startsWith('J ')) return pinnedPanelFixture(variant, { reportsResult, manual });
+  if (variant.startsWith('K ')) return parkedLayersFixture(variant, { reportsResult, manual });
   const drawerStyle = DRAWER_VARIANTS[variant];
   const rows = Array.from(
     { length: ROW_COUNT },
@@ -354,6 +371,39 @@ function lazySectionsFixture(variant, { reportsResult = false, manual = false } 
 <body>
   <div id="hero"><h1>repro: ${variant}</h1><p>hero content, always visible</p></div>
   ${sections}
+  ${reporter}
+</body></html>`;
+}
+
+/**
+ * Variant K. Three layers the page keeps hidden and one it does not:
+ *   - the parked challenge: an absolute box at top:-10000px, opacity 0 and
+ *     visibility hidden, holding a position:fixed full-viewport overlay;
+ *   - a fixed visibility:hidden badge sitting half past the right edge;
+ *   - an in-flow icon hidden with class="hidden" (visibility:hidden);
+ *   - the positive control, an opacity:0 section below the fold that must
+ *     still be revealed, so a fix that simply reveals less fails here.
+ */
+function parkedLayersFixture(variant, { reportsResult = false, manual = false } = {}) {
+  const reporter = reporterScript(reportsResult, manual);
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${reportsResult ? 'ready' : `repro ${variant}`}</title>
+<style>
+  html,body{margin:0}
+  #hero{height:100vh;background:#f2f2f4;font:20px sans-serif;padding:16px;box-sizing:border-box}
+  .hidden{visibility:hidden}
+  .row{font:18px sans-serif;padding:12px 16px;border-bottom:1px solid #ddd;background:#fff}
+</style></head>
+<body>
+  <div id="hero"><h1>repro: ${variant}</h1>
+    <div class="row">Dashboard <i class="hidden" style="display:inline-block;width:60px;height:60px;background:${hex(K_RGB.icon)}"></i></div>
+  </div>
+  <section id="lazy" style="position:static;opacity:0;height:400px;background:${hex(K_RGB.lazy)}">lazy - SHOULD be revealed</section>
+  <div style="height:600px;background:#fff"></div>
+  <div class="badge" style="position:fixed;bottom:14px;right:-186px;width:256px;height:60px;visibility:hidden;background:${hex(K_RGB.badge)}"></div>
+  <div style="visibility:hidden;position:absolute;width:100%;top:-10000px;left:0;right:0;opacity:0">
+    <div style="width:100%;height:100%;position:fixed;top:0;left:0;background:${hex(K_RGB.overlay)};opacity:0.9"></div>
+  </div>
   ${reporter}
 </body></html>`;
 }

@@ -34,6 +34,7 @@ import {
   DRAWER_RGB,
   F_CHILD_RGB,
   H_SECTION_RGB,
+  K_RGB,
   NAV_RGB,
   NAV_WIDTH,
   SENTINEL_RGB,
@@ -1100,6 +1101,68 @@ function a14Verdict(r) {
       : `FAIL — panel captured ${r.target} (status: ${r.status})`;
 }
 
+// --- CHECK A15: hidden layers stay hidden (status.sentry.io) -------------
+// Variant K: a reCAPTCHA-shaped challenge parked at top:-10000px holding a
+// fixed full-viewport overlay, a fixed hidden badge half past the right
+// edge, and an icon hidden with class="hidden" - plus an opacity:0 section
+// below the fold that must still be revealed. Before the fix the overlay
+// washed out the first screen, the badge widened the image, and the icon
+// painted. Uses captureVariant/inspectColours below (function declarations,
+// hoisted).
+const K_VARIANT = 'K parked-hidden-layers';
+const K_COLOURS = Object.entries(K_RGB).map(([name, c]) => ({ name, r: c.r, g: c.g, b: c.b }));
+async function hiddenLayersCheck() {
+  const run = await captureVariant(K_VARIANT, K_COLOURS);
+  const by = Object.fromEntries((run.px?.colours ?? []).map((c) => [c.name, c.pixels]));
+  // The viewport the capture itself reports, not the fixture's nominal one:
+  // the suite's window is narrower than 1440.
+  const vwLine = /Viewport:\*\*\s*(\d+)/.exec((run.modeLine ?? []).join(' '));
+  const vw = vwLine ? Number(vwLine[1]) : viewportFor(K_VARIANT).width;
+  const leaks = ['overlay', 'badge', 'icon'].filter((k) => (by[k] ?? 0) > 50);
+  const widened = (run.px?.width ?? 0) > vw;
+  const lazyShown = (by.lazy ?? 0) > 200;
+  return { run, by, vw, leaks, widened, lazyShown };
+}
+function a15Verdict(r) {
+  if (r.run.error || r.run.px?.error) return `INCONCLUSIVE — ${r.run.error ?? r.run.px.error}`;
+  const problems = [];
+  if (r.leaks.length) problems.push(`hidden layers painted: ${r.leaks.map((k) => `${k} ${r.by[k]} px`).join(', ')}`);
+  if (r.widened) problems.push(`image widened to ${r.run.px.width}px past the ${r.vw}px viewport`);
+  if (!r.lazyShown) problems.push(`the lazy section was NOT revealed (${r.by.lazy ?? 0} px) - over-corrected`);
+  return problems.length
+    ? `FAIL — ${problems.join('; ')}`
+    : `PASS — no hidden layer painted, width ${r.run.px.width}px, lazy section revealed (${r.by.lazy} px)`;
+}
+
+if (process.argv.includes('--only-hidden-layers')) {
+  heading('CHECK A15 — hidden layers stay hidden, lazy content still revealed');
+  console.log(
+    'segment size 8192, stamp off: ' +
+      JSON.stringify(await setSetting(options, { segmentSize: 8192, stampUrlOnImage: false })),
+  );
+  const own = await hiddenLayersCheck();
+  console.log('pixels: ' + JSON.stringify(own.run.px) + ' mode: ' + JSON.stringify(own.run.modeLine));
+  console.log('VERDICT A15 hidden layers: ' + a15Verdict(own));
+  if (process.env.CK_COMPARE_DIST) {
+    heading('CHECK A15 (falsifiability) — the same fixture on the comparison build');
+    console.log(`extension id (comparison build): ${await relaunchWith(process.env.CK_COMPARE_DIST)}`);
+    const old = await hiddenLayersCheck();
+    console.log('pixels: ' + JSON.stringify(old.run.px));
+    console.log(
+      'VERDICT A15 is falsifiable: ' +
+        (old.leaks.length || old.widened
+          ? `PASS — the comparison build leaks (${a15Verdict(old)})`
+          : `FAIL — the comparison build did not leak either: ${a15Verdict(old)}`),
+    );
+  }
+  options.close();
+  chrome.kill('SIGTERM');
+  killStrays();
+  await sleep(2000);
+  http.close();
+  process.exit(0);
+}
+
 if (process.argv.includes('--only-a13') || process.argv.includes('--only-tab-targeting')) {
   heading('CHECK A13 — a page-fired capture photographs the page that asked');
   const own = await tabTargetingCheck('this build');
@@ -1767,7 +1830,7 @@ async function captureVariant(variant, colours = A11_COLOURS[variant]) {
   const image = newestFile('.jpg');
   const report = newestFile('.md');
   const modeLine = report
-    ? readCapture(report).split('\n').filter((l) => /Full page:|Capture mode:/.test(l))
+    ? readCapture(report).split('\n').filter((l) => /Viewport:|Full page:|Capture mode:/.test(l))
     : [];
   const px = await inspectColours(image, colours);
   // Positive evidence that a deliberately no-opped build was the one running,
@@ -2093,6 +2156,14 @@ heading('CHECK A13 — a page-fired capture photographs the page that asked');
 
 heading('CHECK A14 — the panel window captures the tab it was opened for');
 console.log('VERDICT A14 panel pinned to its window: ' + a14Verdict(await panelTargetingCheck('this build')));
+
+heading('CHECK A15 — hidden layers stay hidden, lazy content still revealed');
+{
+  await setSetting(options, { segmentSize: 8192, stampUrlOnImage: false });
+  const own = await hiddenLayersCheck();
+  console.log('pixels: ' + JSON.stringify(own.run.px));
+  console.log('VERDICT A15 hidden layers: ' + a15Verdict(own));
+}
 
 options.close();
 chrome.kill('SIGTERM');
