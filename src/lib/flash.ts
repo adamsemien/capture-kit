@@ -5,14 +5,19 @@
  * page that it had finished: the badge is up in the toolbar, out of the eye
  * line, and with "Show me what I captured" off nothing else happens at all.
  *
- * One soft white flash over the captured page, the way a camera app confirms
+ * One green glow around the edge of the window, the way a camera app confirms
  * a shot. It is shown only after the capture has finished and every change
  * Capture Kit made to the page is undone, so it can never be in the image.
  *
- * Kept gentle on purpose: a single pulse, never repeated, peaking at 28%
- * white for under half a second - far below the three-flashes-a-second line
- * that matters for photosensitivity. Someone who has asked their system for
- * reduced motion gets a thin border that fades instead of a flash.
+ * Why an edge and not a full-page flash: the first version washed the whole
+ * page in 28% white, which is invisible on the white pages most people
+ * capture. A coloured ring shows on light and dark pages alike, and leaves
+ * the content itself untouched.
+ *
+ * Kept gentle on purpose: a single pulse, never repeated, gone in under a
+ * second - far below the three-flashes-a-second line that matters for
+ * photosensitivity. Someone who has asked their system for reduced motion
+ * gets the same ring without the quick rise: it appears and fades out.
  *
  * `showCaptureFlash` is handed to chrome.scripting.executeScript, which sends
  * the function's source text into the page, so it must not reference anything
@@ -42,7 +47,7 @@ export function showCaptureFlash(): void {
   if (!root || root.querySelector(`[${ATTR}]`)) return;
   const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
   const el = document.createElement('div');
-  el.setAttribute(ATTR, reduce ? 'border' : 'flash');
+  el.setAttribute(ATTR, reduce ? 'border' : 'glow');
   el.setAttribute('aria-hidden', 'true');
   el.style.cssText = [
     'position:fixed',
@@ -52,16 +57,18 @@ export function showCaptureFlash(): void {
     'margin:0',
     'padding:0',
     'border:0',
-    reduce ? 'box-shadow:inset 0 0 0 3px rgba(30,132,73,0.9)' : 'background:#fff',
+    // A solid ring (readable on white) plus a soft inner glow (readable on dark).
+    'box-shadow:inset 0 0 0 4px rgba(22,163,74,1),inset 0 0 36px 8px rgba(34,197,94,0.5)',
+    'background:transparent',
     'opacity:0',
   ].join(';');
   root.appendChild(el);
   const frames = reduce
-    ? [{ opacity: 1 }, { opacity: 1, offset: 0.4 }, { opacity: 0 }]
-    : [{ opacity: 0 }, { opacity: 0.28, offset: 0.25 }, { opacity: 0 }];
+    ? [{ opacity: 1 }, { opacity: 1, offset: 0.5 }, { opacity: 0 }]
+    : [{ opacity: 0 }, { opacity: 1, offset: 0.15 }, { opacity: 1, offset: 0.45 }, { opacity: 0 }];
   const remove = () => el.remove();
   try {
-    const animation = el.animate(frames, { duration: reduce ? 700 : 420, easing: 'ease-out' });
+    const animation = el.animate(frames, { duration: reduce ? 800 : 700, easing: 'ease-out' });
     animation.onfinish = remove;
     animation.oncancel = remove;
   } catch {
