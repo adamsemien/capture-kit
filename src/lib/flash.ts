@@ -5,7 +5,7 @@
  * page that it had finished: the badge is up in the toolbar, out of the eye
  * line, and with "Show me what I captured" off nothing else happens at all.
  *
- * One green glow around the edge of the window, the way a camera app confirms
+ * One purple glow around the edge of the window, the way a camera app confirms
  * a shot. It is shown only after the capture has finished and every change
  * Capture Kit made to the page is undone, so it can never be in the image.
  *
@@ -14,10 +14,12 @@
  * capture. A coloured ring shows on light and dark pages alike, and leaves
  * the content itself untouched.
  *
- * Kept gentle on purpose: a single pulse, never repeated, gone in under a
- * second - far below the three-flashes-a-second line that matters for
- * photosensitivity. Someone who has asked their system for reduced motion
- * gets the same ring without the quick rise: it appears and fades out.
+ * It holds at full strength for most of a second so it is seen out of the
+ * corner of an eye - the first cut peaked for only ~150ms and was missed in
+ * real use. Still a single pulse, never repeated, gone in 1.3s - far below
+ * the three-flashes-a-second line that matters for photosensitivity.
+ * Someone who has asked their system for reduced motion gets the same ring
+ * without the quick rise: it appears and fades out.
  *
  * `showCaptureFlash` is handed to chrome.scripting.executeScript, which sends
  * the function's source text into the page, so it must not reference anything
@@ -58,17 +60,17 @@ export function showCaptureFlash(): void {
     'padding:0',
     'border:0',
     // A solid ring (readable on white) plus a soft inner glow (readable on dark).
-    'box-shadow:inset 0 0 0 4px rgba(22,163,74,1),inset 0 0 36px 8px rgba(34,197,94,0.5)',
+    'box-shadow:inset 0 0 0 6px rgba(147,51,234,1),inset 0 0 56px 14px rgba(168,85,247,0.55)',
     'background:transparent',
     'opacity:0',
   ].join(';');
   root.appendChild(el);
   const frames = reduce
-    ? [{ opacity: 1 }, { opacity: 1, offset: 0.5 }, { opacity: 0 }]
-    : [{ opacity: 0 }, { opacity: 1, offset: 0.15 }, { opacity: 1, offset: 0.45 }, { opacity: 0 }];
+    ? [{ opacity: 1 }, { opacity: 1, offset: 0.6 }, { opacity: 0 }]
+    : [{ opacity: 0 }, { opacity: 1, offset: 0.08 }, { opacity: 1, offset: 0.6 }, { opacity: 0 }];
   const remove = () => el.remove();
   try {
-    const animation = el.animate(frames, { duration: reduce ? 800 : 700, easing: 'ease-out' });
+    const animation = el.animate(frames, { duration: 1300, easing: 'ease-out' });
     animation.onfinish = remove;
     animation.oncancel = remove;
   } catch {
@@ -76,5 +78,5 @@ export function showCaptureFlash(): void {
     return;
   }
   // Belt and braces: a page that freezes animations must not keep the overlay.
-  setTimeout(remove, 1500);
+  setTimeout(remove, 2500);
 }
