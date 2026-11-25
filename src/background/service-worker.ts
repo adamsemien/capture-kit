@@ -360,17 +360,21 @@ const README_FILENAME = 'README.txt';
 
 async function ensureOutputReadme(): Promise<void> {
   try {
+    trace('readme: folder status');
     const status = await outputDirStatus();
+    trace(`readme: folder ${status.state}`);
     const scope = status.state === 'granted' ? `chosen:${status.name ?? ''}` : 'downloads';
     const flagKey = `readmeWritten:${scope}`;
 
     const present = await outputDirHasFile(README_FILENAME);
+    trace(`readme: present ${String(present)}`);
     if (present === true) return;
     if (present === null) {
       const stored = await chrome.storage.local.get(flagKey);
       if (stored[flagKey] === true) return;
     }
 
+    trace('readme: writing');
     const written = await writeBundleFile(
       README_FILENAME,
       'text/plain',
@@ -694,6 +698,32 @@ function stampRequest(
 }
 
 /** `folder` is a path inside capture-kit/, e.g. "session_2026-08-14_10-35/". */
+
+// Last steps a capture reached, so a capture that never finishes can say where
+// it stopped instead of holding the busy lock forever.
+const ckTrace: string[] = [];
+function trace(step: string): void {
+  ckTrace.push(`${new Date().toISOString().slice(11, 23)} ${step}`);
+  if (ckTrace.length > 12) ckTrace.shift();
+  // Kept in session storage too, so the trail survives the worker being stopped mid-capture.
+  void chrome.storage.session.set({ ckTrace: [...ckTrace] }).catch(() => undefined);
+}
+const AGENT_CAPTURE_TIMEOUT_MS = 45_000;
+
+/** Resolve after `ms` even if `work` never settles; for best-effort steps that must not hold a capture. */
+async function withDeadline(work: Promise<unknown>, ms: number, label: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      trace(`${label}: gave up after ${ms}ms`);
+      console.error(`[capture-kit] ${label} did not finish in ${ms}ms; carrying on`);
+      resolve();
+    }, ms);
+  });
+  await Promise.race([work.then(() => undefined, () => undefined), late]);
+  clearTimeout(timer);
+}
+
 async function captureReport(
   tab: chrome.tabs.Tab,
   settings: Settings,
@@ -705,12 +735,15 @@ async function captureReport(
   scrollStitch = false,
 ): Promise<ReportArtifacts> {
   const tabId = tab.id as number;
+  trace('L708: const { snapshot, recorderActive } = await getSnapshot(tabId');
   const { snapshot, recorderActive } = await getSnapshot(tabId);
+  trace('L709: const page = await preparedPage(tab, snapshot);');
   const page = await preparedPage(tab, snapshot);
   // The timestamp is taken before the capture so the footer and the report's
   // "Captured at" are the same instant — a segmented capture takes seconds,
   // and two clocks a few seconds apart in one bundle reads as a bug.
   const capturedAt = new Date();
+  trace('L714: const result = await captureFullPage({');
   const result = await captureFullPage({
     tabId,
     segmentSize: settings.segmentSize,
@@ -795,6 +828,7 @@ async function captureReport(
   // Both files go through the same seam in the same order, so they always land
   // in the same directory — the mirror markdown's relative "Image:" line
   // depends on that on either path.
+  trace('L798: const imageWrite = await writeBundleFile(');
   const imageWrite = await writeBundleFile(
     `${folder}${imageFilename}`,
     imageMime,
@@ -804,8 +838,10 @@ async function captureReport(
   // can name each one as it actually landed.
   const slicesFolder = `${basename}_slices`;
   const sliceRefs: SliceRef[] = [];
+  trace('L807: await withQuietDownloads(slices.length > 0, async () => {');
   await withQuietDownloads(slices.length > 0, async () => {
     for (const [i, slice] of slices.entries()) {
+      trace('L809: const written = await writeBundleFile(');
       const written = await writeBundleFile(
         `${folder}${slicesFolder}/${sliceFilename(i, result.format)}`,
         imageMime,
@@ -829,6 +865,7 @@ async function captureReport(
     imageFilename: imageWrite.filename,
     slices: sliceRefs,
   });
+  trace('L832: const markdownWrite = await writeBundleFile(');
   const markdownWrite = await writeBundleFile(
     `${folder}${markdownFilename}`,
     'text/markdown',
@@ -898,12 +935,14 @@ async function copyImageThroughPage(
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    trace('L901: const png = await toClipboardPng(new Blob([bytes], { type: m');
     const png = await toClipboardPng(new Blob([bytes], { type: mime }));
     const pngBytes = new Uint8Array(await png.arrayBuffer());
     let pngBinary = '';
     for (let i = 0; i < pngBytes.length; i += 0x8000) {
       pngBinary += String.fromCharCode(...pngBytes.subarray(i, i + 0x8000));
     }
+    trace('L907: const response = (await chrome.tabs.sendMessage(tabId, {');
     const response = (await chrome.tabs.sendMessage(tabId, {
       type: 'COPY_IMAGE',
       pngBase64: btoa(pngBinary),
@@ -930,20 +969,26 @@ async function captureBundle(
 ): Promise<CaptureResponse> {
   const announce = trigger !== 'popup';
   try {
+    trace('L933: const tab = await targetTab(targetTabId);');
     const tab = await targetTab(targetTabId);
     const blocked = protectedPageReason(tab.url);
     if (blocked) {
+      trace('L936: await recordError(blocked, announce);');
       await recordError(blocked, announce);
       return { ok: false, reason: blocked };
     }
     const tabId = tab.id as number;
+    trace('L940: const settings = await getSettings();');
     const settings = await getSettings();
 
     // Before the capture's own writes, so its tripwire entry can be drained
     // without touching theirs.
-    await ensureOutputReadme();
+    trace('L944: await ensureOutputReadme();');
+    await withDeadline(ensureOutputReadme(), 5000, 'output README');
 
+    trace('L946: await beginIndicator();');
     await beginIndicator();
+    trace('L947: const report = await captureReport(tab, settings, trigger, ');
     const report = await captureReport(tab, settings, trigger, '', undefined, options.scroll === true);
     const {
       capturedAt, imageFilename, markdown, clipboardMarkdown,
@@ -954,6 +999,7 @@ async function captureBundle(
     if (settings.maintainLatest) {
       // Stable pointers for the AI-agent bridge; the Image: line in the
       // markdown keeps them referencing the archived timestamped copy.
+      trace('L957: await downloadLatestPointer(');
       await downloadLatestPointer(
         `latest.${isJpeg ? 'jpg' : 'png'}`,
         imageMime,
@@ -962,6 +1008,7 @@ async function captureBundle(
       // The rolling copy says so in the file itself. An assistant handed
       // latest.md otherwise cannot tell it from the timestamped original, nor
       // that what it read a minute ago has since been replaced.
+      trace('L965: await downloadLatestPointer(');
       await downloadLatestPointer(
         'latest.md',
         'text/markdown',
@@ -975,6 +1022,7 @@ async function captureBundle(
       at: capturedAt.getTime(),
     };
     try {
+      trace('L978: await chrome.storage.session.set({ lastBundle });');
       await chrome.storage.session.set({ lastBundle });
     } catch {
       /* best-effort */
@@ -997,6 +1045,7 @@ async function captureBundle(
       // when the popup is open instead, this quietly fails and the popup
       // (which has focus) writes the clipboard from the response below.
       try {
+        trace('L1000: await chrome.tabs.sendMessage(tabId, { type: COPY_TEXT, te');
         await chrome.tabs.sendMessage(tabId, { type: 'COPY_TEXT', text: clipboardMarkdown });
       } catch {
         /* no recorder to copy through */
@@ -1004,6 +1053,7 @@ async function captureBundle(
     }
 
     if (opensResultTab(settings, copied)) {
+      trace('L1007: await openResultTab(');
       await openResultTab(
         {
           kind: 'bundle',
@@ -1044,11 +1094,13 @@ async function captureBundle(
     // Last, once every write has succeeded, so a capture that fails part way
     // (a latest.* pointer, the result tab) is never confirmed by a flash.
     flashCapturedTab(tabId, trigger, settings);
+    trace('L1047: await endIndicator(true, announce);');
     await endIndicator(true, announce);
     return { ok: true, imageFilename, markdown: clipboardMarkdown, copied };
   } catch (error) {
     const reason = describeError(error);
     console.error('[capture-kit] bundle capture failed:', error);
+    trace('L1052: await recordError(reason, announce);');
     await recordError(reason, announce);
     return { ok: false, reason };
   }
@@ -1056,18 +1108,23 @@ async function captureBundle(
 
 async function capturePage(asPng: boolean, targetTabId?: number): Promise<CaptureResponse> {
   try {
+    trace('L1059: const tab = await targetTab(targetTabId);');
     const tab = await targetTab(targetTabId);
     const blocked = protectedPageReason(tab.url);
     if (blocked) {
+      trace('L1062: await recordError(blocked, false);');
       await recordError(blocked, false);
       return { ok: false, reason: blocked };
     }
+    trace('L1065: const settings = await getSettings();');
     const settings = await getSettings();
     // JPEG by default: a tall page as PNG runs to tens of MB for no benefit
     // on a screenshot. PNG is an explicit, sticky opt-in from the popup.
     const format = asPng ? 'png' : 'jpeg';
     const capturedAt = new Date();
+    trace('L1070: await beginIndicator();');
     await beginIndicator();
+    trace('L1071: const result = await captureFullPage({');
     const result = await captureFullPage({
       tabId: tab.id as number,
       segmentSize: settings.segmentSize,
@@ -1080,8 +1137,10 @@ async function capturePage(asPng: boolean, targetTabId?: number): Promise<Captur
     const imageFilename = `${captureBasename(tab.title || '', tab.url, capturedAt)}.${
       format === 'png' ? 'png' : 'jpg'
     }`;
+    trace('L1083: const written = await writeBundleFile(imageFilename, mime, r');
     const written = await writeBundleFile(imageFilename, mime, result.imageBase64);
     if (settings.openResult) {
+      trace('L1085: await openResultTab(');
       await openResultTab(
         {
           kind: 'page',
@@ -1118,11 +1177,13 @@ async function capturePage(asPng: boolean, targetTabId?: number): Promise<Captur
     // never be confirmed by a flash. Only the popup reaches this path ("Image
     // only"), and that is a person.
     flashCapturedTab(tab.id as number, 'popup', settings);
+    trace('L1121: await endIndicator(true, false);');
     await endIndicator(true, false);
     return { ok: true, imageFilename: written.filename };
   } catch (error) {
     const reason = describeError(error);
     console.error('[capture-kit] page capture failed:', error);
+    trace('L1126: await recordError(reason, false);');
     await recordError(reason, false);
     return { ok: false, reason };
   }
@@ -1130,25 +1191,32 @@ async function capturePage(asPng: boolean, targetTabId?: number): Promise<Captur
 
 async function captureResponsiveSweep(targetTabId?: number): Promise<SweepResponse> {
   try {
+    trace('L1133: const tab = await targetTab(targetTabId);');
     const tab = await targetTab(targetTabId);
     const blocked = protectedPageReason(tab.url);
     if (blocked) {
+      trace('L1136: await recordError(blocked, false);');
       await recordError(blocked, false);
       return { ok: false, reason: blocked };
     }
     const tabId = tab.id as number;
+    trace('L1140: const settings = await getSettings();');
     const settings = await getSettings();
     // A sweep is one page at three widths, so console/network state is read
     // once and stated once in the report.
+    trace('L1143: const { snapshot, recorderActive } = await getSnapshot(tabId');
     const { snapshot, recorderActive } = await getSnapshot(tabId);
+    trace('L1144: const page = await preparedPage(tab, snapshot);');
     const page = await preparedPage(tab, snapshot);
 
     // Inner-scroll expansion applies once for the whole sweep, restored at
     // the end — same detection the single captures run.
+    trace('L1148: const expanded = await detectInnerScroll(tabId);');
     const expanded = await detectInnerScroll(tabId);
     if (expanded) await applyInnerScrollExpansion(tabId);
     const capturedAt = new Date();
     const sweepUrl = page.meta.url;
+    trace('L1152: await beginIndicator();');
     await beginIndicator();
     let outcome;
     try {
@@ -1170,6 +1238,7 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
     // and page paths already have.
     const writtenNames: string[] = [];
     for (const capture of outcome.captures) {
+      trace('L1173: const written = await writeBundleFile(');
       const written = await writeBundleFile(
         `${basename}_w${capture.width}.jpg`,
         'image/jpeg',
@@ -1181,6 +1250,7 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
 
     if (outcome.captures.length === 0) {
       const reason = outcome.failures[0]?.reason ?? 'Sweep produced no captures.';
+      trace('L1184: await recordError(reason, false);');
       await recordError(reason, false);
       return { ok: false, reason };
     }
@@ -1213,6 +1283,7 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
       sourceMaps: { frames: page.frames, mapped: page.mappedFrames },
       includeLogs: settings.includeConsoleLogs,
     });
+    trace('L1216: await writeBundleFile(`${basename}_sweep.md`, text/markdown');
     await writeBundleFile(`${basename}_sweep.md`, 'text/markdown', textToBase64(sweepMarkdown));
 
     if (settings.openResult) {
@@ -1230,6 +1301,7 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
         ),
       );
       const oneMode = new Set(widthLabels).size === 1;
+      trace('L1233: await openResultTab(');
       await openResultTab(
         {
           kind: 'sweep',
@@ -1253,6 +1325,7 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
         })),
       );
     }
+    trace('L1256: await endIndicator(true, false);');
     await endIndicator(true, false);
     return {
       ok: true,
@@ -1262,6 +1335,7 @@ async function captureResponsiveSweep(targetTabId?: number): Promise<SweepRespon
   } catch (error) {
     const reason = describeError(error);
     console.error('[capture-kit] responsive sweep failed:', error);
+    trace('L1265: await recordError(reason, false);');
     await recordError(reason, false);
     return { ok: false, reason };
   }
@@ -1294,6 +1368,7 @@ function sessionTabReason(tab: chrome.tabs.Tab): string | null {
 }
 
 async function listSessionTabs(): Promise<SessionTab[]> {
+  trace('L1297: const tabs = await chrome.tabs.query({});');
   const tabs = await chrome.tabs.query({});
   return tabs
     .filter((tab) => tab.id !== undefined)
@@ -1310,6 +1385,7 @@ async function listSessionTabs(): Promise<SessionTab[]> {
 
 async function setSessionProgress(progress: SessionProgress): Promise<void> {
   try {
+    trace('L1313: await chrome.storage.session.set({ [SESSION_PROGRESS_KEY]: p');
     await chrome.storage.session.set({ [SESSION_PROGRESS_KEY]: progress });
   } catch {
     /* progress display is best-effort */
@@ -1318,9 +1394,11 @@ async function setSessionProgress(progress: SessionProgress): Promise<void> {
 
 /** Reload and wait for the load to finish, so the recorder covers page load. */
 async function reloadAndSettle(tabId: number, timeoutMs = 20000): Promise<void> {
+  trace('L1321: await chrome.tabs.reload(tabId);');
   await chrome.tabs.reload(tabId);
   const startedAt = Date.now();
   for (;;) {
+    trace('L1324: await new Promise((r) => setTimeout(r, 300));');
     await new Promise((r) => setTimeout(r, 300));
     let tab: chrome.tabs.Tab | undefined;
     try {
@@ -1332,6 +1410,7 @@ async function reloadAndSettle(tabId: number, timeoutMs = 20000): Promise<void> 
     if (Date.now() - startedAt > timeoutMs) break;
   }
   // Let post-load scripts run and log before the snapshot is taken.
+  trace('L1335: await new Promise((r) => setTimeout(r, 1200));');
   await new Promise((r) => setTimeout(r, 1200));
 }
 
@@ -1339,12 +1418,14 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
   sessionCancelled = false;
   sessionRunning = true;
   const startedAt = Date.now();
+  trace('L1342: const settings = await getSettings();');
   const settings = await getSettings();
   const stamp = new Date();
   const folderName = `session_${timestampForFilename(stamp)}`;
   const folder = `${folderName}/`;
   const pointer = `${SESSION_POINTER_FOLDER}/`;
 
+  trace('L1348: const restoreTabId = (await chrome.tabs.query({ active: true');
   const restoreTabId = (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id;
   const pages: SessionPage[] = [];
   const failures: SessionFailure[] = [];
@@ -1358,11 +1439,13 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
       let title = '';
       let url = '';
       try {
+        trace('L1361: const tab = await chrome.tabs.get(tabId);');
         const tab = await chrome.tabs.get(tabId);
         // A tab that fails still gets a line in index.md, so its title and
         // URL are scrubbed like every other report field.
         title = redactText(tab.title ?? '').text;
         url = redactText(tab.url ?? '').text;
+        trace('L1366: await setSessionProgress({');
         await setSessionProgress({
           state: 'running',
           current: index + 1,
@@ -1376,29 +1459,37 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
 
         // Chrome does not render a backgrounded tab, so it must be focused
         // for the capture to contain pixels.
+        trace('L1379: await chrome.tabs.update(tabId, { active: true });');
         await chrome.tabs.update(tabId, { active: true });
+        trace('L1380: await chrome.windows.update(tab.windowId, { focused: true })');
         await chrome.windows.update(tab.windowId, { focused: true });
+        trace('L1381: await new Promise((r) => setTimeout(r, 250));');
         await new Promise((r) => setTimeout(r, 250));
         if (reload) await reloadAndSettle(tabId);
 
+        trace('L1384: const fresh = await chrome.tabs.get(tabId);');
         const fresh = await chrome.tabs.get(tabId);
         // The mirror name is known before the capture, so the report can be
         // rendered twice — once naming the timestamped image for the session
         // folder, once naming its numbered sibling for the mirror.
         const ordinal = String(pages.length + 1).padStart(2, '0');
+        trace('L1389: const report = await captureReport(fresh, settings, session');
         const report = await captureReport(fresh, settings, 'session', folder, ordinal);
         const mirrorImage = report.mirrorImageFilename as string;
 
         // Mirror into the stable pointer folder immediately, while the bytes
         // are still in hand — numbered so overwrite is deterministic.
+        trace('L1394: await downloadPointerFile(');
         await downloadPointerFile(
           `${pointer}${mirrorImage}`,
           report.imageMime,
           report.result.imageBase64,
         );
         const mirrorSlices = report.result.slices ?? [];
+        trace('L1400: await withQuietDownloads(mirrorSlices.length > 0, async () =');
         await withQuietDownloads(mirrorSlices.length > 0, async () => {
           for (const [i, slice] of mirrorSlices.entries()) {
+            trace('L1402: await downloadPointerFile(');
             await downloadPointerFile(
               `${pointer}${ordinal}_slices/${sliceFilename(i, report.result.format)}`,
               report.imageMime,
@@ -1406,6 +1497,7 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
             );
           }
         });
+        trace('L1409: await downloadPointerFile(');
         await downloadPointerFile(
           `${pointer}${ordinal}.md`,
           'text/markdown',
@@ -1446,11 +1538,13 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
       cancelled: sessionCancelled,
     };
     const indexMarkdown = buildSessionIndex(indexInput);
+    trace('L1449: const indexWrite = await writeBundleFile(');
     const indexWrite = await writeBundleFile(
       `${folder}index.md`,
       'text/markdown',
       textToBase64(indexMarkdown),
     );
+    trace('L1454: await downloadPointerFile(');
     await downloadPointerFile(
       `${pointer}index.md`,
       'text/markdown',
@@ -1459,6 +1553,7 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
 
     if (restoreTabId !== undefined) {
       try {
+        trace('L1462: await chrome.tabs.update(restoreTabId, { active: true });');
         await chrome.tabs.update(restoreTabId, { active: true });
       } catch {
         /* the original tab may be gone */
@@ -1481,10 +1576,12 @@ async function runSession(tabIds: number[], reload: boolean): Promise<SessionSum
       indexDownloadId: indexWrite.downloadId,
     };
     try {
+      trace('L1484: await chrome.storage.session.set({ [SESSION_SUMMARY_KEY]: su');
       await chrome.storage.session.set({ [SESSION_SUMMARY_KEY]: summary });
     } catch {
       /* best-effort */
     }
+    trace('L1488: await setSessionProgress({');
     await setSessionProgress({
       state: sessionCancelled ? 'cancelled' : 'done',
       current: pages.length,
@@ -1504,6 +1601,7 @@ async function downloadPointerFile(
   mime: string,
   base64: string,
 ): Promise<void> {
+  trace('L1507: await downloadLatestPointer(filename, mime, base64);');
   await downloadLatestPointer(filename, mime, base64);
 }
 
@@ -1520,10 +1618,12 @@ const CLIP_SAMPLE_FPS = 8;
 const CLIP_MAX_FRAMES = 12;
 
 async function ensureOffscreenDocument(): Promise<void> {
+  trace('L1523: const contexts = await chrome.runtime.getContexts({');
   const contexts = await chrome.runtime.getContexts({
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
   });
   if (contexts.length > 0) return;
+  trace('L1527: await chrome.offscreen.createDocument({');
   await chrome.offscreen.createDocument({
     url: OFFSCREEN_URL,
     reasons: [chrome.offscreen.Reason.USER_MEDIA],
@@ -1533,6 +1633,7 @@ async function ensureOffscreenDocument(): Promise<void> {
 
 async function closeOffscreenDocument(): Promise<void> {
   try {
+    trace('L1536: await chrome.offscreen.closeDocument();');
     await chrome.offscreen.closeDocument();
   } catch {
     /* already closed */
@@ -1550,28 +1651,37 @@ async function recordClip(
   if (clipRunning) return { ok: false, reason: 'A clip is already recording.' };
   clipRunning = true;
   try {
+    trace('L1553: const tab = await targetTab(tabIdOverride);');
     const tab = await targetTab(tabIdOverride);
     const blocked = protectedPageReason(tab.url);
     if (blocked) {
+      trace('L1556: await recordError(blocked, announce);');
       await recordError(blocked, announce);
       return { ok: false, reason: blocked };
     }
     const tabId = tab.id as number;
+    trace('L1560: const settings = await getSettings();');
     const settings = await getSettings();
-    await ensureOutputReadme();
+    trace('L1561: await ensureOutputReadme();');
+    await withDeadline(ensureOutputReadme(), 5000, 'output README');
 
     // The count-in, on the badge in amber. The stream id is taken after it:
     // Chrome expires an unused id after a few seconds.
     for (let left = settings.clipDelaySeconds; left > 0; left--) {
+      trace('L1566: await setBadge(`${left}`, BADGE_RUNNING, `Capture Kit — reco');
       await setBadge(`${left}`, BADGE_RUNNING, `Capture Kit — recording in ${left}s`);
+      trace('L1567: await new Promise((r) => setTimeout(r, 1000));');
       await new Promise((r) => setTimeout(r, 1000));
     }
+    trace('L1569: const streamId = await chrome.tabCapture.getMediaStreamId({ ');
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+    trace('L1570: await ensureOffscreenDocument();');
     await ensureOffscreenDocument();
     // A countdown on the badge is the only sign a recording is running: the
     // popup has closed and nothing may be drawn on the page itself.
     const startedAt = new Date();
     let remaining = settings.clipSeconds;
+    trace('L1575: await setBadge(`${remaining}s`, BADGE_ERROR, `Capture Kit — ');
     await setBadge(`${remaining}s`, BADGE_ERROR, `Capture Kit — recording ${settings.clipSeconds}s`);
     const countdown = setInterval(() => {
       remaining = Math.max(0, remaining - 1);
@@ -1592,17 +1702,21 @@ async function recordClip(
       recorded = (await chrome.runtime.sendMessage(request)) as ClipRecordResponse;
     } finally {
       clearInterval(countdown);
+      trace('L1595: await closeOffscreenDocument();');
       await closeOffscreenDocument();
     }
     if (!recorded || !recorded.ok) {
       const reason = recorded?.reason ?? 'the recorder gave no answer';
+      trace('L1599: await recordError(reason, announce);');
       await recordError(reason, announce);
       return { ok: false, reason };
     }
 
     // Console and network for the clip window, through the same mapping and
     // scrubbing every report gets, then cut down to what happened during it.
+    trace('L1605: const { snapshot, recorderActive } = await getSnapshot(tabId');
     const { snapshot, recorderActive } = await getSnapshot(tabId);
+    trace('L1606: const page = await preparedPage(tab, snapshot);');
     const page = await preparedPage(tab, snapshot);
     const events = eventsDuringClip(page.console, page.network, startedAt.getTime(), recorded.durationMs);
 
@@ -1633,12 +1747,16 @@ async function recordClip(
       frameHeight: recorded.frameHeight,
     });
 
+    trace('L1636: const sheetWrite = await writeBundleFile(sheetFilename, ima');
     const sheetWrite = await writeBundleFile(sheetFilename, 'image/jpeg', recorded.sheet);
+    trace('L1637: await writeBundleFile(videoFilename, recorded.videoMime, rec');
     await writeBundleFile(videoFilename, recorded.videoMime, recorded.video);
+    trace('L1638: await writeBundleFile(markdownFilename, text/markdown, tex');
     await writeBundleFile(markdownFilename, 'text/markdown', textToBase64(markdown));
     // The kept frames at full size, one file each, in a folder named after the
     // clip - the sheet is the overview, these are for looking closely.
     for (let i = 0; i < recorded.frames.length; i++) {
+      trace('L1642: await writeBundleFile(');
       await writeBundleFile(
         `${framesFolder}/${frameFilename(i, recorded.frameOffsetsMs[i])}`,
         'image/jpeg',
@@ -1646,8 +1764,11 @@ async function recordClip(
       );
     }
     if (settings.maintainLatest) {
+      trace('L1649: await downloadLatestPointer(latest-frames.jpg, image/jpeg');
       await downloadLatestPointer('latest-frames.jpg', 'image/jpeg', recorded.sheet);
+      trace('L1650: await downloadLatestPointer(latest-clip.webm, recorded.vid');
       await downloadLatestPointer('latest-clip.webm', recorded.videoMime, recorded.video);
+      trace('L1651: await downloadLatestPointer(latest-clip.md, text/markdown');
       await downloadLatestPointer('latest-clip.md', 'text/markdown', textToBase64(withLatestNotice(markdown)));
     }
 
@@ -1659,6 +1780,7 @@ async function recordClip(
       copied = await copyImageThroughPage(tabId, 'image/jpeg', recorded.sheet, undefined);
     }
 
+    trace('L1662: await endIndicator(true, announce);');
     await endIndicator(true, announce);
     return {
       ok: true,
@@ -1672,6 +1794,7 @@ async function recordClip(
   } catch (error) {
     const reason = describeError(error);
     console.error('[capture-kit] clip failed:', error);
+    trace('L1675: await recordError(reason, announce);');
     await recordError(reason, announce);
     return { ok: false, reason };
   } finally {
@@ -1749,7 +1872,18 @@ async function agentCapture(tabId: number): Promise<void> {
     // Same path as the keyboard command, so an agent gets exactly what a
     // keystroke gets — including the badge flash.
     // Pinned to the tab that asked - never "whatever is active" (see captureBundle).
-    const response = await captureBundle('agent', tabId);
+    ckTrace.length = 0;
+    trace('agent capture start');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<CaptureResponse>((resolve) => {
+      timer = setTimeout(() => {
+        const where = ckTrace.join(' | ') || 'before the first step';
+        console.error('[capture-kit] agent capture timed out; trace:', where);
+        resolve({ ok: false, reason: `timed out after ${AGENT_CAPTURE_TIMEOUT_MS / 1000}s; last steps: ${where}` } as CaptureResponse);
+      }, AGENT_CAPTURE_TIMEOUT_MS);
+    });
+    const response = await Promise.race([captureBundle('agent', tabId), timeout]);
+    clearTimeout(timer);
     await tellPage(
       tabId,
       response.ok
@@ -1779,6 +1913,31 @@ function senderPageUrl(sender: chrome.runtime.MessageSender): string | undefined
 }
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
+  if (message?.type === 'AGENT_PING') {
+    void chrome.storage.session.get('ckTrace').then((stored) => {
+      sendResponse({
+        ok: true,
+        version: chrome.runtime.getManifest().version,
+        running: agentCaptureRunning,
+        liveTrace: [...ckTrace],
+        storedTrace: stored.ckTrace ?? null,
+      });
+    });
+    return true;
+  }
+  if (message?.type === 'AGENT_RELOAD') {
+    const reloadTab = sender.tab?.id;
+    void getSettings().then((settings) => {
+      const decision = decidePageTrigger(settings.pageTriggerMode, settings.pageTriggerSites, senderPageUrl(sender));
+      if (!decision.allowed) {
+        if (reloadTab !== undefined) void tellPage(reloadTab, { ok: false, error: decision.reason });
+        return;
+      }
+      setTimeout(() => chrome.runtime.reload(), 100);
+    });
+    sendResponse({ ok: true });
+    return false;
+  }
   if (message?.type === 'AGENT_CAPTURE') {
     const tabId = sender.tab?.id;
     // Scoped to the sender's tab: an agent captures the page it is driving,

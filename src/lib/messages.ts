@@ -59,6 +59,11 @@ export const AGENT_CAPTURE_EVENT = 'capture-kit:capture';
 export const AGENT_COMPLETE_EVENT = 'capture-kit:capture-complete';
 /** Same gate, same completion event: a page asks for a clip instead of a still. */
 export const AGENT_RECORD_EVENT = 'capture-kit:record';
+/** Ask the worker whether it is alive and where the last agent capture got to. Answered on capture-kit:pong. */
+export const AGENT_PING_EVENT = 'capture-kit:ping';
+export const AGENT_PONG_EVENT = 'capture-kit:pong';
+/** Reload the extension, so an assistant can load a fresh build without a click. Same page gate as a capture. */
+export const AGENT_RELOAD_EVENT = 'capture-kit:reload';
 
 /**
  * Detail of the completion event. JSON-safe primitives only: it crosses into
@@ -115,6 +120,8 @@ export type RuntimeMessage =
   | { type: 'CAPTURE_BUNDLE'; tabId?: number; scroll?: boolean }
   | { type: 'AGENT_CAPTURE' }
   | { type: 'AGENT_RECORD' }
+  | { type: 'AGENT_PING' }
+  | { type: 'AGENT_RELOAD' }
   | { type: 'RECORD_CLIP'; tabId?: number }
   | { type: 'CAPTURE_PAGE'; png?: boolean; tabId?: number }
   | { type: 'CAPTURE_SWEEP'; tabId?: number }
