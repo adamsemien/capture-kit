@@ -36,6 +36,10 @@ function openDb(): Promise<IDBDatabase> {
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
+    // Never wait forever on the database: a blocked or stalled open means
+    // "no chosen folder" to every caller, and captures fall back to Downloads.
+    request.onblocked = () => reject(new Error('output folder database blocked'));
+    setTimeout(() => reject(new Error('output folder database did not open in 3s')), 3000);
   });
 }
 
@@ -61,7 +65,41 @@ export async function saveOutputDir(handle: FileSystemDirectoryHandle): Promise<
   }
 }
 
+// Chrome 158 (seen 2026-11-25, NOBC-303): reading the stored folder handle can
+// stall forever inside the extension's database, which froze every capture
+// before its first write. Each read now has a short deadline; once one stalls,
+// this worker stops asking and every capture goes straight to Downloads.
+const STORE_DEADLINE_MS = 2000;
+let storeStalled = false;
+
+function withTimeout<T>(work: Promise<T>, ms: number, fallback: T, onLate?: () => void): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => {
+      onLate?.();
+      resolve(fallback);
+    }, ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
+}
+
 export async function loadOutputDir(): Promise<FileSystemDirectoryHandle | null> {
+  if (storeStalled) return null;
+  return withTimeout(readOutputDir(), STORE_DEADLINE_MS, null, () => {
+    storeStalled = true;
+    console.error('[capture-kit] the output folder store did not answer; using Downloads');
+  });
+}
+
+async function readOutputDir(): Promise<FileSystemDirectoryHandle | null> {
   try {
     const db = await openDb();
     try {
@@ -101,7 +139,11 @@ export async function outputDirStatus(): Promise<OutputDirStatus> {
   const handle = await loadOutputDir();
   if (!handle) return { state: 'none', name: null };
   try {
-    const permission = await handle.queryPermission({ mode: 'readwrite' });
+    const permission = await withTimeout(handle.queryPermission({ mode: 'readwrite' }), STORE_DEADLINE_MS, 'prompt' as PermissionState, () => {
+      // Same stall, one layer down: stop asking for the rest of this worker's life.
+      storeStalled = true;
+      console.error('[capture-kit] the output folder permission check did not answer; using Downloads');
+    });
     return { state: permission === 'granted' ? 'granted' : 'lapsed', name: handle.name };
   } catch {
     return { state: 'lapsed', name: handle.name };

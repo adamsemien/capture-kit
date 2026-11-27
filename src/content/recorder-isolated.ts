@@ -14,6 +14,9 @@ import {
   AGENT_CAPTURE_EVENT,
   AGENT_COMPLETE_EVENT,
   AGENT_RECORD_EVENT,
+  AGENT_PING_EVENT,
+  AGENT_PONG_EVENT,
+  AGENT_RELOAD_EVENT,
   CONSOLE_BUFFER_CAP,
   NETWORK_BUFFER_CAP,
   RECORDER_EVENT,
@@ -98,9 +101,33 @@ import {
   // on the same document either way, so a caller always gets one completion.
   document.addEventListener(AGENT_CAPTURE_EVENT, () => {
     try {
-      void chrome.runtime.sendMessage({ type: 'AGENT_CAPTURE' });
+      chrome.runtime.sendMessage({ type: 'AGENT_CAPTURE' }).catch((error: unknown) => {
+        dispatchComplete({ ok: false, error: `worker unreachable: ${String((error as Error)?.message ?? error)}` });
+      });
     } catch {
       dispatchComplete({ ok: false, error: 'extension unavailable' });
+    }
+  });
+
+  // Health check: the worker answers with its version, whether a capture is
+  // running, and the last steps the most recent agent capture reached.
+  document.addEventListener(AGENT_PING_EVENT, () => {
+    const pong = (detail: string) => document.dispatchEvent(new CustomEvent(AGENT_PONG_EVENT, { detail }));
+    try {
+      chrome.runtime.sendMessage({ type: 'AGENT_PING' }).then(
+        (reply: unknown) => pong(JSON.stringify(reply ?? null)),
+        (error: unknown) => pong(JSON.stringify({ ok: false, error: String((error as Error)?.message ?? error) })),
+      );
+    } catch (error) {
+      pong(JSON.stringify({ ok: false, error: `extension unavailable: ${String(error)}` }));
+    }
+  });
+
+  document.addEventListener(AGENT_RELOAD_EVENT, () => {
+    try {
+      chrome.runtime.sendMessage({ type: 'AGENT_RELOAD' }).catch(() => undefined);
+    } catch {
+      // Orphaned script after an earlier reload; open a fresh tab.
     }
   });
 
