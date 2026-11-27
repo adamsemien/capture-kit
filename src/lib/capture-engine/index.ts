@@ -4,6 +4,7 @@ import { InnerScrollExpansionStrategy, detectInnerScroll } from './inner-scroll'
 import { ScrollStitchStrategy, detectCanvasScroller } from './scroll-stitch';
 import { sliceEncodedImage } from './slices';
 import { stampCaptureResult } from './stamp';
+import { withSecretsMasked } from '../mask-secrets';
 
 export type {
   CaptureFormat,
@@ -36,6 +37,10 @@ export async function getCaptureStrategy(tabId: number): Promise<CaptureStrategy
 }
 
 export async function captureFullPage(request: CaptureRequest): Promise<CaptureResult> {
+  return withSecretsMasked(request.tabId, () => captureFullPageUnmasked(request));
+}
+
+async function captureFullPageUnmasked(request: CaptureRequest): Promise<CaptureResult> {
   const strategy = request.scrollStitch
     ? new ScrollStitchStrategy('pointer', 'asked')
     : await getCaptureStrategy(request.tabId);

@@ -1,4 +1,5 @@
 import type { CaptureResult, StampRequest } from './types';
+import { withSecretsMasked } from '../mask-secrets';
 import { CDP_VERSION, captureAttached, evaluateInPage, sendCommand } from './cdp-fullpage';
 import { stampCaptureResult } from './stamp';
 
@@ -38,6 +39,14 @@ export async function captureSweep(
   tabId: number,
   segmentSize: number,
   /** Present only when "Stamp URL on image" is on; every width gets the footer. */
+  stamp?: StampRequest,
+): Promise<SweepOutcome> {
+  return withSecretsMasked(tabId, () => captureSweepUnmasked(tabId, segmentSize, stamp));
+}
+
+async function captureSweepUnmasked(
+  tabId: number,
+  segmentSize: number,
   stamp?: StampRequest,
 ): Promise<SweepOutcome> {
   const target: chrome.debugger.Debuggee = { tabId };

@@ -517,7 +517,12 @@ function base64Bytes(base64: string): number {
   return Math.floor((base64.length * 3) / 4) - padding;
 }
 
-async function openResultTab(meta: CaptureResultMeta, images: ResultImageData[]): Promise<void> {
+async function openResultTab(
+  meta: CaptureResultMeta,
+  images: ResultImageData[],
+  /** False for agent captures: the tab opens behind, so focus stays put. */
+  active = true,
+): Promise<void> {
   try {
     const captureId = crypto.randomUUID();
     resultImages.set(captureId, images);
@@ -528,6 +533,7 @@ async function openResultTab(meta: CaptureResultMeta, images: ResultImageData[])
     await chrome.storage.session.set({ [`result:${captureId}`]: meta });
     await chrome.tabs.create({
       url: `${chrome.runtime.getURL('result/result.html')}?id=${captureId}`,
+      active,
     });
   } catch (error) {
     // The capture itself succeeded — a failed result tab must not fail it.
@@ -1088,6 +1094,7 @@ async function captureBundle(
           createdAt: capturedAt.getTime(),
         },
         [{ mime: imageMime, base64: result.imageBase64 }],
+        trigger !== 'agent',
       );
     }
 
@@ -1865,6 +1872,8 @@ async function agentCapture(tabId: number): Promise<void> {
     // the session runner does it.
     const tab = await chrome.tabs.get(tabId);
     if (!tab.active) {
+      // Remember what the person was looking at, to hand it back afterwards.
+      restoreAfterAgent = await rememberFocus();
       await chrome.tabs.update(tabId, { active: true });
       await chrome.windows.update(tab.windowId, { focused: true });
       await new Promise((r) => setTimeout(r, 250));
@@ -1900,6 +1909,36 @@ async function agentCapture(tabId: number): Promise<void> {
     await tellPage(tabId, { ok: false, error: describeError(error) });
   } finally {
     agentCaptureRunning = false;
+    const restore = restoreAfterAgent;
+    restoreAfterAgent = null;
+    if (restore) await restoreFocus(restore);
+  }
+}
+
+interface FocusState {
+  tabId: number;
+  windowId: number;
+}
+
+/** Set while an agent capture has taken focus from another tab. */
+let restoreAfterAgent: FocusState | null = null;
+
+async function rememberFocus(): Promise<FocusState | null> {
+  try {
+    const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    return active?.id !== undefined ? { tabId: active.id, windowId: active.windowId } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Hands focus back after an agent capture. A tab closed meanwhile is skipped. */
+async function restoreFocus(state: FocusState): Promise<void> {
+  try {
+    await chrome.tabs.update(state.tabId, { active: true });
+    await chrome.windows.update(state.windowId, { focused: true });
+  } catch {
+    /* the tab or window is gone */
   }
 }
 
@@ -2125,6 +2164,9 @@ chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
     void chrome.tabs.create({ url: chrome.runtime.getURL('welcome/welcome.html') });
   }
+  // Tabs opened before this install or reload have no live recorder, so an
+  // agent's capture event there went unanswered until a new tab was opened.
+  void reinjectRecorders();
   void (async () => {
     try {
       // removeAll first: onInstalled fires on every reload of an unpacked
@@ -2147,6 +2189,25 @@ chrome.runtime.onInstalled.addListener((details) => {
     await syncActionMode();
   })();
 });
+
+/** Puts a live copy of the isolated recorder in every open web page (NOBC-363). */
+async function reinjectRecorders(): Promise<void> {
+  let tabs: chrome.tabs.Tab[] = [];
+  try {
+    tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*', 'file:///*'] });
+  } catch {
+    return;
+  }
+  await Promise.all(
+    tabs.map((tab) =>
+      tab.id === undefined || tab.discarded
+        ? undefined
+        : chrome.scripting
+            .executeScript({ target: { tabId: tab.id }, files: ['content/recorder-isolated.js'] })
+            .catch(() => undefined),
+    ),
+  );
+}
 
 chrome.runtime.onStartup.addListener(() => {
   void syncActionMode();
