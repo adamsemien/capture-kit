@@ -1196,6 +1196,8 @@ function a17Verdict(r) {
   const problems = [];
   if (r.on.error || !r.on.ok) problems.push(`popup capture with flash on did not succeed (${r.on.error ?? 'not ok'})`);
   else if ((r.on.flashes?.length ?? 0) !== 1) problems.push(`popup capture flashed ${r.on.flashes?.length ?? 0} times, expected 1`);
+  // The cue is the edge glow, not the full-page white wash (invisible on white pages).
+  else if (!['glow', 'border'].includes(r.on.flashes[0].kind)) problems.push(`popup capture showed a "${r.on.flashes[0].kind}" cue, expected the edge glow`);
   if ((r.off.flashes?.length ?? 0) !== 0) problems.push(`setting off still flashed ${r.off.flashes.length} times`);
   if ((r.agent.flashes?.length ?? 0) !== 0) problems.push(`page-fired capture flashed ${r.agent.flashes.length} times`);
   for (const k of ['on', 'off', 'agent']) if (r[k].left) problems.push(`${k}: ${r[k].left} overlay(s) left on the page`);
