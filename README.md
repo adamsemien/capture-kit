@@ -71,7 +71,10 @@ size, zoom, what triggered the capture - and then:
 
 Values that look like secrets - API keys, access tokens, auth headers, JWTs -
 are replaced with `[REDACTED]` in the report text before it is saved. The
-screenshot shows whatever was on screen, so check it before sharing.
+same kinds of secrets shown on the page itself, and card-number and one-time-code
+fields, are swapped for dots while the screenshot is taken and put back straight
+after. Password fields already show dots. Anything else on screen - names,
+emails, account numbers in plain words - still shows, so check before sharing.
 
 ## Tall pages
 
@@ -103,7 +106,10 @@ document.dispatchEvent(new CustomEvent('capture-kit:capture')); // or 'capture-k
 // → { ok: true, basename: "localhost-3000_2026-10-17_12-11", output: "chosen" }
 ```
 
-That brings the tab to the front and writes a file, so **Settings → Automation**
+That brings the tab to the front for a moment - Chrome only paints the tab in
+front - then hands focus back to whatever you were looking at, and opens the
+result tab behind your current one. Tabs that were open before an extension
+update or reload are picked up automatically. It also writes a file, so **Settings → Automation**
 decides which pages may do it:
 
 | Mode | Who can fire a capture |

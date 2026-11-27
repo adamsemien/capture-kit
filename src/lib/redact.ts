@@ -23,7 +23,7 @@ export const REDACTED = '[REDACTED]';
  * report exists to carry, so every rule here errs towards missing a value
  * rather than mangling a sentence.
  */
-const SECRET_PATTERNS: readonly RegExp[] = [
+export const SECRET_PATTERNS: readonly RegExp[] = [
   // PEM private key blocks - first, because they span lines. The second form
   // catches a block the recorder's message-length cap cut off before its END.
   /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )?PRIVATE KEY-----/g,

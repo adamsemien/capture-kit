@@ -26,9 +26,20 @@ import {
   // Guard against double-injection: the worker re-injects this file into
   // pages that predate an install/reload. The isolated-world window is
   // invisible to the page, so this flag leaks nothing.
+  // After an extension reload the old copy of this script is cut off from the
+  // worker. Each copy registers a liveness check, so a re-injected copy can
+  // take over from a dead one instead of bowing out to it (NOBC-363).
   const flagHost = window as unknown as Record<string, unknown>;
-  if (flagHost.__captureKitRecorder__) return;
-  flagHost.__captureKitRecorder__ = true;
+  const alive = (): boolean => {
+    try {
+      return typeof chrome !== 'undefined' && Boolean(chrome.runtime?.id);
+    } catch {
+      return false;
+    }
+  };
+  const previous = flagHost.__captureKitRecorder__;
+  if (typeof previous === 'function' ? (previous as () => boolean)() : previous === true) return;
+  flagHost.__captureKitRecorder__ = alive;
 
   const consoleBuffer: ConsoleEntry[] = [];
   const networkBuffer: NetworkFailure[] = [];
@@ -100,6 +111,7 @@ import {
   // The worker decides whether the trigger is allowed (Settings) and answers
   // on the same document either way, so a caller always gets one completion.
   document.addEventListener(AGENT_CAPTURE_EVENT, () => {
+    if (!alive()) return; // a live copy answers instead
     try {
       chrome.runtime.sendMessage({ type: 'AGENT_CAPTURE' }).catch((error: unknown) => {
         dispatchComplete({ ok: false, error: `worker unreachable: ${String((error as Error)?.message ?? error)}` });
@@ -112,6 +124,7 @@ import {
   // Health check: the worker answers with its version, whether a capture is
   // running, and the last steps the most recent agent capture reached.
   document.addEventListener(AGENT_PING_EVENT, () => {
+    if (!alive()) return; // a live copy answers instead
     const pong = (detail: string) => document.dispatchEvent(new CustomEvent(AGENT_PONG_EVENT, { detail }));
     try {
       chrome.runtime.sendMessage({ type: 'AGENT_PING' }).then(
@@ -124,6 +137,7 @@ import {
   });
 
   document.addEventListener(AGENT_RELOAD_EVENT, () => {
+    if (!alive()) return; // a live copy answers instead
     try {
       chrome.runtime.sendMessage({ type: 'AGENT_RELOAD' }).catch(() => undefined);
     } catch {
@@ -135,6 +149,7 @@ import {
   // set in Settings and answers on capture-kit:capture-complete with the
   // files' shared basename.
   document.addEventListener(AGENT_RECORD_EVENT, () => {
+    if (!alive()) return; // a live copy answers instead
     try {
       void chrome.runtime.sendMessage({ type: 'AGENT_RECORD' });
     } catch {

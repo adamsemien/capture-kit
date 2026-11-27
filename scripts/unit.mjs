@@ -36,6 +36,8 @@ export { flashesFor, FLASH_ATTR } from '${ROOT}/src/lib/flash.ts';
 export { CAPTURE_TRIGGER_LABEL } from '${ROOT}/src/lib/messages.ts';
 export { copiesFromPage, opensResultTab, clipboardText } from '${ROOT}/src/lib/clipboard-only.ts';
 export { redactText, redactPage, redactedLabel, isJwt, REDACTED } from '${ROOT}/src/lib/redact.ts';
+export { nextUniqueStem, captureBasename, timestampWithSeconds } from '${ROOT}/src/lib/bundle/filename.ts';
+export { patternSources } from '${ROOT}/src/lib/mask-secrets.ts';
 export { buildSessionIndex } from '${ROOT}/src/lib/session/manifest.ts';
 export { frameDifference, selectFrames, FramePicker, changeBox, sheetPlan, sheetLayout, offsetLabel, eventsDuringClip, buildClipMarkdown, clampClipSeconds, clampClipDelay, frameFilename, THUMB_W, THUMB_H } from '${ROOT}/src/lib/clip/frames.ts';
 export { decodeMappings, SourceMapIndex, parseSourceMap, cleanSourcePath, findSourceMapUrl, dataUrlText, parseFrame, formatFrame, FrameMapper, mapPageSources, sourceMapLabel } from '${ROOT}/src/lib/source-map.ts';
@@ -1548,6 +1550,27 @@ test('the sweep Mode chip states a path only when every width took it', () => {
     /differs by width/,
   );
   assert.equal(mod.sweepModeChip([]), '');
+});
+
+heading('NOBC-363 - unique names and the screenshot mask');
+test('two captures in the same second get different names', () => {
+  const at = new Date(2026, 10, 27, 15, 40, 7);
+  const a = mod.captureBasename('Example Domain', 'https://example.com', at);
+  const b = mod.captureBasename('Example Domain', 'https://example.com', at);
+  assert.equal(a, 'example-domain_2026-11-27_15-40-07');
+  assert.equal(b, 'example-domain_2026-11-27_15-40-07-2');
+  assert.notEqual(mod.captureBasename('Example Domain', 'https://example.com', new Date(2026, 10, 27, 15, 40, 8)), b);
+});
+test('the counter restarts when the stem changes', () => {
+  assert.deepEqual(mod.nextUniqueStem('a', 'b', 4), { name: 'a', count: 1 });
+  assert.deepEqual(mod.nextUniqueStem('a', 'a', 2), { name: 'a-3', count: 3 });
+});
+test('the mask patterns survive the trip into the page and still match', () => {
+  const res = mod.patternSources().map(([src, flags]) => new RegExp(src, flags));
+  for (const secret of [FAKE.aws, FAKE.stripe]) {
+    assert.ok(res.some((re) => { re.lastIndex = 0; return re.test(`key ${secret} here`); }), secret);
+  }
+  assert.ok(!res.some((re) => { re.lastIndex = 0; return re.test('An ordinary sentence about authors and sessions.'); }));
 });
 
 rmSync(dir, { recursive: true, force: true });
